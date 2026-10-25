@@ -4,7 +4,9 @@ Semaphore is a local-first dashboard builder for a single analyst, meant to repl
 
 The analyst connects any data source, then builds a dashboard the way you'd build with Lego: drag empty **flags** (blocks) onto a **hoist** (the dashboard), and say in plain English what each one should show and how it should behave. Semaphore works out the data connections.
 
-> In naval signalling a *hoist* is the set of flags flown together to send one message. Each flag carries one part of it.
+## The name
+
+Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a message with a flag in each hand, read by eye across open water. A *hoist* is the set of signal flags run up together to send one message; each flag carries one part of it. Semaphore works the same way: every flag on the dashboard carries one part of the picture, and the hoist as a whole tells leadership what they need to know at a glance.
 
 ## The idea in one example
 
