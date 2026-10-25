@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "sources": [
+    { "id": "maint", "label": "Maintenance warehouse (Postgres)", "kind": "postgres", "dialect": "postgres", "vaultItem": "Semaphore / maint-warehouse" },
+    { "id": "parts", "label": "Parts tracker (Access)", "kind": "access", "dialect": "access", "vaultItem": "Semaphore / parts-tracker" }
+  ],
+  "fields": [
+    { "key": "jobs.region", "label": "Region", "source": "maint", "table": "ops.work_orders", "column": "region", "type": "string", "cardinality": 6, "synonyms": ["area", "fleet area"] },
+    { "key": "jobs.ship_class", "label": "Ship class", "source": "maint", "table": "ops.work_orders", "column": "ship_class", "type": "string", "cardinality": 12, "synonyms": ["class", "hull type"] },
+    { "key": "jobs.status", "label": "Status", "source": "maint", "table": "ops.work_orders", "column": "status", "type": "string", "cardinality": 5 },
+    { "key": "jobs.opened", "label": "Opened date", "source": "maint", "table": "ops.work_orders", "column": "opened_on", "type": "date", "synonyms": ["date", "opened", "open date"] },
+    { "key": "jobs.hull", "label": "Hull number", "source": "maint", "table": "ops.work_orders", "column": "hull_no", "type": "string", "cardinality": 180, "synonyms": ["hull", "ship"] },
+    { "key": "jobs.cost", "label": "Labor cost", "source": "maint", "table": "ops.work_orders", "column": "labor_cost", "type": "number" },
+    { "key": "jobs.days_open", "label": "Days open", "source": "maint", "table": "ops.work_orders", "column": "days_open", "type": "number" },
+    { "key": "parts.item", "label": "Part", "source": "parts", "table": "Parts", "column": "Item Name", "type": "string", "cardinality": 900 },
+    { "key": "parts.on_hand", "label": "On hand", "source": "parts", "table": "Parts", "column": "QtyOnHand", "type": "number" }
+  ],
+  "metrics": [
+    { "key": "work_orders", "label": "Work orders", "agg": "count", "table": "ops.work_orders", "source": "maint", "synonyms": ["jobs", "orders", "tickets"] },
+    { "key": "labor_cost", "label": "Labor cost", "agg": "sum", "field": "jobs.cost", "source": "maint", "format": "currency", "synonyms": ["cost", "spend", "labor"] },
+    { "key": "avg_days_open", "label": "Average days open", "agg": "avg", "field": "jobs.days_open", "source": "maint", "synonyms": ["days open", "age", "turnaround"] },
+    { "key": "hulls_affected", "label": "Hulls affected", "agg": "count_distinct", "field": "jobs.hull", "source": "maint", "synonyms": ["ships affected", "unique hulls"] },
+    { "key": "parts_on_hand", "label": "Parts on hand", "agg": "sum", "field": "parts.on_hand", "source": "parts", "synonyms": ["inventory", "stock"] }
+  ]
+}

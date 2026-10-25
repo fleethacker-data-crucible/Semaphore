@@ -1,0 +1,10 @@
+node_modules/
+logs/
+dist-*/
+
+# Local environment files (secrets)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
