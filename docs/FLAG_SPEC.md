@@ -21,7 +21,7 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 ```
 
 - `dialect`: `postgres` | `oracle` | `access` | `tsql` (Azure SQL, SQL Server 2022+) | `ansi` (Athena, Redshift, DuckDB and similar). Postgres, Oracle, Access and Azure SQL sources must use their own dialect.
-- `vaultItem` names the ARC vault item with the connection secret. The secret itself is never in the catalog.
+- `vaultItem` names the Lazarette vault item with the connection secret. The secret itself is never in the catalog.
 - `type`: `number` | `string` | `date` | `boolean`. Number fields are aggregated by metrics, not grouped by.
 - `cardinality` (distinct values) comes from profiling and drives result-size estimates.
 - `agg`: `sum` | `avg` | `min` | `max` | `count` | `count_distinct`. A `count` with no `field` counts rows of `table`. `sum`, `avg`, `min` and `max` need a number field.

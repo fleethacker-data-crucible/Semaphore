@@ -20,7 +20,7 @@ export interface Source {
   label: string;
   kind: SourceKind;
   dialect: Dialect;
-  /** Name of the ARC vault item that holds the connection secret. Never the secret itself. */
+  /** Name of the Lazarette vault item that holds the connection secret. Never the secret itself. */
   vaultItem?: string;
 }
 
