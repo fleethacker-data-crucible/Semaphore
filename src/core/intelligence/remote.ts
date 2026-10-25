@@ -1,4 +1,4 @@
-// Remote providers. Same two shapes as Synapse: an OpenAI-compatible gateway (most enterprise
+// Remote providers. Same two shapes as Shellback: an OpenAI-compatible gateway (most enterprise
 // gateways, Azure OpenAI, Ollama and LM Studio speak it) or a platform-owned endpoint that
 // implements the Semaphore contract. Vendor-specific adapters belong on the server side.
 //

@@ -1,6 +1,6 @@
 # SEMAPHORE · Dashboard Intelligence
 
-Semaphore is a local-first dashboard builder for a single analyst, meant to replace Qlik on thin clients. Part of the Data Crucible family alongside Arc, Cascade and Synapse, and built on the same [TechStack](TechStack).
+Semaphore is a local-first dashboard builder for a single analyst, meant to replace Qlik on thin clients. Part of the Data Crucible family alongside Lazarette, Halyard and Shellback, and built on the same [TechStack](TechStack).
 
 The analyst connects any data source, then builds a dashboard the way you'd build with Lego: drag empty **flags** (blocks) onto a **hoist** (the dashboard), and say in plain English what each one should show and how it should behave. Semaphore works out the data connections.
 
@@ -31,7 +31,7 @@ Every draft is a suggestion with a confidence badge. Flip a flag over to see the
 | SQL for Postgres, Oracle, Access, T-SQL (Azure SQL) and ANSI (Athena, Redshift, DuckDB), typed bound parameters only | `src/core/sql.ts` | Done |
 | Cross-filtering on cached results, no round trip | `src/core/crossfilter.ts` | Done |
 | Intelligence layer: local rules (default), contract endpoint, OpenAI-compatible gateway, fallback | `src/core/intelligence/` | Done |
-| PowerShell 5.1 loopback server, lifecycle rules, source connectors, ARC vault bridge | — | Next |
+| PowerShell 5.1 loopback server, lifecycle rules, source connectors, Lazarette vault bridge | — | Next |
 | Browser UI (canvas, flag palette, flag inspector, report export) | — | Waiting on the unified Data Crucible UI rules |
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
