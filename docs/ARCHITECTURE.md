@@ -10,7 +10,7 @@ Launch-Semaphore.bat ──► PowerShell 5.1 loopback server (planned)
                            ├─ /api/heartbeat, lifecycle per TechStack
                            ├─ /api/query   runs a rendered SQL query against a source, binds params
                            ├─ connectors   bundled managed .NET drivers via Add-Type (no installs)
-                           └─ ARC bridge   connection secrets and AI tokens come from the ARC vault
+                           └─ vault bridge  connection secrets and AI tokens come from the Lazarette vault
 
 Browser
   src/app (planned)       canvas, flag palette, flag inspector, report export
@@ -66,11 +66,11 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 ## Storage
 
 - **Hoists and the catalog are small JSON files.** On non-persistent VDI profiles, browser storage may be wiped at logoff, so these are saved by the server to the user's home or a network folder. IndexedDB holds only cached results, which are safe to lose.
-- Credentials never enter the browser or the hoist: a source names an ARC vault item.
+- Credentials never enter the browser or the hoist: a source names an Lazarette vault item.
 
 ## Sharing
 
-A report is exported as one self-contained HTML file (the same technique as Synapse's standalone edition): the cached results, the hoist and the cross-filter engine, with optional AES-GCM passphrase encryption. Recipients need nothing installed; live drill-downs are disabled in the export.
+A report is exported as one self-contained HTML file (the same technique as Shellback's standalone edition): the cached results, the hoist and the cross-filter engine, with optional AES-GCM passphrase encryption. Recipients need nothing installed; live drill-downs are disabled in the export.
 
 ## TechStack mapping
 
@@ -84,5 +84,5 @@ A report is exported as one self-contained HTML file (the same technique as Syna
 | Rust → WebAssembly | Optional: cross-filter kernel if results grow; today's results are small enough for TypeScript | Not needed yet |
 | IndexedDB / localStorage | Cached results / settings | Planned |
 | Service workers, Web Workers | App-shell cache; queries and cross-filtering off the main thread | Planned |
-| Web Crypto, DPAPI | Report encryption; secrets via ARC | Planned |
+| Web Crypto, DPAPI | Report encryption; secrets via Lazarette | Planned |
 | C# via `Add-Type` | Managed DB drivers (Npgsql, Oracle.ManagedDataAccess), OLE DB for Access | Planned |
