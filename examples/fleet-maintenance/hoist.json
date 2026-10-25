@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "id": "fleet-maintenance",
+  "title": "Fleet maintenance overview",
+  "brief": "Maintenance picture for the last 12 months. Leadership wants cost and backlog at a glance, and clicking a region or ship class should filter the whole page.",
+  "grid": { "cols": 12 },
+  "filters": [{ "field": "jobs.opened", "op": "last", "values": [12], "unit": "month" }],
+  "flags": [
+    {
+      "id": "kpi-orders",
+      "kind": "kpi",
+      "title": "Work orders",
+      "brief": "Total work orders.",
+      "layout": { "x": 0, "y": 0, "w": 3, "h": 2 },
+      "binding": { "metrics": ["work_orders"], "dimensions": [], "filters": [] },
+      "behavior": { "onClick": "none", "ignore": [], "thresholds": [] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "kpi-cost",
+      "kind": "kpi",
+      "title": "Labor cost",
+      "brief": "Total labor cost. Turn red over $5M.",
+      "layout": { "x": 3, "y": 0, "w": 3, "h": 2 },
+      "binding": { "metrics": ["labor_cost"], "dimensions": [], "filters": [] },
+      "behavior": { "onClick": "none", "ignore": [], "thresholds": [{ "metric": "labor_cost", "op": "gt", "value": 5000000, "tone": "bad" }] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "kpi-hulls",
+      "kind": "kpi",
+      "title": "Hulls affected",
+      "brief": "How many distinct hulls had work.",
+      "layout": { "x": 6, "y": 0, "w": 3, "h": 2 },
+      "binding": { "metrics": ["hulls_affected"], "dimensions": [], "filters": [] },
+      "behavior": { "onClick": "none", "ignore": [], "thresholds": [] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "filter-class",
+      "kind": "filter",
+      "title": "Ship class",
+      "brief": "Pick ship classes.",
+      "layout": { "x": 9, "y": 0, "w": 3, "h": 2 },
+      "binding": { "metrics": [], "dimensions": [{ "field": "jobs.ship_class" }], "filters": [] },
+      "behavior": { "onClick": "filter-page", "ignore": [], "thresholds": [] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "bar-region",
+      "kind": "bar",
+      "title": "Labor cost by region",
+      "brief": "Labor cost by region. Clicking a bar filters the page.",
+      "layout": { "x": 0, "y": 2, "w": 6, "h": 4 },
+      "binding": { "metrics": ["labor_cost"], "dimensions": [{ "field": "jobs.region" }], "filters": [], "sort": { "by": "labor_cost", "dir": "desc" } },
+      "behavior": { "onClick": "filter-page", "ignore": [], "thresholds": [] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "line-trend",
+      "kind": "line",
+      "title": "Work orders per month",
+      "brief": "Monthly work orders. Ignore the region filter so leadership always sees the fleet-wide trend.",
+      "layout": { "x": 6, "y": 2, "w": 6, "h": 4 },
+      "binding": { "metrics": ["work_orders", "avg_days_open"], "dimensions": [{ "field": "jobs.opened", "grain": "month" }], "filters": [], "sort": { "by": "jobs.opened@month", "dir": "asc" } },
+      "behavior": { "onClick": "none", "ignore": ["jobs.region"], "thresholds": [] },
+      "status": "ready",
+      "notes": []
+    },
+    {
+      "id": "empty-1",
+      "kind": "table",
+      "title": "",
+      "brief": "",
+      "layout": { "x": 0, "y": 6, "w": 12, "h": 5 },
+      "binding": null,
+      "behavior": { "onClick": "none", "ignore": [], "thresholds": [] },
+      "status": "empty",
+      "notes": []
+    }
+  ],
+  "updated": "2026-10-25T16:00:00.000Z"
+}

@@ -1,0 +1,8 @@
+# Byte-identical builds on Linux and Windows: sources and build inputs are always LF,
+# even on a Windows checkout with core.autocrlf=true.
+* text=auto eol=lf
+# Committed build output must never be rewritten by git.
+dist/** -text -diff
+# Windows launchers keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -1,0 +1,197 @@
+// Remote providers. Same two shapes as Synapse: an OpenAI-compatible gateway (most enterprise
+// gateways, Azure OpenAI, Ollama and LM Studio speak it) or a platform-owned endpoint that
+// implements the Semaphore contract. Vendor-specific adapters belong on the server side.
+//
+// Requests omit credentials and referrer, time out, and return raw JSON for the caller to
+// validate. The bearer token is passed in by the caller after it is unlocked from the vault;
+// this module never stores it.
+
+import {
+  CONTRACT_VERSION,
+  type DraftFlagRequest,
+  type DraftHoistRequest,
+  IntelligenceError,
+  type IntelligenceProvider,
+} from './contract.ts';
+
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal: AbortSignal; credentials: 'omit'; referrerPolicy: 'no-referrer' }) => Promise<{
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}>;
+
+export interface RemoteSettings {
+  id: string;
+  label: string;
+  /** Contract endpoint URL, or an OpenAI-compatible API base ending in /v1. */
+  url: string;
+  model?: string;
+  token?: string;
+  timeoutMs?: number;
+  fetch?: FetchLike;
+}
+
+const DEFAULT_TIMEOUT = 30_000;
+const PING_TIMEOUT = 15_000;
+
+abstract class RemoteBase {
+  readonly local = false;
+  readonly id: string;
+  readonly label: string;
+  protected readonly s: RemoteSettings;
+  protected readonly fetcher: FetchLike;
+
+  constructor(settings: RemoteSettings) {
+    const u = safeUrl(settings.url);
+    this.s = { ...settings, url: u };
+    this.id = settings.id;
+    this.label = settings.label;
+    const f = settings.fetch ?? (globalThis.fetch as unknown as FetchLike | undefined);
+    if (!f) throw new IntelligenceError('No fetch implementation is available.');
+    this.fetcher = f;
+  }
+
+  protected async call(url: string, method: 'GET' | 'POST', body: unknown, timeoutMs: number): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (this.s.token) headers.Authorization = `Bearer ${this.s.token}`;
+    try {
+      const res = await this.fetcher(url, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+      });
+      const text = await res.text();
+      if (!res.ok) throw new IntelligenceError(`${this.label} answered HTTP ${res.status}${detail(text)}`);
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new IntelligenceError(`${this.label} did not return JSON.`);
+      }
+    } catch (e) {
+      if (e instanceof IntelligenceError) throw e;
+      if (controller.signal.aborted) throw new IntelligenceError(`${this.label} did not answer within ${Math.round(timeoutMs / 1000)} s.`);
+      throw new IntelligenceError(`${this.label} could not be reached: ${scrub((e as Error).message, this.s.token)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/** A platform-side endpoint implementing contract v1 (see docs/INTELLIGENCE_PROVIDERS.md). */
+export class ContractProvider extends RemoteBase implements IntelligenceProvider {
+  private async task(payload: Record<string, unknown>, timeout = this.s.timeoutMs ?? DEFAULT_TIMEOUT): Promise<unknown> {
+    const out = await this.call(this.s.url, 'POST', { contract: CONTRACT_VERSION, ...(this.s.model ? { model: this.s.model } : {}), payload }, timeout);
+    if (!isObject(out)) throw new IntelligenceError(`${this.label} returned an unexpected shape.`);
+    if (out.ok !== true) throw new IntelligenceError(`${this.label}: ${typeof out.error === 'string' ? out.error.slice(0, 400) : 'request failed'}`);
+    return out.result;
+  }
+  async ping(): Promise<string> {
+    const r = await this.task({ task: 'ping' }, PING_TIMEOUT);
+    return isObject(r) && typeof r.detail === 'string' ? r.detail.slice(0, 200) : `${this.label} is reachable.`;
+  }
+  async listModels(): Promise<string[]> {
+    const r = await this.task({ task: 'list-models' }, PING_TIMEOUT);
+    return isObject(r) && Array.isArray(r.models) ? r.models.filter((m): m is string => typeof m === 'string').slice(0, 200) : [];
+  }
+  draftFlag(request: DraftFlagRequest): Promise<unknown> {
+    return this.task({ ...request });
+  }
+  draftHoist(request: DraftHoistRequest): Promise<unknown> {
+    return this.task({ ...request });
+  }
+}
+
+/** Any OpenAI-compatible chat completions API. Semaphore writes the prompts. */
+export class OpenAICompatibleProvider extends RemoteBase implements IntelligenceProvider {
+  private get base(): string {
+    return this.s.url.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+  }
+  async ping(): Promise<string> {
+    const models = await this.listModels();
+    return models.length ? `${this.label} is reachable; ${models.length} models available.` : `${this.label} is reachable.`;
+  }
+  async listModels(): Promise<string[]> {
+    const r = await this.call(`${this.base}/models`, 'GET', undefined, PING_TIMEOUT);
+    if (!isObject(r) || !Array.isArray(r.data)) return [];
+    return r.data.map((m) => (isObject(m) && typeof m.id === 'string' ? m.id : null)).filter((m): m is string => !!m).slice(0, 200);
+  }
+  draftFlag(request: DraftFlagRequest): Promise<unknown> {
+    return this.complete(FLAG_PROMPT, request);
+  }
+  draftHoist(request: DraftHoistRequest): Promise<unknown> {
+    return this.complete(HOIST_PROMPT, request);
+  }
+  private async complete(system: string, request: DraftFlagRequest | DraftHoistRequest): Promise<unknown> {
+    const r = await this.call(
+      `${this.base}/chat/completions`,
+      'POST',
+      {
+        ...(this.s.model ? { model: this.s.model } : {}),
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: JSON.stringify(request) },
+        ],
+      },
+      this.s.timeoutMs ?? DEFAULT_TIMEOUT,
+    );
+    const content = isObject(r) && Array.isArray(r.choices) && isObject(r.choices[0]) && isObject(r.choices[0].message) ? r.choices[0].message.content : null;
+    if (typeof content !== 'string') throw new IntelligenceError(`${this.label} returned no message.`);
+    try {
+      return JSON.parse(stripFence(content));
+    } catch {
+      throw new IntelligenceError(`${this.label} did not answer in JSON.`);
+    }
+  }
+}
+
+const SHARED_RULES = `Use only keys from "catalog". Metric keys go in "metrics"; field keys go in "dimensions", "filters", "ignore" and sorts. A date dimension may have "grain": day|week|month|quarter|year, and its sort key is "<field>@<grain>". Filter ops: in, eq, gte, lte, between (two values), last (one whole number plus "unit"). Kinds: kpi (no dimensions), bar, line, area, pie (one dimension), table, filter (one dimension, no metrics, onClick "filter-page"), text. onClick: filter-page | drill | none. Thresholds: {metric, op: lt|lte|gt|gte, value, tone: good|warn|bad}. If something the analyst asked for is not in the catalog, say so in "notes" and leave it out. Never invent keys. Answer with JSON only.`;
+
+const FLAG_PROMPT = `You configure one dashboard block ("flag") in Semaphore, a BI tool. The request has the dashboard brief ("brief.hoist"), this block's brief ("brief.flag", which wins where they disagree), page filters, the block's current kind and a catalog of metrics and fields. Return {"kind","title","binding":{"metrics":[],"dimensions":[{"field","grain"?}],"filters":[],"sort"?:{"by","dir"},"limit"?},"behavior":{"onClick","ignore":[],"thresholds":[]},"confidence":0..1,"notes":[]}. ${SHARED_RULES}`;
+
+const HOIST_PROMPT = `You lay out a whole dashboard ("hoist") in Semaphore, a BI tool, from the analyst's brief and a catalog of metrics and fields. Return {"title","filters":[],"flags":[{"kind","title","brief","binding","behavior","confidence","notes"}],"notes":[]} with at most 12 flags: headline KPIs first, then charts, then any filter flags the brief asks for. Each flag's "brief" is one plain sentence the analyst can edit later. ${SHARED_RULES}`;
+
+export function safeUrl(url: string): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new IntelligenceError('The provider URL is not a valid URL.');
+  }
+  const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) {
+    throw new IntelligenceError('Providers must use HTTPS (plain HTTP is allowed only on this computer).');
+  }
+  if (u.username || u.password) throw new IntelligenceError('Put the token in the vault, not in the URL.');
+  return u.toString();
+}
+
+function stripFence(s: string): string {
+  const m = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(s);
+  return m ? m[1]! : s;
+}
+
+function detail(text: string): string {
+  try {
+    const j = JSON.parse(text);
+    const msg = isObject(j) ? (isObject(j.error) ? j.error.message : j.error) : null;
+    return typeof msg === 'string' ? `: ${msg.slice(0, 200)}` : '.';
+  } catch {
+    return '.';
+  }
+}
+
+function scrub(message: string, token?: string): string {
+  return token ? message.split(token).join('[token]') : message;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}

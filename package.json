@@ -1,0 +1,20 @@
+{
+  "name": "semaphore",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Semaphore: local-first dashboard intelligence. Drop flags on a hoist, describe them, and Semaphore wires the data.",
+  "type": "module",
+  "license": "SEE LICENSE IN README.md",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "6.0.3"
+  }
+}
