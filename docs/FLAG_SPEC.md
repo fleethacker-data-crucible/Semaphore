@@ -20,11 +20,11 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 }
 ```
 
-- `dialect`: `postgres` | `oracle` | `access` | `ansi` (Athena, Redshift, DuckDB and similar).
+- `dialect`: `postgres` | `oracle` | `access` | `tsql` (Azure SQL, SQL Server 2022+) | `ansi` (Athena, Redshift, DuckDB and similar). Postgres, Oracle, Access and Azure SQL sources must use their own dialect.
 - `vaultItem` names the ARC vault item with the connection secret. The secret itself is never in the catalog.
 - `type`: `number` | `string` | `date` | `boolean`. Number fields are aggregated by metrics, not grouped by.
 - `cardinality` (distinct values) comes from profiling and drives result-size estimates.
-- `agg`: `sum` | `avg` | `min` | `max` | `count` | `count_distinct`. A `count` with no `field` counts rows of `table`.
+- `agg`: `sum` | `avg` | `min` | `max` | `count` | `count_distinct`. A `count` with no `field` counts rows of `table`. `sum`, `avg`, `min` and `max` need a number field.
 - `synonyms` help the local rules match the analyst's words.
 
 ## Hoist (dashboard)
@@ -94,3 +94,6 @@ Everything is validated when it is loaded, imported, or returned by an AI provid
 - A malformed flag (bad id, unknown kind, bad layout, duplicate id) is dropped, with a warning.
 - An unknown metric or field inside a flag is removed, with a warning, and a `ready` flag drops back to `drafted` for review.
 - Provider output that needed fixing has its confidence capped at 0.4.
+- A draft's kind and binding are made to agree: a KPI has no fields (or becomes a chart), a pie and a picker have one field, a picker has no metrics and filters the page.
+- Overlapping layouts are moved down to fit, with a warning.
+- Size limits are in `LIMITS` in `src/core/hoist.ts`; anything over a limit is cut or removed with a warning, never silently.

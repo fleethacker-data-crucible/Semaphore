@@ -32,6 +32,8 @@ export interface RemoteSettings {
 }
 
 const DEFAULT_TIMEOUT = 30_000;
+/** Largest response body accepted from a provider. */
+export const MAX_RESPONSE_CHARS = 2_000_000;
 const PING_TIMEOUT = 15_000;
 
 abstract class RemoteBase {
@@ -67,6 +69,7 @@ abstract class RemoteBase {
         referrerPolicy: 'no-referrer',
       });
       const text = await res.text();
+      if (text.length > MAX_RESPONSE_CHARS) throw new IntelligenceError(`${this.label} sent an answer larger than Semaphore accepts.`);
       if (!res.ok) throw new IntelligenceError(`${this.label} answered HTTP ${res.status}${detail(text)}`);
       try {
         return JSON.parse(text);
@@ -173,9 +176,15 @@ export function safeUrl(url: string): string {
   return u.toString();
 }
 
-function stripFence(s: string): string {
-  const m = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(s);
-  return m ? m[1]! : s;
+/** Remove a Markdown code fence around a JSON answer. No regex: provider text is untrusted. */
+export function stripFence(s: string): string {
+  let t = s.trim();
+  if (!t.startsWith('```')) return t;
+  const nl = t.indexOf('\n');
+  t = nl === -1 ? t.slice(3) : t.slice(nl + 1);
+  t = t.trimEnd();
+  if (t.endsWith('```')) t = t.slice(0, -3);
+  return t.trim();
 }
 
 function detail(text: string): string {

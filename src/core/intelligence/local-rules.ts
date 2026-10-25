@@ -12,6 +12,7 @@
 //   "turn red over $5M", "amber under 80%"         thresholds
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
+import { LIMITS } from '../hoist.ts';
 import type { Behavior, Binding, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
 import type { DraftFlagRequest, DraftHoistRequest, FlagDraft, HoistDraft, IntelligenceProvider } from './contract.ts';
 
@@ -84,13 +85,14 @@ const KIND_WORDS: Array<[RegExp, FlagKind]> = [
 const TONES: Record<string, Tone> = { red: 'bad', green: 'good', amber: 'warn', yellow: 'warn', orange: 'warn' };
 
 function analyze(raw: string, index: CatalogIndex): Analysis {
-  const text = ` ${raw.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ')} `;
+  // Briefs are capped like everywhere else, which also bounds the work every regex below does.
+  const text = ` ${raw.slice(0, LIMITS.briefChars).toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ')} `;
   const notes: string[] = [];
   const blocked: Array<[number, number]> = [];
 
   // Clauses that name fields for a reason other than grouping.
   const ignore: string[] = [];
-  for (const m of text.matchAll(/\bignor\w*\s+(?:the\s+|any\s+)?([a-z0-9 '/-]+?)\s+(?:filters?|selections?|slicers?)\b/g)) {
+  for (const m of text.matchAll(/\bignor\w{0,6}\s+(?:the\s+|any\s+)?([a-z0-9 '/-]{1,60}?)\s+(?:filters?|selections?|slicers?)\b/g)) {
     const key = matchField(m[1]!, index);
     blocked.push([m.index!, m.index! + m[0].length]);
     if (key) ignore.push(key);
@@ -98,7 +100,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   }
   let onClick: Behavior['onClick'] = 'none';
   const clickFields: string[] = [];
-  const click = /\bclick\w*\b([^.;]*?)\b(filters?|filtering|drills?|drilling)\b([^.;]*)/.exec(text);
+  const click = /\bclick\w{0,6}\b([^.;]{0,160}?)\b(filters?|filtering|drills?|drilling)\b([^.;]{0,160})/.exec(text);
   if (click) {
     onClick = click[2]!.startsWith('drill') ? 'drill' : 'filter-page';
     blocked.push([click.index, click.index + click[0].length]);
@@ -189,7 +191,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   // Thresholds: "<colour> … under/over <number>".
   const thresholds: Threshold[] = [];
   const target = metrics[0];
-  for (const m of text.matchAll(/\b(red|green|amber|yellow|orange)\b[^.;]*?\b(under|below|less than|over|above|more than|greater than|exceeds?|at least|at most)\s+\$?\s*(-?[\d,]*\.?\d+)\s*(k|m|b|thousand|million|billion|%|percent)?\b/g)) {
+  for (const m of text.matchAll(/\b(red|green|amber|yellow|orange)\b[^.;]{0,60}?\b(under|below|less than|over|above|more than|greater than|exceeds?|at least|at most)\s+\$?\s?(-?\d[\d,]{0,20}(?:\.\d{1,6})?)\s?(k|m|b|thousand|million|billion|%|percent)?(?![a-z0-9])/g)) {
     if (!target) break;
     const word = m[2]!;
     const op: Threshold['op'] = /under|below|less/.test(word) ? 'lt' : word === 'at most' ? 'lte' : word === 'at least' ? 'gte' : 'gt';

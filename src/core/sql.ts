@@ -4,13 +4,14 @@
 // always quoted; every value is a bound parameter, never text spliced into the SQL. The local
 // server binds the parameters with the driver's own API.
 
-import { type CatalogIndex, type Dialect, isIdentifier } from './catalog.ts';
+import { type CatalogIndex, type Dialect, type FieldType, isIdentifier } from './catalog.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import type { PlannedAggregate, PlannedDimension, QueryPlan } from './planner.ts';
 
 export interface SqlParam {
-  value: string | number;
-  type: 'string' | 'number' | 'date';
+  /** Dates are YYYY-MM-DD; the server binds them as real date values. */
+  value: string | number | boolean;
+  type: 'string' | 'number' | 'date' | 'boolean';
 }
 
 export interface RenderedSql {
@@ -29,7 +30,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   const bind = (p: SqlParam): string => {
     params.push(p);
     const n = params.length;
-    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : '?';
+    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' ? `@p${n}` : '?';
   };
 
   const column = (fieldKey: string): string => {
@@ -57,7 +58,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   ];
   if (select.length === 0) throw new SqlError('Nothing to select.');
 
-  const where = plan.filters.map((f) => filterSql(f, column(f.field), bind, today));
+  const where = plan.filters.map((f) => filterSql(f, column(f.field), index.field(f.field)!.type, bind, today));
   const groupBy = plan.dimensions.map(dimExpr);
 
   let orderBy = '';
@@ -66,10 +67,11 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     const metric = plan.metrics.find((m) => m.key === plan.sort!.by);
     let expr: string | null = null;
     if (dim) expr = dimExpr(dim);
-    else if (metric) {
+    else if (metric && metric.agg !== 'avg') {
+      // An average is rebuilt locally from its sum and count, and sorted there; the planner never
+      // cuts an average-ranked top N at the source.
       const alias = metric.parts.sum ?? metric.parts.count ?? metric.parts.min ?? metric.parts.max ?? metric.parts.distinct;
       const a = plan.aggregates.find((x) => x.alias === alias);
-      // avg sorts by its sum; that matches only within one group size, so it is ordered locally too.
       if (a) expr = aggExpr(a);
     }
     if (expr) orderBy = ` ORDER BY ${expr} ${plan.sort.dir === 'desc' ? 'DESC' : 'ASC'}`;
@@ -77,7 +79,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
 
   const limit = Math.max(1, Math.floor(plan.limit));
   const table = quoteTable(plan.table, dialect);
-  let sql = `SELECT ${dialect === 'access' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${table}`;
+  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${table}`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
@@ -88,25 +90,59 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   return { dialect, sql, params };
 }
 
-function filterSql(f: Filter, col: string, bind: (p: SqlParam) => string, today: Date): string {
-  const p = (v: string | number): string => bind({ value: v, type: typeof v === 'number' ? 'number' : 'string' });
+function filterSql(f: Filter, col: string, type: FieldType, bind: (p: SqlParam) => string, today: Date): string {
+  const p = (v: string | number): string => bind(typedParam(v, type));
+  // On a date field, "up to 31 March" means the whole of 31 March, including times that day.
+  const upTo = (v: string | number): string =>
+    type === 'date' ? `${col} < ${bind({ value: nextDay(String(v)), type: 'date' })}` : `${col} <= ${p(v)}`;
   switch (f.op) {
     case 'eq':
+      if (type === 'date') return `${col} >= ${p(f.values[0]!)} AND ${upTo(f.values[0]!)}`;
       return `${col} = ${p(f.values[0]!)}`;
     case 'in':
       return `${col} IN (${f.values.map(p).join(', ')})`;
     case 'gte':
       return `${col} >= ${p(f.values[0]!)}`;
     case 'lte':
-      return `${col} <= ${p(f.values[0]!)}`;
+      return upTo(f.values[0]!);
     case 'between':
-      return `${col} >= ${p(f.values[0]!)} AND ${col} <= ${p(f.values[1]!)}`;
+      return `${col} >= ${p(f.values[0]!)} AND ${upTo(f.values[1]!)}`;
     case 'last': {
       const n = f.values[0];
       if (typeof n !== 'number' || !f.unit) throw new SqlError('A "last" filter needs a count and a unit.');
       return `${col} >= ${bind({ value: periodStart(today, f.unit, n - 1), type: 'date' })}`;
     }
   }
+}
+
+/** A filter value typed by its field, so drivers bind real dates and numbers. */
+export function typedParam(v: string | number, type: FieldType): SqlParam {
+  switch (type) {
+    case 'date': {
+      const s = String(v);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) throw new SqlError(`"${s}" is not a date (YYYY-MM-DD).`);
+      return { value: s, type: 'date' };
+    }
+    case 'number': {
+      const n = typeof v === 'number' ? v : Number(v);
+      if (!Number.isFinite(n) || (typeof v === 'string' && v.trim() === '')) throw new SqlError(`"${v}" is not a number.`);
+      return { value: n, type: 'number' };
+    }
+    case 'boolean': {
+      const b = v === 1 || v === 'true' ? true : v === 0 || v === 'false' ? false : null;
+      if (b === null) throw new SqlError(`"${v}" is not true or false.`);
+      return { value: b, type: 'boolean' };
+    }
+    case 'string':
+      return { value: String(v), type: 'string' };
+  }
+}
+
+function nextDay(ymd: string): string {
+  const { value } = typedParam(ymd, 'date');
+  const d = new Date(`${value as string}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
@@ -142,7 +178,7 @@ export function periodStart(today: Date, unit: TimeGrain, back: number): string 
 
 export function quote(name: string, dialect: Dialect): string {
   if (!isIdentifier(name) || name.includes('.')) throw new SqlError(`Unsafe identifier "${name}".`);
-  return dialect === 'access' ? `[${name}]` : `"${name}"`;
+  return dialect === 'access' || dialect === 'tsql' ? `[${name}]` : `"${name}"`;
 }
 
 function quoteTable(name: string, dialect: Dialect): string {
@@ -158,6 +194,10 @@ export function truncate(col: string, grain: TimeGrain, dialect: Dialect): strin
   if (dialect === 'oracle') {
     const fmt = { day: 'DD', week: 'IW', month: 'MM', quarter: 'Q', year: 'YYYY' }[grain];
     return `TRUNC(${col}, '${fmt}')`;
+  }
+  if (dialect === 'tsql') {
+    // DATETRUNC is in Azure SQL and SQL Server 2022+. iso_week starts on Monday regardless of DATEFIRST.
+    return `DATETRUNC(${grain === 'week' ? 'iso_week' : grain}, ${col})`;
   }
   if (dialect === 'access') {
     switch (grain) {

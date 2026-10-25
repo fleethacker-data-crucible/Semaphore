@@ -7,9 +7,11 @@ import {
   type Behavior,
   type Binding,
   type EffectiveBrief,
+  capWarnings,
   FLAG_KINDS,
   type Filter,
   type FlagKind,
+  LIMITS,
   parseBehavior,
   parseBinding,
   parseFilters,
@@ -83,14 +85,48 @@ export function validateFlagDraft(raw: unknown, index: CatalogIndex, fallbackKin
   const behavior = parseBehavior(raw.behavior, index, warnings, 'Draft');
   let confidence = typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
   if (warnings.length) confidence = Math.min(confidence, 0.4);
+  const shaped = fitShape(kind, binding, behavior);
   return {
-    kind,
+    ...shaped,
     title: typeof raw.title === 'string' ? raw.title.slice(0, 120) : '',
-    binding,
-    behavior,
     confidence,
-    notes: [...notes, ...warnings],
+    notes: capWarnings([...notes, ...warnings, ...shaped.notes]),
   };
+}
+
+/**
+ * Make a draft's kind and binding agree: a KPI has no fields, a pie and a picker have one, a
+ * picker has no metrics and filters the page, and a text flag binds nothing.
+ */
+export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Behavior): { kind: FlagKind; binding: Binding | null; behavior: Behavior; notes: string[] } {
+  const notes: string[] = [];
+  if (kind === 'text') return { kind, binding: null, behavior, notes };
+  if (!binding) return { kind, binding, behavior, notes };
+  const b: Binding = { ...binding, metrics: [...binding.metrics], dimensions: [...binding.dimensions] };
+  if (kind === 'filter') {
+    if (b.dimensions.length === 0) return { kind, binding: null, behavior, notes: ['A picker needs a field to list.'] };
+    if (b.metrics.length || b.dimensions.length > 1) notes.push('A picker lists one field, so the rest was left out.');
+    b.metrics = [];
+    b.dimensions = b.dimensions.slice(0, 1);
+    delete b.sort;
+    return { kind, binding: b, behavior: { ...behavior, onClick: 'filter-page' }, notes };
+  }
+  if (b.metrics.length === 0) {
+    // Fields with no metric make a list of values.
+    return { kind: 'table', binding: b, behavior, notes: kind === 'table' ? notes : ['With no metric this shows a list of values.'] };
+  }
+  if (kind === 'kpi' && b.dimensions.length > 0) {
+    notes.push('A KPI shows one number, so this became a chart because it is split by a field.');
+    kind = b.dimensions.some((d) => d.grain) ? 'line' : 'bar';
+  } else if ((kind === 'bar' || kind === 'line' || kind === 'area' || kind === 'pie') && b.dimensions.length === 0) {
+    kind = 'kpi';
+  }
+  if (kind === 'pie' && b.dimensions.length > 1) {
+    notes.push('A pie shows one field; extra fields were left out.');
+    b.dimensions = b.dimensions.slice(0, 1);
+  }
+  if (b.sort && !b.metrics.includes(b.sort.by) && !b.dimensions.some((d) => (d.grain ? `${d.field}@${d.grain}` : d.field) === b.sort!.by)) delete b.sort;
+  return { kind, binding: b, behavior, notes };
 }
 
 export function validateHoistDraft(raw: unknown, index: CatalogIndex): HoistDraft {
@@ -100,7 +136,7 @@ export function validateHoistDraft(raw: unknown, index: CatalogIndex): HoistDraf
   for (const f of Array.isArray(raw.flags) ? raw.flags.slice(0, 24) : []) {
     try {
       const d = validateFlagDraft(f, index, 'bar');
-      flags.push({ ...d, brief: isObject(f) && typeof f.brief === 'string' ? f.brief.slice(0, 4000) : '' });
+      flags.push({ ...d, brief: isObject(f) && typeof f.brief === 'string' ? f.brief.slice(0, LIMITS.briefChars) : '' });
     } catch (e) {
       warnings.push((e as Error).message);
     }
@@ -109,7 +145,7 @@ export function validateHoistDraft(raw: unknown, index: CatalogIndex): HoistDraf
     title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : '',
     filters: parseFilters(raw.filters, index, warnings, 'Draft'),
     flags,
-    notes: [...strings(raw.notes, 10, 400), ...warnings],
+    notes: capWarnings([...strings(raw.notes, 10, 400), ...warnings]),
   };
 }
 

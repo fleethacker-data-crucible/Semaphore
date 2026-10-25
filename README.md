@@ -28,7 +28,7 @@ Every draft is a suggestion with a confidence badge. Flip a flag over to see the
 | Hoist and flag model, validation of anything loaded or returned by an AI | `src/core/hoist.ts` | Done |
 | Lego grid: snap, push down, float up, first free slot | `src/core/layout.ts` | Done |
 | Query planner sized for thin clients (pre-sliced aggregates, row caps) | `src/core/planner.ts` | Done |
-| SQL for Postgres, Oracle, Access and ANSI (Athena, Redshift, DuckDB), bound parameters only | `src/core/sql.ts` | Done |
+| SQL for Postgres, Oracle, Access, T-SQL (Azure SQL) and ANSI (Athena, Redshift, DuckDB), typed bound parameters only | `src/core/sql.ts` | Done |
 | Cross-filtering on cached results, no round trip | `src/core/crossfilter.ts` | Done |
 | Intelligence layer: local rules (default), contract endpoint, OpenAI-compatible gateway, fallback | `src/core/intelligence/` | Done |
 | PowerShell 5.1 loopback server, lifecycle rules, source connectors, ARC vault bridge | — | Next |
@@ -41,7 +41,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 Requires Node 22.18 or later (it runs TypeScript directly). No packages are needed to run the tests.
 
 ```shell
-npm test             # node --test, 49 tests
+npm test             # node --test, 67 tests
 npm run typecheck    # strict tsc (needs typescript and @types/node installed)
 ```
 
