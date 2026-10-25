@@ -1,13 +1,13 @@
 # Intelligence providers
 
-Semaphore works with no model at all. **Local rules** is the default provider and the fallback for everything. An organisation with an approved AI platform can plug it in as a remote provider. This follows the same model as Synapse and Cascade.
+Semaphore works with no model at all. **Local rules** is the default provider and the fallback for everything. An organisation with an approved AI platform can plug it in as a remote provider. This follows the same model as Shellback and Halyard.
 
 | Provider | What it is | Leaves the workstation? |
 | --- | --- | --- |
 | Local rules (default) | Deterministic reading of the brief against catalog labels and synonyms | No |
 | OpenAI-compatible gateway | Any `/v1/chat/completions` API: enterprise gateways, Azure OpenAI, Ollama, LM Studio. Semaphore writes the prompts. | Yes, to that gateway |
 | Contract endpoint | A platform-side service implementing the contract below | Yes, to that endpoint |
-| Databricks serving endpoint | Planned, reusing Cascade's client | Yes |
+| Databricks serving endpoint | Planned, reusing Halyard's client | Yes |
 
 ## What is sent, and what never is
 
@@ -26,7 +26,7 @@ SQL is generated locally from the validated draft, never by the provider.
 2. Unknown metric or field keys are removed and listed in the flag's notes; confidence is capped at 0.4.
 3. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
 4. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
-5. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the ARC vault.
+5. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the Lazarette vault.
 
 ## What local rules understand
 
