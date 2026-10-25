@@ -24,11 +24,15 @@ export function overlaps(a: Layout, b: Layout): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
+/** Deepest row a flag may start on. Matches what parseHoist accepts. */
+export const MAX_Y = 1000;
+
 export function clampLayout(l: Layout, cols: number): Layout {
-  const w = Math.max(1, Math.min(Math.round(l.w), cols));
-  const h = Math.max(1, Math.min(Math.round(l.h), 24));
-  const x = Math.max(0, Math.min(Math.round(l.x), cols - w));
-  const y = Math.max(0, Math.round(l.y));
+  const n = (v: number, fallback: number) => (Number.isFinite(v) ? Math.round(v) : fallback);
+  const w = Math.max(1, Math.min(n(l.w, 1), cols));
+  const h = Math.max(1, Math.min(n(l.h, 1), 24));
+  const x = Math.max(0, Math.min(n(l.x, 0), cols - w));
+  const y = Math.max(0, Math.min(n(l.y, 0), MAX_Y));
   return { x, y, w, h };
 }
 
@@ -62,18 +66,26 @@ export function place(items: readonly Placed[], id: string, target: Layout, cols
   return compact(result, id).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
 
-/** Float every flag up as far as it goes without overlapping, keeping columns. */
+/**
+ * Float every flag up as far as it goes without overlapping, keeping columns. Flags that
+ * overlap an earlier one (in reading order) are first pushed down below it, so this also
+ * repairs overlapping layouts loaded from a file.
+ */
 export function compact(items: readonly Placed[], pinned?: string): Placed[] {
   const sorted = items
     .map((p) => ({ id: p.id, layout: { ...p.layout } }))
     .sort((a, b) => a.layout.y - b.layout.y || (a.id === pinned ? -1 : b.id === pinned ? 1 : a.layout.x - b.layout.x));
   const settled: Placed[] = [];
   for (const p of sorted) {
-    while (p.layout.y > 0) {
-      const up = { ...p.layout, y: p.layout.y - 1 };
-      if (settled.some((q) => overlaps(q.layout, up))) break;
-      p.layout = up;
+    for (;;) {
+      const blockers = settled.filter((q) => overlaps(q.layout, p.layout));
+      if (blockers.length === 0) break;
+      p.layout.y = Math.max(...blockers.map((q) => q.layout.y + q.layout.h));
     }
+    // Float up in one step: to the lowest bottom edge of anything above it in its columns.
+    const p0 = p.layout;
+    const above = settled.filter((q) => q.layout.x < p0.x + p0.w && p0.x < q.layout.x + q.layout.w && q.layout.y + q.layout.h <= p0.y);
+    p.layout = { ...p0, y: above.length ? Math.max(...above.map((q) => q.layout.y + q.layout.h)) : 0 };
     settled.push(p);
   }
   const order = new Map(items.map((p, i) => [p.id, i]));
@@ -84,6 +96,7 @@ export function compact(items: readonly Placed[], pinned?: string): Placed[] {
 export function isValidLayout(items: readonly Placed[], cols: number): boolean {
   for (let i = 0; i < items.length; i++) {
     const a = items[i]!.layout;
+    if (![a.x, a.y, a.w, a.h].every(Number.isInteger)) return false;
     if (a.x < 0 || a.y < 0 || a.w < 1 || a.h < 1 || a.x + a.w > cols) return false;
     for (let j = i + 1; j < items.length; j++) if (overlaps(a, items[j]!.layout)) return false;
   }

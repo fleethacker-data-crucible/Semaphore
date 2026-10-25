@@ -8,11 +8,11 @@
 import type { Behavior } from './hoist.ts';
 import type { QueryPlan } from './planner.ts';
 
-export type Cell = string | number | null;
+export type Cell = string | number | boolean | null;
 export type ResultRow = Record<string, Cell>;
 
 /** Selected values per dimension key, e.g. { "orders.region": ["Northeast"] }. */
-export type Selections = Record<string, ReadonlyArray<string | number>>;
+export type Selections = Record<string, ReadonlyArray<string | number | boolean | null>>;
 
 export interface DisplayRow {
   /** Own dimension values, keyed by dimension key. */
@@ -27,22 +27,30 @@ export interface CrossfilterResult {
   applied: string[];
   /** Selection keys this flag needs a new source query for. */
   live: string[];
+  /**
+   * The result hit the row cap, so it may be missing rows. Totals are incomplete and every
+   * selection that applies to this flag is sent to the source instead of filtered locally.
+   */
+  truncated: boolean;
 }
 
 export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], selections: Selections, behavior: Behavior): CrossfilterResult {
   const applied: string[] = [];
   const live: string[] = [];
+  const truncated = rows.length >= plan.rowCap;
   const tests: Array<{ alias: string; allowed: Set<string> }> = [];
   for (const [key, values] of Object.entries(selections)) {
     if (values.length === 0) continue;
     const field = key.split('@')[0]!;
     if (behavior.ignore.includes(field)) continue;
     const dim = plan.dimensions.find((d) => d.key === key);
-    if (dim) {
+    const isOwn = plan.own.includes(key);
+    if (isOwn && !plan.selfFilter) continue; // a picker keeps listing every value
+    if (plan.live.includes(key) || (truncated && dim)) {
+      live.push(key);
+    } else if (dim) {
       tests.push({ alias: dim.alias, allowed: new Set(values.map(norm)) });
       applied.push(key);
-    } else if (plan.live.includes(key)) {
-      live.push(key);
     }
     // Any other key is a selection on a table this flag does not read; it does not apply.
   }
@@ -129,24 +137,25 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
       .map((x) => x.row);
   }
   if (plan.displayLimit) out = out.slice(0, plan.displayLimit);
-  return { rows: out, applied, live };
+  return { rows: out, applied, live, truncated };
 }
 
 /** Values compare as text so a selection made on one flag matches the same value on another. */
-function norm(v: Cell | string | number): string {
+function norm(v: Cell): string {
   if (v === null) return '\u0000null';
-  if (typeof v === 'number') return String(v);
-  // Dates arrive as ISO strings; drivers differ on whether a midnight time is included.
-  return /^\d{4}-\d{2}-\d{2}T00:00:00(\.0+)?Z?$/.test(v) ? v.slice(0, 10) : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  // Dates arrive as ISO strings; drivers differ on whether a UTC midnight time is included
+  // and how the zero offset is written. Other offsets are left alone (they are real times).
+  return /^\d{4}-\d{2}-\d{2}T00:00:00(\.0+)?(Z|[+-]00:?00)?$/.test(v) ? v.slice(0, 10) : v;
 }
 
 function toNumber(v: Cell | undefined): number | null {
-  if (v === null || v === undefined) return null;
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
-function compare(a: string | number, b: string | number): number {
+function compare(a: string | number | boolean, b: string | number | boolean): number {
   if (a === b) return 0;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   return String(a).localeCompare(String(b), 'en', { numeric: true });

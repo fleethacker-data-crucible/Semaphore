@@ -62,7 +62,7 @@ test('a top-N is cut at the source only when nothing is re-aggregated locally', 
   assert.equal(sliced.limit, 50_000);
   const unsliced = plan({ ...top, behavior: { ...top.behavior, ignore: ['jobs.ship_class'] } });
   assert.equal(unsliced.limit, 3);
-  assert.equal(unsliced.displayLimit, undefined);
+  assert.equal(unsliced.displayLimit, 3, 'cut locally too, because Access TOP n returns ties');
 });
 
 test('flags mixing sources or tables are refused with a reason', () => {

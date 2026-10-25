@@ -2,6 +2,7 @@
 // flags flown together to send one message, and each flag carries one part of it.
 
 import type { CatalogIndex } from './catalog.ts';
+import { compact, isValidLayout } from './layout.ts';
 
 export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text';
 export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
@@ -92,6 +93,19 @@ export interface Hoist {
 
 export const GRID_COLS = 12;
 
+/** Limits on untrusted input (files, imports, AI output). */
+export const LIMITS = {
+  briefChars: 4000,
+  flags: 200,
+  metrics: 50,
+  dimensions: 20,
+  filters: 50,
+  filterValues: 500,
+  ignore: 50,
+  thresholds: 20,
+  warnings: 200,
+} as const;
+
 export function emptyBehavior(): Behavior {
   return { onClick: 'none', ignore: [], thresholds: [] };
 }
@@ -131,7 +145,8 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
   const flags: Flag[] = [];
   const ids = new Set<string>();
   const rawFlags = Array.isArray(raw.flags) ? raw.flags : [];
-  rawFlags.forEach((rf, i) => {
+  if (rawFlags.length > LIMITS.flags) warnings.push(`Only the first ${LIMITS.flags} of ${rawFlags.length} flags were loaded.`);
+  rawFlags.slice(0, LIMITS.flags).forEach((rf, i) => {
     const flag = parseFlag(rf, cols, index, warnings, `Flag ${i + 1}`);
     if (!flag) return;
     if (ids.has(flag.id)) {
@@ -142,18 +157,25 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     flags.push(flag);
   });
   const filters = parseFilters(raw.filters, index, warnings, 'Hoist filters');
+  if (!isValidLayout(flags, cols)) {
+    const fixed = new Map(compact(flags).map((p) => [p.id, p.layout]));
+    for (const f of flags) f.layout = fixed.get(f.id) ?? f.layout;
+    warnings.push('Some flags overlapped, so they were moved down to fit.');
+  }
+  const brief = str(raw.brief);
+  if (brief.length > LIMITS.briefChars) warnings.push(`The hoist brief was cut to ${LIMITS.briefChars} characters.`);
   return {
     hoist: {
       version: 1,
-      id: str(raw.id) || 'hoist',
-      title: str(raw.title) || 'Untitled hoist',
-      brief: str(raw.brief),
+      id: str(raw.id).slice(0, 64) || 'hoist',
+      title: str(raw.title).slice(0, 200) || 'Untitled hoist',
+      brief: brief.slice(0, LIMITS.briefChars),
       grid: { cols },
       filters,
       flags,
-      updated: str(raw.updated) || new Date(0).toISOString(),
+      updated: str(raw.updated).slice(0, 40) || new Date(0).toISOString(),
     },
-    warnings,
+    warnings: capWarnings(warnings),
   };
 }
 
@@ -196,7 +218,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
     id,
     kind,
     title: str(raw.title).slice(0, 200),
-    brief: str(raw.brief).slice(0, 4000),
+    brief: str(raw.brief).slice(0, LIMITS.briefChars),
     layout,
     binding,
     behavior: parseBehavior(raw.behavior, index, warnings, where),
@@ -223,20 +245,22 @@ export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warn
     return null;
   }
   const metrics: string[] = [];
-  for (const m of Array.isArray(raw.metrics) ? raw.metrics : []) {
-    if (typeof m !== 'string') continue;
+  const seenMetrics = new Set<string>();
+  for (const m of capped(raw.metrics, LIMITS.metrics, warnings, `${where}: metrics`)) {
+    if (typeof m !== 'string' || seenMetrics.has(m)) continue;
+    seenMetrics.add(m);
     if (index && !index.metric(m)) {
-      warnings.push(`${where}: unknown metric "${m}" removed.`);
+      warnings.push(`${where}: unknown metric "${m.slice(0, 80)}" removed.`);
       continue;
     }
-    if (!metrics.includes(m)) metrics.push(m);
+    metrics.push(m);
   }
   const dimensions: DimensionRef[] = [];
-  for (const d of Array.isArray(raw.dimensions) ? raw.dimensions : []) {
+  for (const d of capped(raw.dimensions, LIMITS.dimensions, warnings, `${where}: fields`)) {
     if (!isObject(d) || typeof d.field !== 'string') continue;
     const field = index?.field(d.field);
     if (index && !field) {
-      warnings.push(`${where}: unknown field "${d.field}" removed.`);
+      warnings.push(`${where}: unknown field "${d.field.slice(0, 80)}" removed.`);
       continue;
     }
     const ref: DimensionRef = { field: d.field };
@@ -262,14 +286,14 @@ export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warn
 
 export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warnings: string[], where: string): Filter[] {
   const out: Filter[] = [];
-  for (const f of Array.isArray(raw) ? raw : []) {
+  for (const f of capped(raw, LIMITS.filters, warnings, `${where}: filters`)) {
     if (!isObject(f) || typeof f.field !== 'string' || !FILTER_OPS.includes(f.op as FilterOp)) {
       warnings.push(`${where}: malformed filter removed.`);
       continue;
     }
     const field = index?.field(f.field);
     if (index && !field) {
-      warnings.push(`${where}: filter on unknown field "${f.field}" removed.`);
+      warnings.push(`${where}: filter on unknown field "${f.field.slice(0, 80)}" removed.`);
       continue;
     }
     const values = (Array.isArray(f.values) ? f.values : []).filter(
@@ -281,7 +305,11 @@ export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warn
       warnings.push(`${where}: filter on "${f.field}" has the wrong number of values, removed.`);
       continue;
     }
-    const filter: Filter = { field: f.field, op, values: values.slice(0, 500) };
+    if (values.length > LIMITS.filterValues) {
+      warnings.push(`${where}: filter on "${f.field}" lists more than ${LIMITS.filterValues} values, removed.`);
+      continue;
+    }
+    const filter: Filter = { field: f.field, op, values };
     if (op === 'last') {
       const unit = TIME_GRAINS.includes(f.unit as TimeGrain) ? (f.unit as TimeGrain) : null;
       const n = values[0];
@@ -300,15 +328,15 @@ export function parseBehavior(raw: unknown, index: CatalogIndex | undefined, war
   const b = emptyBehavior();
   if (!isObject(raw)) return b;
   if (raw.onClick === 'filter-page' || raw.onClick === 'drill' || raw.onClick === 'none') b.onClick = raw.onClick;
-  for (const k of Array.isArray(raw.ignore) ? raw.ignore : []) {
+  for (const k of capped(raw.ignore, LIMITS.ignore, warnings, `${where}: ignored fields`)) {
     if (typeof k !== 'string') continue;
     if (index && !index.field(k)) {
-      warnings.push(`${where}: ignores unknown field "${k}", removed.`);
+      warnings.push(`${where}: ignores unknown field "${k.slice(0, 80)}", removed.`);
       continue;
     }
     if (!b.ignore.includes(k)) b.ignore.push(k);
   }
-  for (const t of Array.isArray(raw.thresholds) ? raw.thresholds : []) {
+  for (const t of capped(raw.thresholds, LIMITS.thresholds, warnings, `${where}: thresholds`)) {
     if (
       isObject(t) &&
       typeof t.metric === 'string' &&
@@ -335,6 +363,18 @@ export function toneFor(behavior: Behavior, metric: string, value: number): Tone
     if (hit) return t.tone;
   }
   return null;
+}
+
+/** The first `max` items of an untrusted array, with a warning when it was longer. */
+function capped(v: unknown, max: number, warnings: string[], what: string): unknown[] {
+  if (!Array.isArray(v)) return [];
+  if (v.length > max) warnings.push(`${what}: only the first ${max} of ${v.length} were kept.`);
+  return v.slice(0, max);
+}
+
+export function capWarnings(warnings: string[]): string[] {
+  if (warnings.length <= LIMITS.warnings) return warnings;
+  return [...warnings.slice(0, LIMITS.warnings), `…and ${warnings.length - LIMITS.warnings} more problems.`];
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

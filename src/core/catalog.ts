@@ -1,7 +1,8 @@
 // The catalog is Semaphore's semantic layer: every source, field and metric is defined once,
 // and flags refer to them by key. The AI and the planner only ever see the catalog, never rows.
 
-export type Dialect = 'postgres' | 'oracle' | 'access' | 'ansi';
+/** ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server. */
+export type Dialect = 'postgres' | 'oracle' | 'access' | 'tsql' | 'ansi';
 
 export type SourceKind =
   | 'postgres'
@@ -90,9 +91,12 @@ export function checkCatalog(catalog: Catalog): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
+  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql' };
   for (const s of catalog.sources) {
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);
     seen.add(`source:${s.id}`);
+    const want = expected[s.kind];
+    if (want && s.dialect !== want) problems.push(`Source "${s.id}" is ${s.kind} but uses the ${s.dialect} dialect; use ${want}.`);
   }
   const fieldKeys = new Set<string>();
   for (const f of catalog.fields) {
@@ -113,6 +117,8 @@ export function checkCatalog(catalog: Catalog): string[] {
       if (!m.table || !isIdentifier(m.table)) problems.push(`Metric "${m.key}" counts rows but names no valid table.`);
     } else if (!fieldKeys.has(m.field)) {
       problems.push(`Metric "${m.key}" names unknown field "${m.field}".`);
+    } else if (m.agg !== 'count' && m.agg !== 'count_distinct' && catalog.fields.find((f) => f.key === m.field)?.type !== 'number') {
+      problems.push(`Metric "${m.key}" uses ${m.agg} on a field that is not a number.`);
     }
   }
   return problems;

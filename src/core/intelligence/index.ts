@@ -4,7 +4,7 @@
 // "drafted" until the analyst accepts it.
 
 import type { CatalogIndex } from '../catalog.ts';
-import { effectiveBrief, emptyBehavior, type Flag, type Hoist } from '../hoist.ts';
+import { effectiveBrief, emptyBehavior, type Flag, type Hoist, LIMITS } from '../hoist.ts';
 import { DEFAULT_SIZE, findSlot } from '../layout.ts';
 import {
   type FlagDraft,
@@ -40,7 +40,7 @@ export async function draftFlag(provider: IntelligenceProvider, hoist: Hoist, fl
 }
 
 export async function draftHoist(provider: IntelligenceProvider, brief: string, index: CatalogIndex): Promise<DraftOutcome<HoistDraft>> {
-  const request = { task: 'draft-hoist' as const, brief, catalog: summarizeCatalog(index.catalog) };
+  const request = { task: 'draft-hoist' as const, brief: brief.slice(0, LIMITS.briefChars), catalog: summarizeCatalog(index.catalog) };
   try {
     return { draft: validateHoistDraft(await provider.draftHoist(request), index), providerId: provider.id };
   } catch (e) {

@@ -52,8 +52,15 @@ export interface QueryPlan {
   sort?: { by: string; dir: 'asc' | 'desc' };
   /** Row limit for the source query. */
   limit: number;
-  /** Limit applied after local re-aggregation (a flag's "top 10" when the result is sliced). */
+  /** The row cap this plan was sized for. A result this long may be incomplete. */
+  rowCap: number;
+  /** Limit applied after local re-aggregation and sorting (a flag's "top 10"). */
   displayLimit?: number;
+  /**
+   * Whether selections on this flag's own fields filter the flag itself. False for filter
+   * flags, so a picker keeps offering every value while one is selected.
+   */
+  selfFilter: boolean;
   estimatedRows: number;
   notes: string[];
 }
@@ -211,14 +218,24 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     slices: chosen.map(dimensionKey),
     live,
     limit: rowCap,
+    rowCap,
+    selfFilter: flag.kind !== 'filter',
     estimatedRows: Math.min(estimate, Number.MAX_SAFE_INTEGER),
     notes,
   };
   if (b.sort) plan.sort = b.sort;
   if (b.limit) {
-    // A "top N" can only be cut at the source when nothing is re-aggregated locally.
-    if (chosen.length === 0) plan.limit = Math.min(b.limit, rowCap);
-    else plan.displayLimit = b.limit;
+    // Always cut locally too: Access's TOP n returns ties, so the source may send more than n.
+    plan.displayLimit = b.limit;
+    // A "top N" is cut at the source only when nothing is re-aggregated locally, and not when it
+    // ranks by an average (SQL would rank by the sum the average is rebuilt from).
+    const sortAgg = b.sort ? index.metric(b.sort.by)?.agg : undefined;
+    if (chosen.length === 0 && sortAgg !== 'avg') {
+      plan.limit = Math.min(b.limit, rowCap);
+      // The cut result holds only the top N, so selecting a value outside it needs the source.
+      const selectable = new Set(selectableKeys(hoist).map(dimensionKey));
+      for (const k of own) if (selectable.has(k) && !live.includes(k)) live.push(k);
+    }
   }
   return { ok: true, plan };
 }
