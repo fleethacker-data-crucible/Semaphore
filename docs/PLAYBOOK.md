@@ -74,7 +74,7 @@ The playbook is versioned JSON in the Semaphore folder, next to hoists and the c
 
 ## Open decisions
 
-1. **Unreviewed answers for leadership.** Show them, clearly labelled (recommended), or send every unreviewed question straight to the queue.
+1. **Unreviewed answers for leadership. Decided (2026-10-26): shown**, always labelled "Drafted by Semaphore, not reviewed", and also queued for the analyst to review.
 2. **Data access for leadership.** Confirm leadership has read access to the sources, or name an approved read-only account.
 3. **Who curates.** Proposed: analysts add entries; a named owner can retire them; every entry records who and when.
 
