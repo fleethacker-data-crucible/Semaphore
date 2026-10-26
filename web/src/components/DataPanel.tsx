@@ -79,7 +79,7 @@ function Sources(p: DataPanelProps) {
         <ul className="space-y-1.5">
           {p.catalog.sources.map((s) => {
             const tableCount = new Set(p.catalog.fields.filter((f) => f.source === s.id).map((f) => f.table)).size;
-            const where = p.localSources.has(s.id) ? 'in this page' : p.server?.sources.some((x) => x.id === s.id) ? 'via the server' : 'not connected';
+            const where = p.localSources.has(s.id) ? (s.kind === 'csv' ? 'in this page' : 'sample data in this page') : p.server?.sources.some((x) => x.id === s.id) ? 'via the server' : 'not connected';
             return (
               <li key={s.id} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2">
                 {s.kind === 'csv' ? <FileSpreadsheet size={15} className="text-good" /> : <Database size={15} className="text-accent" />}

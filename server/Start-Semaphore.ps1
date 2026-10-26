@@ -1,0 +1,263 @@
+#requires -Version 5.1
+<#
+.SYNOPSIS
+  Starts Semaphore: the local server on 127.0.0.1 (port block 8774-8776) and the browser.
+  Launch-Semaphore.bat calls this. Windows PowerShell 5.1 only. ASCII only.
+.DESCRIPTION
+  Lifecycle (TechStack "Lifecycle rules"): the server stops 20 s after the last heartbeat of its
+  browser tab, 5 s after a leaving signal with no new heartbeat, from End session in the browser,
+  or with Stop-Semaphore.ps1. One copy runs at a time:
+    - a running copy of the same version that no tab is using: the browser is opened on it (reuse);
+    - a running copy that a tab is using: "Stop it and start fresh?" (Yes/No box; No opens it);
+    - an older copy is stopped and replaced; a newer copy is reused ("stale launcher" in the log).
+  Options (switches or launcher flags):
+    -Replace     / --replace      stop a running copy without asking
+    -Stay        / --stay         keep running after the tab closes (also SEMAPHORE_AUTO_STOP=0,
+                                  as an environment variable or a line in config\semaphore.env)
+    -NoBrowser   / --no-browser   do not open a browser; print the session link to this console
+    -ShowConsole / --console      started in a visible console (questions are asked there)
+    -Port n      / --port n       use exactly this port
+    -CheckOnly   / --check-only   self-check only (scripts parse, settings, sources); no server
+#>
+[CmdletBinding(PositionalBinding = $false)]
+param(
+    [int]$Port = 0,
+    [switch]$NoBrowser,
+    [switch]$ShowConsole,
+    [switch]$Stay,
+    [switch]$Replace,
+    [switch]$CheckOnly,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
+)
+$ErrorActionPreference = 'Stop'
+$here = $PSScriptRoot
+$root = Split-Path -Parent $here
+
+$restArgs = @($Rest)
+for ($i = 0; $i -lt $restArgs.Count; $i++) {
+    $a = [string]$restArgs[$i]
+    switch -Regex ($a) {
+        '^(--?|/)console$' { $ShowConsole = $true; continue }
+        '^(--?|/)stay$' { $Stay = $true; continue }
+        '^(--?|/)replace$' { $Replace = $true; continue }
+        '^(--?|/)no-?browser$' { $NoBrowser = $true; continue }
+        '^(--?|/)check-?only$' { $CheckOnly = $true; continue }
+        '^(--?|/)port$' {
+            if ($i + 1 -lt $restArgs.Count) { $i++; $p = 0; if ([int]::TryParse([string]$restArgs[$i], [ref]$p)) { $Port = $p } }
+            continue
+        }
+        '^(--?|/)port=(\d+)$' { $Port = [int]$Matches[2]; continue }
+        default { if ($a) { Write-Warning "Ignoring unknown option $a" } }
+    }
+}
+
+. (Join-Path $here 'Common.ps1')
+$logFile = Initialize-SemLog -Root $root
+
+function Show-Fatal([string]$Text) {
+    # The console is usually hidden, so a fatal error goes to the log and a message box.
+    Write-SemLog 'FATAL' $Text
+    Write-Host "Semaphore could not start. $Text" -ForegroundColor Red
+    if ((Test-SemIsWindows) -and -not $ShowConsole) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            [void][System.Windows.Forms.MessageBox]::Show("Semaphore could not start.`n`n$Text`n`nLog: $logFile", 'Semaphore', 'OK', 'Error')
+        } catch { }
+    }
+}
+trap { Show-Fatal ("{0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber); exit 1 }
+
+function Show-SemQuestion([string]$Text) {
+    # Yes/No on top of every window ($true / $false), or $null when no dialog can be shown.
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        try {
+            $r = [System.Windows.Forms.MessageBox]::Show($owner, $Text, 'Semaphore', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question, [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+            return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+        } finally { $owner.Dispose() }
+    } catch { return $null }
+}
+
+function Find-SemBrowser([string]$Choice) {
+    # Edge, else Chrome (per settings.browser); $null means the default browser.
+    $pf = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA) | Where-Object { $_ }
+    $edge = @(foreach ($b in $pf) { Join-Path $b 'Microsoft\Edge\Application\msedge.exe' })
+    $chrome = @(foreach ($b in $pf) { Join-Path $b 'Google\Chrome\Application\chrome.exe' })
+    $order = @()
+    switch ($Choice) {
+        'edge' { $order = $edge + $chrome }
+        'chrome' { $order = $chrome + $edge }
+        'default' { $order = @() }
+        default { $order = $edge + $chrome }
+    }
+    foreach ($exe in $order) { if (Test-Path -LiteralPath $exe) { return $exe } }
+    return $null
+}
+
+function Open-SemBrowser([string]$Url, [hashtable]$Settings) {
+    # The session link carries the token: it goes to the browser only, never to the log.
+    if (-not (Test-SemIsWindows)) { Write-Host "Open this link: $Url"; return }
+    $exe = Find-SemBrowser $Settings.browser
+    if ($exe) {
+        $arg = '--new-window "' + $Url + '"'
+        if ($Settings.appWindow) { $arg = '--app="' + $Url + '"' }
+        Start-Process -FilePath $exe -ArgumentList $arg
+        Write-SemLog 'INFO' ('Opened ' + [IO.Path]::GetFileName($exe) + ' on http://127.0.0.1:' + $script:Sem.Port + '/')
+    } else {
+        Start-Process $Url
+        Write-SemLog 'INFO' ('Opened the default browser on http://127.0.0.1:' + $script:Sem.Port + '/')
+    }
+}
+
+function Invoke-SemSelfCheck {
+    # Static checks with no server: scripts parse and are ASCII, settings, version, port block, sources.
+    $problems = New-Object System.Collections.Generic.List[string]
+    foreach ($f in @(Get-ChildItem -LiteralPath $here -File | Where-Object { @('.ps1', '.psm1', '.psd1') -contains $_.Extension.ToLowerInvariant() })) {
+        $tokens = $null; $errs = $null
+        [void][Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errs)
+        foreach ($e in @($errs)) { $problems.Add(('{0}:{1}: {2}' -f $f.Name, $e.Extent.StartLineNumber, $e.Message)) }
+        foreach ($b in [IO.File]::ReadAllBytes($f.FullName)) { if ($b -gt 127) { $problems.Add("$($f.Name): contains non-ASCII bytes"); break } }
+    }
+    $v = Get-SemVersion -Root $root
+    if ($v -eq '0.0.0') { $problems.Add('VERSION is missing or not semver') }
+    try {
+        Import-Module (Join-Path $here 'FleetPort.psm1') -Force
+        $b = Get-FleetPortBlock -Tool 'semaphore' -RegistryPath (Join-Path $here 'FleetPorts.psd1')
+        if ($b.Start -ne 8774 -or $b.End -ne 8776 -or $b.Policy -ne 'reuse') { $problems.Add('FleetPorts.psd1: semaphore must be 8774-8776, reuse') }
+    } catch { $problems.Add('Port block: ' + $_.Exception.Message) }
+    $s = Read-SemSettings -Root $root
+    $homeDir = Resolve-SemHome -Settings $s
+    foreach ($src in @(Get-SemSources -HomeDir $homeDir)) {
+        $bad = Test-SemConnectionString -Connection $src.connection
+        if ($bad) { $problems.Add("Source '$($src.id)': $bad") }
+    }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($root, 'web', 'dist', 'index.html')))) { Write-Host 'Note: web\dist\index.html is missing (the UI is not built); the server would show a "not built" page.' -ForegroundColor Yellow }
+    Write-Host ("Semaphore {0}, home {1}, auto-stop {2}" -f $v, $homeDir, $(if (Test-SemAutoStopEnabled -Root $root) { 'on' } else { 'off' }))
+    if ($problems.Count -gt 0) {
+        foreach ($p in $problems) { Write-Host "  FAIL $p" -ForegroundColor Red; Write-SemLog 'ERROR' "Self-check: $p" }
+        return $false
+    }
+    Write-Host 'Self-check passed.' -ForegroundColor Green
+    Write-SemLog 'INFO' 'Self-check passed.'
+    return $true
+}
+
+# ---------------------------------------------------------------------------
+if ($PSVersionTable.PSVersion.Major -ne 5 -and $env:SEMAPHORE_ALLOW_PWSH -ne '1') {
+    throw "Run Semaphore with Windows PowerShell 5.1 (powershell.exe), not PowerShell $($PSVersionTable.PSVersion)."
+}
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    throw ("PowerShell runs in {0} mode here (an application-control policy). Semaphore needs FullLanguage." -f $ExecutionContext.SessionState.LanguageMode)
+}
+
+# Temp files (Add-Type scratch, .NET temp) stay inside the tool folder.
+$env:TEMP = [IO.Path]::Combine($root, 'temp', 'sys'); $env:TMP = $env:TEMP
+if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirectory($env:TEMP) }
+
+. (Join-Path $here 'Http.ps1')
+. (Join-Path $here 'Routes.ps1')
+. (Join-Path $here 'Query.ps1')
+Import-Module (Join-Path $here 'FleetPort.psm1') -Force
+
+if ($CheckOnly) { if (Invoke-SemSelfCheck) { exit 0 } else { exit 1 } }
+
+$version = Get-SemVersion -Root $root
+$settings = Read-SemSettings -Root $root
+$homeDir = Resolve-SemHome -Settings $settings -Create
+$autoStop = (-not $Stay) -and (Test-SemAutoStopEnabled -Root $root)
+Write-SemLog 'INFO' ("Semaphore {0} launcher (PID {1}, PowerShell {2}); home {3}" -f $version, $PID, $PSVersionTable.PSVersion, $homeDir)
+
+# ---- One instance -----------------------------------------------------------
+function Exit-SemReuse([int]$ReusePort, [string]$Why) {
+    Write-SemLog 'INFO' ("Reusing the running Semaphore on port {0}: {1}" -f $ReusePort, $Why)
+    if ($NoBrowser) { Write-Host "Semaphore is already running on http://127.0.0.1:$ReusePort/ ($Why)." -ForegroundColor Yellow }
+    elseif (-not (Request-SemOpenBrowser -Port $ReusePort)) { Write-SemLog 'WARN' "The running copy on port $ReusePort did not accept the open request" }
+    exit 0
+}
+
+$running = @(Get-SemInstances -Root $root)
+if ($running.Count -gt 0) {
+    $where = ($running | ForEach-Object { Format-SemInstance $_ }) -join ', '
+    if ($Replace) {
+        Write-SemLog 'INFO' "Replacing running copy ($where): --replace"
+        foreach ($r in $running) { if (Stop-SemInstance -Instance $r) { Write-Host ('Stopped ' + (Format-SemInstance $r) + '.') -ForegroundColor Yellow } }
+    } else {
+        $live = $null
+        foreach ($r in $running) { if ($r.Port -gt 0) { $id = Get-SemInstanceId -Port $r.Port; if ($id -and $id.Pid -eq $r.Pid) { $live = $id; break } } }
+        if ($null -eq $live) {
+            # No copy answers: one is still starting (no runtime file yet), or it hangs.
+            $starting = @($running | Where-Object { -not $_.File } | Where-Object {
+                $p = Get-Process -Id $_.Pid -ErrorAction SilentlyContinue
+                $p -and $p.StartTime -and ((Get-Date) - $p.StartTime).TotalSeconds -lt 90 })
+            if ($starting.Count -gt 0) { Write-SemLog 'INFO' "Another launch is still starting ($where); leaving it"; exit 0 }
+            Write-SemLog 'WARN' "A running copy does not answer ($where): stopping it"
+            foreach ($r in $running) { [void](Stop-SemInstance -Instance $r) }
+        } else {
+            $cmp = Compare-SemVersion $live.Version $version
+            if ($cmp -gt 0) {
+                Write-SemLog 'WARN' ("Stale launcher: Semaphore {0} was started, but newer {1} is already running on port {2}" -f $version, $live.Version, $live.Port)
+                Exit-SemReuse $live.Port 'newer version running'
+            }
+            if ($null -eq $cmp -or $cmp -lt 0) {
+                Write-SemLog 'INFO' ("Replacing older Semaphore {0} on port {1}" -f $live.Version, $live.Port)
+                foreach ($r in $running) { [void](Stop-SemInstance -Instance $r) }
+            } elseif ($live.Tabs -le 0) {
+                Exit-SemReuse $live.Port 'same version, no tab open'
+            } else {
+                $question = "Semaphore is already open in $($live.Tabs) browser tab$(if ($live.Tabs -ne 1) { 's' }) (http://127.0.0.1:$($live.Port)/).`n`nStop it and start fresh? Unsaved changes in that tab are lost.`n`nNo switches to the running copy."
+                $yes = $null
+                if ($ShowConsole -or -not (Test-SemIsWindows)) {
+                    Write-Host $question -ForegroundColor Yellow
+                    $answer = ''
+                    try { $answer = Read-Host 'Stop it and start fresh? [y/N]' } catch { $answer = '' }
+                    $yes = ($answer -match '^[Yy]')
+                } else {
+                    $yes = Show-SemQuestion $question
+                }
+                if ($yes -ne $true) { Exit-SemReuse $live.Port 'kept the running copy' }
+                Write-SemLog 'INFO' "Running copy in use ($where): replaced on request"
+                foreach ($r in $running) { [void](Stop-SemInstance -Instance $r) }
+            }
+        }
+    }
+}
+
+# ---- Port block 8774-8776 (PORTS.md), FleetPort reuse policy ---------------------
+$resolveArgs = @{ Tool = 'semaphore'; Version = $version; RegistryPath = (Join-Path $here 'FleetPorts.psd1'); NoListener = $true }
+if ($Port -gt 0) { $resolveArgs.Start = $Port; $resolveArgs.Size = 1; $resolveArgs.Policy = 'reuse' }
+elseif ($settings.port -gt 0) { $resolveArgs.Start = $settings.port }
+$res = Resolve-FleetPort @resolveArgs
+if ($res.Note) { Write-SemLog 'WARN' $res.Note }
+if ($res.Action -eq 'Reuse') { Exit-SemReuse $res.Port 'found on its port' }
+$listener = New-SemListener -Port $res.Port
+
+# ---- Serve ----------------------------------------------------------------------
+$script:Sem.Root = $root
+$script:Sem.WebRoot = [IO.Path]::Combine($root, 'web', 'dist')
+$script:Sem.Home = $homeDir
+$script:Sem.Version = $version
+$script:Sem.ScriptPath = $PSCommandPath
+$script:Sem.Stay = [bool]$Stay
+$script:Sem.Token = New-SemToken
+$script:Sem.Port = $res.Port
+$baseUrl = 'http://127.0.0.1:{0}/' -f $res.Port
+$sessionUrl = $baseUrl + '?session=' + $script:Sem.Token
+
+if (-not (Test-Path -LiteralPath (Join-Path $script:Sem.WebRoot 'index.html'))) { Write-SemLog 'WARN' 'web\dist\index.html is missing: serving the "UI not built" page' }
+Write-SemLog 'INFO' ("Serving {0} (PID {1}, auto-stop {2}, stay {3})" -f $baseUrl, $PID, $autoStop, [bool]$Stay)
+
+$onReady = {
+    $how = 'It stops when you close its browser tab or choose End session.'
+    if (-not $autoStop) { $how = 'It keeps running after the tab closes: use End session or Stop-Semaphore.ps1.' }
+    Write-Host ("Semaphore {0} is running at {1}. {2}" -f $version, $baseUrl, $how) -ForegroundColor Green
+    if ($NoBrowser) { Write-Host "Session link: $sessionUrl" }
+    else {
+        try { Open-SemBrowser -Url $sessionUrl -Settings $settings }
+        catch { Write-SemLog 'ERROR' ('Could not open the browser: ' + $_.Exception.Message); Write-Host "Open this link: $sessionUrl" -ForegroundColor Yellow }
+    }
+}
+$onOpen = { Open-SemBrowser -Url $sessionUrl -Settings $settings }
+Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
+exit 0
