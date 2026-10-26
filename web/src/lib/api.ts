@@ -23,6 +23,12 @@ export interface ServerInfo {
   autoStop: boolean;
   stay: boolean;
   sources: ServerSource[];
+  /** The Windows user running the server: who accepted an entry or asked a question. */
+  user?: string;
+  /** The named playbook reviewer (settings playbookReviewer). */
+  reviewer?: string;
+  /** The view this computer opens by default (settings view, or --ask). */
+  view?: string;
 }
 
 export interface StoredItem {

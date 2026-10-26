@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Database, Download, FilePlus2, FolderOpen, Moon, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
@@ -17,12 +17,17 @@ import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist, LocalRulesProvi
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog } from '../../src/core/profile.ts';
+import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
+import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
-import { clearResultCache, type DataContext } from './lib/data.ts';
+import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
+import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
+import { AskView } from './components/AskView.tsx';
+import { PlaybookPanel } from './components/PlaybookPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
@@ -32,7 +37,17 @@ import { Palette } from './components/Palette.tsx';
 
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
-const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', auto: 'semaphore.autoKind' };
+const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', auto: 'semaphore.autoKind', view: 'semaphore.view' };
+
+function initialView(): 'builder' | 'ask' | null {
+  try {
+    const v = new URL(window.location.href).searchParams.get('view');
+    if (v === 'ask' || v === 'builder') return v;
+  } catch {
+    /* no URL to read */
+  }
+  return readLocal<'builder' | 'ask'>(K.view);
+}
 
 captureSessionToken();
 
@@ -63,6 +78,9 @@ export function App() {
   const history = useHoistHistory(useMemo(() => initialHoist(catalog), []));
   const { hoist, change } = history;
   const [server, setServer] = useState<ServerInfo | null>(null);
+  const [serverChecked, setServerChecked] = useState(false);
+  const [view, setViewState] = useState<'builder' | 'ask' | null>(initialView);
+  const [playbookOpen, setPlaybookOpen] = useState(false);
   const [serverLost, setServerLost] = useState(false);
   const [files, setFiles] = useState<TableRows>({});
   const [dataVersion, setDataVersion] = useState(1);
@@ -95,6 +113,8 @@ export function App() {
     let stop: (() => void) | null = null;
     probeServer().then((info) => {
       setServer(info);
+      setServerChecked(true);
+      if (info?.view === 'ask' || info?.view === 'builder') setViewState((v) => v ?? (info.view as 'ask' | 'builder'));
       if (info) stop = startHeartbeat(() => setServerLost(true));
     });
     return () => stop?.();
@@ -403,9 +423,83 @@ export function App() {
     }
   };
 
+  // ---- The playbook: learn from accepted flags, keep it healthy, keep snapshots fresh --------
+  const playbook = usePlaybook(server, serverChecked);
+  const user = server?.user || 'analyst';
+  const currentView: 'builder' | 'ask' = view ?? 'builder';
+  const setView = useCallback((v: 'builder' | 'ask') => {
+    setViewState(v);
+    writeLocal(K.view, v);
+  }, []);
+
+  useEffect(() => {
+    if (!playbook.loaded || currentView !== 'builder') return;
+    const timer = window.setTimeout(() => {
+      const learnt = learnFromHoist(playbook.entries, hoist, index, user);
+      if (!learnt.length) return;
+      playbook.saveEntries(learnt).then(
+        () => {
+          const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
+          if (fresh.length) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`);
+          const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
+          for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
+        },
+        (e: Error) => notify(`Could not save to the playbook: ${e.message}`),
+      );
+    }, 2000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hoist, playbook.loaded, currentView]);
+
+  const checkedHealth = useRef(false);
+  useEffect(() => {
+    if (!playbook.loaded || checkedHealth.current || currentView !== 'builder') return;
+    checkedHealth.current = true;
+    const changed = checkHealth(playbook.entries, index);
+    if (changed.length) void playbook.saveEntries(changed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, currentView]);
+
+  // Whoever can reach a source refreshes its stale snapshots, one at a time, in the background.
+  const refreshing = useRef(false);
+  useEffect(() => {
+    if (!playbook.loaded || refreshing.current) return;
+    const due = playbook.entries.filter((e) => e.status !== 'retired' && canReach(e.source, ctx) && isStale(playbook.snapshots.find((s) => s.entryId === e.id), e));
+    if (!due.length) return;
+    refreshing.current = true;
+    (async () => {
+      for (const e of due) {
+        try {
+          const snap = await takeSnapshot(e, index, (plan) => runAnywhere(plan, ctx));
+          if (snap) await playbook.saveSnapshot(snap);
+        } catch {
+          /* the source could not be read now; the old snapshot stays, with its date */
+        }
+      }
+    })().finally(() => {
+      refreshing.current = false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, playbook.entries, ctx]);
+
+  const answerQuestionItem = useCallback(
+    (q: QuestionItem) => {
+      setPlaybookOpen(false);
+      const id = newId();
+      change((h) => {
+        const layout = findSlot(h.flags, 4, 4, h.grid.cols);
+        return { ...h, flags: [...h.flags, { id, kind: 'bar', title: '', brief: q.title, layout, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [`Asked by ${q.askedBy}. Draft it, check it, and accept it to answer them.`] }] };
+      });
+      setAutoKinds((a) => ({ ...a, [id]: true }));
+      setSelectedId(id);
+    },
+    [change],
+  );
+
   // Keyboard: undo/redo, delete, arrows to nudge, Escape to deselect, / to ask.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (currentView !== 'builder') return;
       const t = e.target as HTMLElement;
       const typing = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) {
@@ -439,7 +533,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [history, selectedId, selected, removeFlag, onLayout, hoist]);
+  }, [history, selectedId, selected, removeFlag, onLayout, hoist, currentView]);
 
   const selectionChips = Object.entries(selections).flatMap(([key, values]) => {
     const [field, grain] = key.split('@');
@@ -448,6 +542,23 @@ export function App() {
   });
   const examples = useMemo(() => exampleBriefs(catalog), [catalog]);
   const themeKey = theme;
+  const waiting = playbook.questions.filter((q) => q.status === 'open').length + playbook.entries.filter((e) => e.status === 'needs-review').length;
+
+  if (currentView === 'ask') {
+    return (
+      <>
+        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+        {serverLost && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
+            <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
+              <h2 className="mb-1 text-base font-semibold">The session has ended</h2>
+              <p className="text-sm text-ink-2">Semaphore has stopped. Start it again with Ask-Semaphore.bat.</p>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -490,6 +601,13 @@ export function App() {
           <IconButton label="Download this hoist" onClick={exportHoist}>
             <Download size={16} />
           </IconButton>
+          <button type="button" onClick={() => setPlaybookOpen(true)} className="relative ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="What leadership can ask for, their questions, and what needs review">
+            <BookOpen size={14} className="text-brass" /> Playbook
+            {waiting > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-bad px-1.5 text-[10px] font-bold text-panel">{waiting}</span>}
+          </button>
+          <button type="button" onClick={() => setView('ask')} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="The leadership view: ask a question, get an answer">
+            <MessagesSquare size={14} className="text-brass" /> Ask view
+          </button>
           <button type="button" onClick={() => setDataOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent">
             <Database size={14} className="text-brass" /> Data
           </button>
@@ -625,6 +743,8 @@ export function App() {
           />
         )}
       </div>
+
+      {playbookOpen && <PlaybookPanel playbook={playbook} index={index} user={user} reviewer={server?.reviewer ?? ''} onClose={() => setPlaybookOpen(false)} onAnswer={answerQuestionItem} />}
 
       {dataOpen && (
         <DataPanel

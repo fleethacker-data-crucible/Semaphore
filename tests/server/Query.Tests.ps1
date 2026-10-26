@@ -117,6 +117,20 @@ Describe 'Document store' {
         $list[1].updated | Should -Match '^\d{4}-\d{2}-\d{2}T'
     }
 
+    It 'returns whole documents for ?full=1, skipping broken ones' {
+        $text = Get-SemDocFullList -Dir $script:Dir
+        $docs = @($text | ConvertFrom-Json)
+        $docs.Count | Should -Be 2
+        $docs[0].title | Should -Be 'Two'
+        @($docs | Where-Object { $_.label -eq 'Catalog B' }).Count | Should -Be 1
+    }
+
+    It 'keeps playbook, snapshots and questions in their own folders' {
+        foreach ($k in @('playbook', 'snapshots', 'questions')) {
+            Get-SemDocDir -Kind $k -HomeDir $script:Dir | Should -Be (Join-Path $script:Dir $k)
+        }
+    }
+
     It 'moves a deleted document to .trash with a unique timestamp suffix' {
         $now = [datetime]'2026-10-26T09:08:07'
         Remove-SemDoc -Dir $script:Dir -Id 'b' -Now $now | Should -BeTrue

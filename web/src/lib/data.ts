@@ -129,3 +129,14 @@ export function distinctValues(result: FlagResult): Array<string | number | bool
   if (!key) return [];
   return result.display.rows.map((r) => r.dims[key] ?? null);
 }
+
+/** Whether this page can read a source: held in the page, or set up on this computer's server. */
+export function canReach(source: string, ctx: DataContext): boolean {
+  return ctx.localSources.has(source) || !!ctx.server?.sources.some((s) => s.id === source);
+}
+
+/** Run a plan wherever its source is, for snapshots. */
+export async function runAnywhere(plan: QueryPlan, ctx: DataContext): Promise<{ rows: Array<Record<string, string | number | boolean | null>>; truncated: boolean }> {
+  const r = await run(plan, ctx);
+  return { rows: r.result.rows, truncated: r.result.truncated };
+}

@@ -10,7 +10,7 @@ Semaphore is built for **analysts**, who build and review hoists, and **leadersh
 - All "intelligence" goes through one validated path (`validateFlagDraft`, `parseBinding`), whether it comes from local rules, an AI provider or, next, the playbook. Nothing reaches a flag that is not checked against the catalog.
 - Reading a brief (`annotateBrief`) gives a deterministic signature of a question: its measures, fields, window, ranking and behaviour. The playbook will match leadership's questions to analysts' accepted flags with that signature, so every answer can say which reviewed flag it reused.
 
-The playbook, the leadership view and the analyst stand-in are planned for v0.3 and are not built; [PLAYBOOK.md](PLAYBOOK.md) has the design and its open decisions.
+The playbook, snapshots and the leadership view are built (0.3); [PLAYBOOK.md](PLAYBOOK.md) has how they work, the decisions behind them, and what is still to do.
 
 ## Layers
 
@@ -41,11 +41,13 @@ Browser
     intelligence/         provider contract, local rules, brief annotation, remote providers
   src/sample              generated rows for the fleet-maintenance example
 
-Planned (v0.3, PLAYBOOK.md)
-  src/core/playbook.ts    learn on accept, entries with provenance, question → entry matching
-  web/src/ask             leadership view: question box, answer cards with trust labels
-  /api/playbook           playbook entries and the question queue, JSON in the shared Semaphore folder
-  src/core/snapshot.ts    refresh accepted flags into snapshots; answer by re-adding their partials
+  src/core/playbook.ts    learn on accept, provenance, needs review, question → entry, trust labels
+  src/core/snapshot.ts    accepted flags → aggregated, pre-split snapshots; answers by re-adding them
+  web/src/components/AskView.tsx        leadership view: question box, answers, headline numbers, what changed
+  web/src/components/PlaybookPanel.tsx  analysts: leadership's questions, answers in use, needs review, coverage
+
+Server (same document store as hoists)
+  /api/playbook, /api/snapshots, /api/questions   one JSON file per document in the shared Semaphore folder
 ```
 
 The UI never sends rows anywhere. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
@@ -91,7 +93,7 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 
 ## Storage
 
-- **Planned: the playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a shared Semaphore folder, never through the network: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
+- **The playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a shared Semaphore folder, never through the network: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
 
 - **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
 - **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.

@@ -1,6 +1,6 @@
 # The playbook: learning from analysts, answering for leadership
 
-**Status: design, not built yet.** Nothing in this document exists in 0.2. It is the plan for v0.3; see [ROADMAP.md](ROADMAP.md). Open decisions are listed at the end.
+**Status: built in 0.3 (engineering preview)**, except the IT-approved refresher and the AI-gateway mode; see [Build order](#build-order). Code: `src/core/playbook.ts`, `src/core/snapshot.ts`, `web/src/components/AskView.tsx`, `web/src/components/PlaybookPanel.tsx`.
 
 ## The idea
 
@@ -54,11 +54,15 @@ Each answer offers follow-up chips ("by region", "vs last year", "top 10"), the 
 
 ## How matching works
 
-No model is needed. A question is read with the same annotation that highlights briefs today (`annotateBrief`): which measures, fields, time window, ranking, comparison and behaviour it names, plus the team's learnt synonyms. That signature is compared with every playbook entry's signature:
+No model is needed (`answerQuestion` in `src/core/playbook.ts`). In order:
 
-- same measures and fields, same window: a reviewed answer, rerun as is;
-- same measures and fields, different window or ranking: the reviewed binding with the window or ranking changed, labelled as adjusted;
-- anything else: a local-rules draft, labelled not reviewed.
+1. **Same words.** A question asked in the words of an accepted flag's brief, or of a question an analyst has since answered with it, is that entry: **reviewed**.
+2. **Same meaning.** Otherwise local rules read the question into a binding (with the team's learnt synonyms). Same measures, fields, filters and comparison as an entry, and the same window or none named: **reviewed**, rerun with the entry's own window and colour rules.
+3. **Re-addable.** The measures and fields asked for are among an entry's own, or among its snapshot's pre-split fields, under the same window: **worked out from a reviewed flag**. A value picked out of a field ("for icebreakers") becomes a selection. Distinct counts are never re-added.
+4. **Drafted.** Anything else that fits the catalog is a local-rules draft, labelled **not reviewed**, using the team's usual window for that data, and queued for the analysts.
+5. **None.** Nothing fits: **can't answer yet**, queued with what was and was not understood.
+
+Questions with the same words are compared case- and punctuation-blind.
 
 Because matching is deterministic, every answer can say which entry it used and why.
 
@@ -99,11 +103,18 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 2. **Data access for leadership: snapshots.** Leaders never connect to a database. Snapshots refresh whenever an analyst runs Semaphore; an IT-approved refresher on an always-on machine with a read-only service account is the next step for the vacation case.
 3. **Looking after the playbook:** automatic adding, any analyst retires with a reason, automatic "needs review" flags, and one named reviewer (the lead analyst by default).
 
+## Using it
+
+- **Leadership:** double-click `Ask-Semaphore.bat` (or set `"view": "ask"` in `config\settings.local.json` on that computer). The page opens on the question box, the reviewed headline numbers, and what changed. Every answer shows its trust label, its data date and "Why this answer?".
+- **Analysts:** nothing new to do. Accepting a flag adds it to the playbook (untick "Leadership can ask for this once accepted" to keep one out). The **Playbook** button shows leadership's questions ("Build the answer" turns one into a flag), the answers in use, those that need review and why, and coverage.
+- **Sharing:** point `SEMAPHORE_HOME` (or `"home"` in settings) at the same network folder on every computer. Without a server, the playbook stays in that browser only.
+- **Reviewer:** set `"playbookReviewer"` in settings; the Playbook panel names them.
+
 ## Build order
 
-1. Playbook store, the "learn on accept" rules, needs-review checks, and question-to-entry matching, all in `src/core` with tests.
-2. Snapshots: refresh accepted flags into `<home>\snapshots\`, answer questions by re-adding snapshot partials, freshness stamps.
-3. The leadership view with trust labels, freshness and follow-up chips.
-4. Briefing, question queue, coverage and the reviewer's needs-review list.
-5. The `--refresh` mode for an IT-approved refresher.
+1. Done: playbook store, learn on accept, needs-review checks, question-to-entry matching (`src/core/playbook.ts`, tested).
+2. Done: snapshots, refreshed in the background by whoever can reach the source; answers re-add their partials (`src/core/snapshot.ts`, tested).
+3. Done: the leadership view with trust labels, data dates, follow-up chips, headline numbers and what changed.
+4. Done: question queue with "Build the answer", answers in use, needs review with reasons, retire and restore, coverage.
+5. To do: the `--refresh` mode for an IT-approved refresher.
 6. Optional AI-gateway mode, which needs the server-side relay (the page's content security policy only allows the loopback server).

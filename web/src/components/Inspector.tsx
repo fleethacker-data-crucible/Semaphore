@@ -117,6 +117,10 @@ export function Inspector(p: InspectorProps) {
               </label>
             </div>
             <BriefLegend />
+            <label className="flex items-center gap-1.5 text-xs text-ink-2" title="Accepted flags go into the playbook, so leadership can ask for them in the Ask view">
+              <input type="checkbox" checked={flag.learn !== false} onChange={(e) => p.onChange({ learn: e.target.checked ? undefined : false })} />
+              Leadership can ask for this once accepted
+            </label>
           </section>
         )}
 
