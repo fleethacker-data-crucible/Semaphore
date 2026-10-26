@@ -14,6 +14,8 @@
 #   The same four routes serve /api/playbook (accepted answers), /api/snapshots (their saved
 #   results) and /api/questions (leadership's question queue). GET /api/<kind>?full=1 returns
 #   the documents themselves instead of { id, title, updated } (playbook and questions only).
+#   POST   /api/refresh-report { refreshed, skipped, failed: [{ id, title, error }] }
+#          logged and kept as <home>\snapshots\.last-refresh.json; GET returns it (404 before the first)
 #   POST   /api/query    { source, sql, params, rowCap, timeoutSec }   (Query.ps1, worker pool)
 #   POST   /api/profile  { source, table? }                           (Query.ps1, worker pool)
 # =============================================================================
@@ -223,6 +225,29 @@ function Invoke-SemRoute {
         if ($p -ne "/api/$kind") { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
         Invoke-SemDocRoute -Req $Req -Kind $kind -Id $id
         return
+    }
+    if ($p -eq '/api/refresh-report') {
+        $file = Join-Path (Get-SemDocDir -Kind 'snapshots') '.last-refresh.json'
+        if ($m -eq 'GET') {
+            if (-not [IO.File]::Exists($file)) { Send-SemError 404 'not-found' 'No refresh has run yet.'; return }
+            Send-SemJsonText 200 ([IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)); return
+        }
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
+        $n = 0; $refreshed = 0; $skipped = 0
+        if ([int]::TryParse([string](Get-SemJsonProp $Req.Json 'refreshed'), [ref]$n)) { $refreshed = $n }
+        if ([int]::TryParse([string](Get-SemJsonProp $Req.Json 'skipped'), [ref]$n)) { $skipped = $n }
+        $failed = @()
+        foreach ($f in @(Get-SemJsonProp $Req.Json 'failed') | Select-Object -First 200) {
+            if ($f -isnot [Management.Automation.PSCustomObject]) { continue }
+            $failed += [ordered]@{ id = ([string](Get-SemJsonProp $f 'id')).Substring(0, [Math]::Min(64, ([string](Get-SemJsonProp $f 'id')).Length)); title = [string](Get-SemJsonProp $f 'title'); error = [string](Get-SemJsonProp $f 'error') }
+        }
+        $report = [ordered]@{ version = 1; at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); by = [string]$env:USERNAME; computer = [string]$env:COMPUTERNAME; view = [string]$script:Sem.View; refreshed = $refreshed; skipped = $skipped; failed = $failed }
+        $script:Sem.SyncBusy = $true
+        try { Save-SemDoc -Dir (Get-SemDocDir -Kind 'snapshots') -Id '.last-refresh' -Bytes ([Text.Encoding]::UTF8.GetBytes((ConvertTo-SemJson $report))) } finally { $script:Sem.SyncBusy = $false }
+        Write-SemLog 'INFO' ("Snapshots refreshed: {0} done, {1} skipped (source not reachable here), {2} failed" -f $refreshed, $skipped, $failed.Count)
+        foreach ($f in $failed) { Write-SemLog 'WARN' ("Snapshot failed: {0}: {1}" -f $f.id, $f.error) }
+        Send-SemJson 200 ([ordered]@{ ok = $true }); return
     }
     if ($p -eq '/api/query' -or $p -eq '/api/profile') {
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }

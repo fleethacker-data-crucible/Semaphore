@@ -8,5 +8,6 @@
     "firstHeartbeatSec": 120,
     "queryWorkers": 4,
     "view": "builder",
-    "playbookReviewer": ""
+    "playbookReviewer": "",
+    "refreshTimeoutMin": 30
 }
