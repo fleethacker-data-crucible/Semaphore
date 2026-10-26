@@ -24,7 +24,7 @@ $script:SemMaxHeader = 32768
 
 if ($null -eq $script:Sem) {
     $script:Sem = @{
-        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''
+        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''; View = 'builder'; Reviewer = ''
         Stream = $null; Responded = $false; Deferred = $false
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
