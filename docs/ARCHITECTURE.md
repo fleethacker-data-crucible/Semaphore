@@ -45,6 +45,7 @@ Planned (v0.3, PLAYBOOK.md)
   src/core/playbook.ts    learn on accept, entries with provenance, question → entry matching
   web/src/ask             leadership view: question box, answer cards with trust labels
   /api/playbook           playbook entries and the question queue, JSON in the shared Semaphore folder
+  src/core/snapshot.ts    refresh accepted flags into snapshots; answer by re-adding their partials
 ```
 
 The UI never sends rows anywhere. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
@@ -90,7 +91,7 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 
 ## Storage
 
-- **Planned: the playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a shared Semaphore folder, never through the network: each person runs their own loopback copy and queries with their own database access.
+- **Planned: the playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a shared Semaphore folder, never through the network: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
 
 - **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
 - **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
