@@ -66,21 +66,44 @@ When an approved AI gateway is configured (see [INTELLIGENCE_PROVIDERS.md](INTEL
 
 ## Where it lives
 
-The playbook is versioned JSON in the Semaphore folder, next to hoists and the catalog (`<home>\playbook\`). Semaphore's server listens on loopback only and never accepts connections from other machines, so sharing works through the folder, not the network:
+The playbook is versioned JSON in the Semaphore folder, next to hoists and the catalog (`<home>\playbook\`). Semaphore's server listens on loopback only and never accepts connections from other machines, so sharing works through the folder, not the network: analysts and leadership point `SEMAPHORE_HOME` at the same network folder, and each person runs their own copy of Semaphore on their own machine.
 
-- analysts and leadership point `SEMAPHORE_HOME` at the same network folder;
-- each person runs their own copy of Semaphore on their own machine;
-- queries run with **that person's own** database access (their DSN or Windows login), so database permissions apply exactly as they do today. The playbook stores questions and bindings, never data.
+## Leadership never touches a database: snapshots
 
-## Open decisions
+Leaders should not need a DSN, a login or an IT ticket. They read **snapshots** instead of querying sources:
 
-1. **Unreviewed answers for leadership. Decided (2026-10-26): shown**, always labelled "Drafted by Semaphore, not reviewed", and also queued for the analyst to review.
-2. **Data access for leadership.** Confirm leadership has read access to the sources, or name an approved read-only account.
-3. **Who curates.** Proposed: analysts add entries; a named owner can retire them; every entry records who and when.
+- When Semaphore reruns the playbook's accepted flags, it saves each result to `<home>\snapshots\`: the small, already-aggregated rows the planner asks for (typically a few hundred), each stamped with its source, binding and "data as of" time. Never raw rows.
+- Each snapshot is pre-split by the fields leaders filter on, the same way flags are today (`planner.ts`). Because the partials re-add exactly (`crossfilter.ts`), one snapshot answers more than its own question: "labor cost by region and ship class" also answers "labor cost by region", "labor cost for icebreakers" and the headline total. That is how a leader's new question gets a real answer without a new query.
+- Every answer shows its freshness ("data as of 06:00 today"). A question no snapshot can answer is labelled and goes to the analyst's queue.
+- Distinct counts cannot be re-added; a question that needs one is answered only from a snapshot built for exactly that question.
+
+**Keeping snapshots fresh.** Snapshots are refreshed by whoever has database access:
+
+1. **Now (no IT work):** whenever any analyst runs Semaphore, it refreshes stale snapshots in the background. While every analyst is out, answers keep working and say how old they are.
+2. **Next (one-time IT setup):** a refresher on an always-on machine, running `Launch-Semaphore.bat --refresh` each morning under one read-only service account, keeps snapshots current while analysts are away. The suite conventions do not allow scheduled tasks, so this needs IT's approval as a recorded exception; until then, option 1 stands on its own.
+
+**Who can see snapshots.** Anyone who can read the snapshot folder can see the aggregated numbers in it. The folder's Windows permissions are therefore the access control: limit it to the people allowed to see those figures. Snapshots can additionally be encrypted with a key held in the Lazarette vault if the data calls for it.
+
+## Looking after the playbook
+
+The playbook is the list of answers leadership trusts, so someone has to notice when one goes wrong (an analyst accepted a mistake, "backlog" was redefined, a measure was renamed). No admin role is needed:
+
+- **Adding is automatic:** accepting a flag adds it, with who and when.
+- **Any analyst can retire an entry,** with a one-line reason; it stays in the history.
+- **Semaphore flags problems itself:** an entry is marked **needs review** when it stops running, when a measure or field it uses changes in the catalog, or when nobody has used it for six months. Needs-review entries are still answered, labelled as such.
+- **One named reviewer** (`playbookReviewer` in settings, by default the lead analyst) sees the needs-review list first, so it cannot fall between the cracks.
+
+## Decisions (2026-10-26)
+
+1. **Unreviewed answers for leadership: shown**, always labelled "Drafted by Semaphore, not reviewed", and also queued for the analyst to review.
+2. **Data access for leadership: snapshots.** Leaders never connect to a database. Snapshots refresh whenever an analyst runs Semaphore; an IT-approved refresher on an always-on machine with a read-only service account is the next step for the vacation case.
+3. **Looking after the playbook:** automatic adding, any analyst retires with a reason, automatic "needs review" flags, and one named reviewer (the lead analyst by default).
 
 ## Build order
 
-1. Playbook store, the "learn on accept" rules, and question-to-entry matching, all in `src/core` with tests.
-2. The leadership view with trust labels and follow-up chips.
-3. Briefing, question queue and coverage.
-4. Optional AI-gateway mode, which needs the server-side relay (the page's content security policy only allows the loopback server).
+1. Playbook store, the "learn on accept" rules, needs-review checks, and question-to-entry matching, all in `src/core` with tests.
+2. Snapshots: refresh accepted flags into `<home>\snapshots\`, answer questions by re-adding snapshot partials, freshness stamps.
+3. The leadership view with trust labels, freshness and follow-up chips.
+4. Briefing, question queue, coverage and the reviewer's needs-review list.
+5. The `--refresh` mode for an IT-approved refresher.
+6. Optional AI-gateway mode, which needs the server-side relay (the page's content security policy only allows the loopback server).

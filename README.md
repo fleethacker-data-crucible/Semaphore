@@ -28,7 +28,7 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
 
 Semaphore serves two people. **Analysts** build: they describe flags, check Semaphore's drafts and accept them. **Leadership** asks: they want an answer they can trust, not a dashboard tool.
 
-Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The planned **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people, and runs every query with the asker's own database access.
+Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The planned **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people. Leaders never connect to a database: they are answered from small, already-summarised snapshots of the analysts' accepted flags, each showing how fresh it is.
 
 This is the design for v0.3, not built yet: see [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 

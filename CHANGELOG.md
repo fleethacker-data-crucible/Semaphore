@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Docs: the vision for v0.3, learning from analysts' reviewed work for a leadership view and an analyst stand-in ([docs/PLAYBOOK.md](docs/PLAYBOOK.md)), reflected in the README, architecture, intelligence and roadmap docs. Design only; nothing built yet.
+- Decisions recorded: unreviewed answers are shown to leadership, labelled; leaders read snapshots and never connect to a database; the playbook is kept by automatic adding, analyst retirement, automatic needs-review flags and one named reviewer.
 
 ## 0.2.0 (2026-10-26)
 
