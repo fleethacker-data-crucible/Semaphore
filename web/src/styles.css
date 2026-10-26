@@ -1,0 +1,176 @@
+@import 'tailwindcss';
+
+/* Semaphore palette, from the brand mark: deep sea navy, brass, signal-flag cream and amber.
+   Colours are tokens; the light and dark themes only change the tokens. */
+:root {
+  --bg: #f4f1ea;
+  --panel: #ffffff;
+  --panel-2: #f9f7f2;
+  --line: #e2dccf;
+  --ink: #0d2233;
+  --ink-2: #4a5866;
+  --ink-3: #7d8894;
+  --brass: #a8834a;
+  --brass-soft: #f3ead9;
+  --accent: #1f6f8b;
+  --accent-soft: #e2f0f5;
+  --good: #2e7d4f;
+  --warn: #b7791f;
+  --bad: #c0392b;
+  --good-soft: #e3f3e9;
+  --warn-soft: #fbf0dc;
+  --bad-soft: #fbe5e2;
+  --focus: #f0b429;
+  --hl-metric: #d9ecf3;
+  --hl-field: #f3ead9;
+  --hl-time: #e6e3f6;
+  --hl-behaviour: #e3f3e9;
+  --hl-unknown: #fbe5e2;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #071420;
+  --panel: #0d2233;
+  --panel-2: #10293d;
+  --line: #1f3a50;
+  --ink: #f1e4c8;
+  --ink-2: #c1b8a4;
+  --ink-3: #8b8f8f;
+  --brass: #c9a66b;
+  --brass-soft: #2a3324;
+  --accent: #5fb3d0;
+  --accent-soft: #123447;
+  --good: #5cc28a;
+  --warn: #f0b429;
+  --bad: #f07163;
+  --good-soft: #143425;
+  --warn-soft: #3a2f12;
+  --bad-soft: #3b1b18;
+  --focus: #f0b429;
+  --hl-metric: #15435a;
+  --hl-field: #3d3420;
+  --hl-time: #2d2a4a;
+  --hl-behaviour: #1b3d2a;
+  --hl-unknown: #4a1f1b;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-brass: var(--brass);
+  --color-brass-soft: var(--brass-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-good-soft: var(--good-soft);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad-soft: var(--bad-soft);
+  --font-sans: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The brief editor draws highlights in a layer behind a transparent textarea, so the text the
+   analyst types is the text they see, with what Semaphore understood marked underneath. */
+.brief-wrap {
+  position: relative;
+}
+.brief-wrap textarea,
+.brief-wrap .brief-layer {
+  font: inherit;
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin: 0;
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  letter-spacing: normal;
+  box-sizing: border-box;
+  width: 100%;
+}
+.brief-wrap .brief-layer {
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  pointer-events: none;
+  overflow: hidden;
+}
+.brief-wrap textarea {
+  position: relative;
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--ink);
+  resize: none;
+  border-color: var(--line);
+  border-radius: 8px;
+  display: block;
+}
+.brief-wrap textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.hl {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px transparent;
+}
+.hl-metric { background: var(--hl-metric); }
+.hl-field { background: var(--hl-field); }
+.hl-time, .hl-range, .hl-compare, .hl-share, .hl-rank { background: var(--hl-time); }
+.hl-kind, .hl-click, .hl-ignore, .hl-threshold { background: var(--hl-behaviour); }
+.hl-unknown {
+  background: var(--hl-unknown);
+  text-decoration: underline wavy var(--bad);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+
+.grid-bg {
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+  background-position: -1px 0;
+}
+
+.flip-enter {
+  animation: flip 220ms ease-out;
+}
+@keyframes flip {
+  from { transform: rotateY(70deg); opacity: 0.2; }
+  to { transform: rotateY(0); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip-enter { animation: none; }
+  * { transition: none !important; }
+}
+
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }

@@ -146,3 +146,10 @@ test('number formatting for labels', () => {
   assert.equal(formatNumber(2.5), '2.5');
   assert.equal(formatNumber(null), '–');
 });
+
+test('"clicking a bar" is behaviour, not a request for a bar chart', () => {
+  const d = draftFlagLocally('Labor cost by hull. Clicking a bar filters the page.', 'bar', index);
+  assert.equal(d.binding?.limit, 15, 'the long list is still cut to the top 15');
+  assert.equal(d.behavior.onClick, 'filter-page');
+  assert.equal(draftFlagLocally('Labor cost by region as a pie', 'bar', index).kind, 'pie');
+});

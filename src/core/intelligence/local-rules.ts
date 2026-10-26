@@ -212,8 +212,11 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     if (qm && dims.length > 0) top = { n: 5, dir: /^(least|fewest|lowest|smallest)$/.test(qm[1]!) ? 'asc' : 'desc' };
   }
 
+  // "Clicking a bar filters the page" names a bar to click, not the chart to draw.
+  let kindText = text;
+  for (const [s0, e0] of blocked) kindText = kindText.slice(0, s0) + ' '.repeat(e0 - s0) + kindText.slice(e0);
   let kindWord: FlagKind | null = null;
-  for (const [re, k] of KIND_WORDS) if (re.test(text)) {
+  for (const [re, k] of KIND_WORDS) if (re.test(kindText)) {
     kindWord = k;
     break;
   }
@@ -317,7 +320,8 @@ export function draftHoistLocally(brief: string, index: CatalogIndex): HoistDraf
   const label = (k: string) => index.metric(k)?.label ?? index.field(k)?.label ?? k;
   const push = (brief: string, kind: FlagKind) => {
     const d = draftFlagLocally(brief, kind, index);
-    if (d.binding) flags.push({ ...d, brief });
+    // A flag that came out the same as one already drafted (a split that could not apply) is dropped.
+    if (d.binding && !flags.some((f) => f.kind === d.kind && JSON.stringify(f.binding) === JSON.stringify(d.binding))) flags.push({ ...d, brief });
   };
 
   for (const m of a.metrics.slice(0, 4)) push(`${label(m)}.`, 'kpi');
@@ -440,45 +444,81 @@ function matchField(phrase: string, index: CatalogIndex): string | undefined {
   return mentions(` ${phrase} `, index).find((m) => m.kind === 'field')?.key;
 }
 
-const phraseCache = new WeakMap<CatalogIndex, Array<{ key: string; kind: 'metric' | 'field'; re: RegExp; len: number }>>();
+interface Phrase {
+  key: string;
+  kind: 'metric' | 'field';
+  re: RegExp;
+  len: number;
+  /** The phrase is the name itself (label or key), not a synonym. */
+  own: boolean;
+}
 
-function phrases(index: CatalogIndex) {
+const phraseCache = new WeakMap<CatalogIndex, Phrase[]>();
+
+function phrases(index: CatalogIndex): Phrase[] {
   let list = phraseCache.get(index);
   if (list) return list;
   list = [];
-  const add = (key: string, kind: 'metric' | 'field', text: string) => {
+  const add = (key: string, kind: 'metric' | 'field', text: string, own: boolean) => {
     const p = text.toLowerCase().replace(/[_.]/g, ' ').replace(/\s+/g, ' ').trim();
     if (p.length < 2) return;
     const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    list!.push({ key, kind, re: new RegExp(`(?<![a-z0-9])${esc}(?:s|es)?(?![a-z0-9])`, 'g'), len: p.length + (kind === 'metric' ? 0.5 : 0) });
+    list!.push({ key, kind, re: new RegExp(`(?<![a-z0-9])${esc}(?:s|es)?(?![a-z0-9])`, 'g'), len: p.length + (kind === 'metric' ? 0.5 : 0), own });
   };
   for (const m of index.catalog.metrics) {
-    add(m.key, 'metric', m.label);
-    add(m.key, 'metric', m.key);
-    for (const s of m.synonyms ?? []) add(m.key, 'metric', s);
+    add(m.key, 'metric', m.label, true);
+    add(m.key, 'metric', m.key, true);
+    for (const s of m.synonyms ?? []) add(m.key, 'metric', s, false);
   }
   for (const f of index.catalog.fields) {
-    add(f.key, 'field', f.label);
-    add(f.key, 'field', f.key.split('.').at(-1)!);
-    for (const s of f.synonyms ?? []) add(f.key, 'field', s);
+    add(f.key, 'field', f.label, true);
+    add(f.key, 'field', f.key.split('.').at(-1)!, true);
+    for (const s of f.synonyms ?? []) add(f.key, 'field', s, false);
   }
   list.sort((x, y) => y.len - x.len);
   phraseCache.set(index, list);
   return list;
 }
 
-/** Longest-first, non-overlapping catalog mentions in reading order. Metrics win ties. */
+/**
+ * Longest-first, non-overlapping catalog mentions in reading order. Metrics win ties of length.
+ * When several entries answer to the same words ("spend" in two tables), the one in the table
+ * the brief's other words point to wins, then one whose own name it is over a synonym.
+ */
 export function mentions(text: string, index: CatalogIndex): Mention[] {
-  const found: Mention[] = [];
+  const spans: Array<{ start: number; end: number; len: number; candidates: Phrase[] }> = [];
   for (const p of phrases(index)) {
     p.re.lastIndex = 0;
     for (const m of text.matchAll(p.re)) {
       const start = m.index!;
       const end = start + m[0].length;
-      if (found.some((f) => start < f.end && f.start < end)) continue;
-      found.push({ key: p.key, kind: p.kind, start, end });
+      const same = spans.find((f) => f.start === start && f.end === end && f.len === p.len);
+      if (same) {
+        if (!same.candidates.some((c) => c.key === p.key && c.kind === p.kind)) same.candidates.push(p);
+        continue;
+      }
+      if (spans.some((f) => start < f.end && f.start < end)) continue;
+      spans.push({ start, end, len: p.len, candidates: [p] });
     }
   }
+  const tableOf = (c: Phrase) => (c.kind === 'metric' ? (() => {
+    const m = index.metric(c.key);
+    return m ? metricTable(index, m) : undefined;
+  })() : index.field(c.key)?.table);
+  const votes = new Map<string, number>();
+  for (const s of spans) {
+    const tables = new Set(s.candidates.map(tableOf).filter((t): t is string => !!t));
+    // Unambiguous words count fully; ambiguous ones split their vote.
+    for (const t of tables) votes.set(t, (votes.get(t) ?? 0) + 1 / tables.size);
+  }
+  const found: Mention[] = spans.map((s) => {
+    let best = s.candidates[0]!;
+    if (s.candidates.length > 1) {
+      const score = (c: Phrase) => (votes.get(tableOf(c) ?? '') ?? 0) * 10 + (c.own ? 1 : 0);
+      best = [...s.candidates].sort((a, b) => score(b) - score(a))[0]!;
+    }
+    return { key: best.key, kind: best.kind, start: s.start, end: s.end };
+  });
   return found.sort((a, b) => a.start - b.start);
 }
 
