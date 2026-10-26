@@ -47,6 +47,8 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 4. Leadership double-clicks **`Ask-Semaphore.bat`** instead: a question box answered from the analysts' reviewed work, with no database access needed. Share the playbook by pointing `SEMAPHORE_HOME` at one network folder on every computer.
 5. To stop, choose **End session**, or close the tab: the server stops itself about 20 seconds later. `server\Stop-Semaphore.ps1` stops any copy that is still running.
 
+> **Intelligence router:** remote AI providers and, once Semaphore connects to them, its data sources will go through the Fleet intelligence router, [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), instead of tool-specific endpoints and connection details. See [TechStack](TechStack), "Intelligence router".
+
 Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off.
 
 ## What it does
