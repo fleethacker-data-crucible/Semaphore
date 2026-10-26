@@ -29,6 +29,8 @@ Every draft is a suggestion with a confidence badge. Flip a flag over to see the
 
 ## Status
 
+> **Intelligence router:** remote AI providers and, once Semaphore connects to them, its data sources will go through the Fleet intelligence router, [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), instead of tool-specific endpoints and connection details. See [TechStack](TechStack), "Intelligence router".
+
 **v0.1, foundations.** This repository currently holds the framework-free core, fully tested, with no UI yet:
 
 | Piece | Where | State |
