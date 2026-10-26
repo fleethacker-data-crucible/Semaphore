@@ -24,7 +24,7 @@ $script:SemMaxHeader = 32768
 
 if ($null -eq $script:Sem) {
     $script:Sem = @{
-        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''; View = 'builder'; Reviewer = ''
+        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''; View = 'builder'; Reviewer = ''; Deadline = $null
         Stream = $null; Responded = $false; Deferred = $false
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
@@ -565,7 +565,11 @@ function Start-SemHttpServer {
             if (-not $served) { Start-Sleep -Milliseconds 20 }
             if ($presenceClock.ElapsedMilliseconds -ge 1000) {
                 $presenceClock.Restart()
-                if (Test-SemShouldAutoStop) {
+                if ($null -ne $script:Sem.Deadline -and (Get-Date) -gt $script:Sem.Deadline) {
+                    Write-SemLog 'WARN' 'Refresh: time limit reached before the page finished (settings refreshTimeoutMin): stopping'
+                    Request-SemStop 'refresh-timeout'
+                }
+                elseif (Test-SemShouldAutoStop) {
                     Write-SemLog 'INFO' 'No Semaphore tab is open any more: stopping (Launch-Semaphore.bat --stay or SEMAPHORE_AUTO_STOP=0 keeps it running)'
                     Request-SemStop 'browser-gone'
                 }

@@ -20,7 +20,7 @@ import { proposeCatalog } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
+import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
@@ -39,10 +39,12 @@ const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
 const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', auto: 'semaphore.autoKind', view: 'semaphore.view' };
 
-function initialView(): 'builder' | 'ask' | null {
+type View = 'builder' | 'ask' | 'refresh';
+
+function initialView(): View | null {
   try {
     const v = new URL(window.location.href).searchParams.get('view');
-    if (v === 'ask' || v === 'builder') return v;
+    if (v === 'ask' || v === 'builder' || v === 'refresh') return v;
   } catch {
     /* no URL to read */
   }
@@ -79,7 +81,9 @@ export function App() {
   const { hoist, change } = history;
   const [server, setServer] = useState<ServerInfo | null>(null);
   const [serverChecked, setServerChecked] = useState(false);
-  const [view, setViewState] = useState<'builder' | 'ask' | null>(initialView);
+  const [view, setViewState] = useState<View | null>(initialView);
+  const [refreshLog, setRefreshLog] = useState<string[]>([]);
+  const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [serverLost, setServerLost] = useState(false);
   const [files, setFiles] = useState<TableRows>({});
@@ -426,7 +430,7 @@ export function App() {
   // ---- The playbook: learn from accepted flags, keep it healthy, keep snapshots fresh --------
   const playbook = usePlaybook(server, serverChecked);
   const user = server?.user || 'analyst';
-  const currentView: 'builder' | 'ask' = view ?? 'builder';
+  const currentView: View = view ?? 'builder';
   const setView = useCallback((v: 'builder' | 'ask') => {
     setViewState(v);
     writeLocal(K.view, v);
@@ -463,7 +467,7 @@ export function App() {
   // Whoever can reach a source refreshes its stale snapshots, one at a time, in the background.
   const refreshing = useRef(false);
   useEffect(() => {
-    if (!playbook.loaded || refreshing.current) return;
+    if (!playbook.loaded || refreshing.current || currentView === 'refresh') return;
     const due = playbook.entries.filter((e) => e.status !== 'retired' && canReach(e.source, ctx) && isStale(playbook.snapshots.find((s) => s.entryId === e.id), e));
     if (!due.length) return;
     refreshing.current = true;
@@ -481,6 +485,48 @@ export function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.entries, ctx]);
+
+  // The refresher (Launch-Semaphore.bat --refresh, in a headless browser): refresh every snapshot
+  // this computer can reach, report to the server, and end the session.
+  const refreshRun = useRef(false);
+  useEffect(() => {
+    if (currentView !== 'refresh' || !playbook.loaded || refreshRun.current) return;
+    refreshRun.current = true;
+    const say = (line: string) => setRefreshLog((l) => [...l, line]);
+    (async () => {
+      let refreshed = 0;
+      let skipped = 0;
+      const failed: Array<{ id: string; title: string; error: string }> = [];
+      for (const e of playbook.entries.filter((x) => x.status !== 'retired')) {
+        if (!canReach(e.source, ctx)) {
+          skipped++;
+          say(`Skipped ${e.title}: its source is not set up on this computer.`);
+          continue;
+        }
+        try {
+          const snap = await takeSnapshot(e, index, (plan) => runAnywhere(plan, ctx));
+          if (!snap) throw new Error('It no longer plans against the catalog.');
+          await playbook.saveSnapshot(snap);
+          refreshed++;
+          say(`Refreshed ${e.title}.`);
+        } catch (err) {
+          failed.push({ id: e.id, title: e.title, error: (err as Error).message.slice(0, 300) });
+          say(`Failed ${e.title}: ${(err as Error).message}`);
+        }
+      }
+      say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
+      if (server) {
+        await api('/api/refresh-report', { json: { refreshed, skipped, failed } }).catch(() => undefined);
+        await endSession().catch(() => undefined);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentView, playbook.loaded]);
+
+  useEffect(() => {
+    if (!server || currentView !== 'ask') return;
+    api<{ at: string; computer: string; refreshed: number; failed: unknown[] }>('/api/refresh-report').then(setLastRefresh, () => setLastRefresh(null));
+  }, [server, currentView]);
 
   const answerQuestionItem = useCallback(
     (q: QuestionItem) => {
@@ -544,10 +590,19 @@ export function App() {
   const themeKey = theme;
   const waiting = playbook.questions.filter((q) => q.status === 'open').length + playbook.entries.filter((e) => e.status === 'needs-review').length;
 
+  if (currentView === 'refresh') {
+    return (
+      <main className="mx-auto max-w-2xl p-8 font-mono text-xs">
+        <h1 className="mb-3 font-sans text-base font-semibold">Semaphore: refreshing snapshots</h1>
+        <ul>{refreshLog.map((l, i) => <li key={i}>{l}</li>)}</ul>
+      </main>
+    );
+  }
+
   if (currentView === 'ask') {
     return (
       <>
-        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
         {serverLost && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
             <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">

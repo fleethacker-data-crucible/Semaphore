@@ -19,6 +19,9 @@
     -Port n      / --port n       use exactly this port
     -CheckOnly   / --check-only   self-check only (scripts parse, settings, sources); no server
     -Ask         / --ask          open the leadership view (Ask-Semaphore.bat); settings "view" sets the default
+    -Refresh     / --refresh      refresh every playbook snapshot in a headless Edge or Chrome, report, and
+                                  stop (for an IT-approved morning run on an always-on machine; at most
+                                  settings refreshTimeoutMin minutes)
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -29,6 +32,7 @@ param(
     [switch]$Replace,
     [switch]$CheckOnly,
     [switch]$Ask,
+    [switch]$Refresh,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
@@ -45,6 +49,7 @@ for ($i = 0; $i -lt $restArgs.Count; $i++) {
         '^(--?|/)no-?browser$' { $NoBrowser = $true; continue }
         '^(--?|/)check-?only$' { $CheckOnly = $true; continue }
         '^(--?|/)ask$' { $Ask = $true; continue }
+        '^(--?|/)refresh$' { $Refresh = $true; continue }
         '^(--?|/)port$' {
             if ($i + 1 -lt $restArgs.Count) { $i++; $p = 0; if ([int]::TryParse([string]$restArgs[$i], [ref]$p)) { $Port = $p } }
             continue
@@ -97,6 +102,37 @@ function Find-SemBrowser([string]$Choice) {
     }
     foreach ($exe in $order) { if (Test-Path -LiteralPath $exe) { return $exe } }
     return $null
+}
+
+function Get-SemHeadlessProfile {
+    return [IO.Path]::Combine($root, 'temp', 'refresh-browser')
+}
+
+function Start-SemHeadless([string]$Url, [hashtable]$Settings) {
+    # The refresher: the page itself plans and runs the snapshot queries, so the headless browser
+    # uses exactly the code analysts use. Its own profile folder keeps it apart from anyone's browser.
+    if (-not (Test-SemIsWindows)) { Write-Host "Open this link in a browser to refresh: $Url"; return $true }
+    $exe = Find-SemBrowser $Settings.browser
+    if (-not $exe) { Write-SemLog 'ERROR' 'Refresh: Edge or Chrome is needed for --refresh and neither was found'; return $false }
+    $profileDir = Get-SemHeadlessProfile
+    [void][IO.Directory]::CreateDirectory($profileDir)
+    $argLine = '--headless=new --disable-gpu --no-first-run --no-default-browser-check --disable-extensions --user-data-dir="' + $profileDir + '" "' + $Url + '"'
+    Start-Process -FilePath $exe -ArgumentList $argLine -WindowStyle Hidden
+    Write-SemLog 'INFO' ('Refresh: started headless ' + [IO.Path]::GetFileName($exe))
+    return $true
+}
+
+function Stop-SemHeadless {
+    # Stop only the browser processes started with our own profile folder, never anyone else's.
+    if (-not (Test-SemIsWindows)) { return }
+    $profileDir = Get-SemHeadlessProfile
+    try {
+        foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'" -ErrorAction Stop)) {
+            if ($p.CommandLine -and $p.CommandLine.IndexOf($profileDir, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { Write-SemLog 'WARN' ('Refresh: could not check for the headless browser: ' + $_.Exception.Message) }
 }
 
 function Open-SemBrowser([string]$Url, [hashtable]$Settings) {
@@ -171,6 +207,15 @@ $settings = Read-SemSettings -Root $root
 $homeDir = Resolve-SemHome -Settings $settings -Create
 $autoStop = (-not $Stay) -and (Test-SemAutoStopEnabled -Root $root)
 Write-SemLog 'INFO' ("Semaphore {0} launcher (PID {1}, PowerShell {2}); home {3}" -f $version, $PID, $PSVersionTable.PSVersion, $homeDir)
+
+if ($Refresh) {
+    $Stay = $false; $NoBrowser = $true; $autoStop = $true
+    if (@(Get-SemInstances -Root $root).Count -gt 0) {
+        # A copy someone is using refreshes stale snapshots itself; never interrupt it.
+        Write-SemLog 'INFO' 'Refresh: Semaphore is already running on this computer; it refreshes snapshots itself. Nothing to do.'
+        exit 0
+    }
+}
 
 # ---- One instance -----------------------------------------------------------
 function Exit-SemReuse([int]$ReusePort, [string]$Why) {
@@ -248,9 +293,10 @@ $script:Sem.Port = $res.Port
 $baseUrl = 'http://127.0.0.1:{0}/' -f $res.Port
 $script:Sem.View = [string]$settings.view
 if ($Ask) { $script:Sem.View = 'ask' }
+if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).AddMinutes($settings.refreshTimeoutMin) }
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $sessionUrl = $baseUrl + '?session=' + $script:Sem.Token
-if ($script:Sem.View -eq 'ask') { $sessionUrl += '&view=ask' }
+if ($script:Sem.View -eq 'ask' -or $script:Sem.View -eq 'refresh') { $sessionUrl += '&view=' + $script:Sem.View }
 
 if (-not (Test-Path -LiteralPath (Join-Path $script:Sem.WebRoot 'index.html'))) { Write-SemLog 'WARN' 'web\dist\index.html is missing: serving the "UI not built" page' }
 Write-SemLog 'INFO' ("Serving {0} (PID {1}, auto-stop {2}, stay {3})" -f $baseUrl, $PID, $autoStop, [bool]$Stay)
@@ -259,12 +305,19 @@ $onReady = {
     $how = 'It stops when you close its browser tab or choose End session.'
     if (-not $autoStop) { $how = 'It keeps running after the tab closes: use End session or Stop-Semaphore.ps1.' }
     Write-Host ("Semaphore {0} is running at {1}. {2}" -f $version, $baseUrl, $how) -ForegroundColor Green
-    if ($NoBrowser) { Write-Host "Session link: $sessionUrl" }
+    if ($Refresh) {
+        if (-not (Start-SemHeadless -Url $sessionUrl -Settings $settings)) { Request-SemStop 'refresh-no-browser' }
+    }
+    elseif ($NoBrowser) { Write-Host "Session link: $sessionUrl" }
     else {
         try { Open-SemBrowser -Url $sessionUrl -Settings $settings }
         catch { Write-SemLog 'ERROR' ('Could not open the browser: ' + $_.Exception.Message); Write-Host "Open this link: $sessionUrl" -ForegroundColor Yellow }
     }
 }
 $onOpen = { Open-SemBrowser -Url $sessionUrl -Settings $settings }
-Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
+try {
+    Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
+} finally {
+    if ($Refresh) { Stop-SemHeadless }
+}
 exit 0

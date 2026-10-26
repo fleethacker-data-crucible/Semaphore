@@ -28,7 +28,7 @@ Still to do from the original v0.2 list:
 Semaphore learns from analysts' reviewed work, so leadership can simply ask, and so it can stand in when an analyst is away. See [PLAYBOOK.md](PLAYBOOK.md). Built, except where marked:
 
 - Playbook store with provenance; learn on accept, on corrections and on chosen synonyms; "do not learn"; retiring entries; automatic "needs review"; a named reviewer.
-- Snapshots: leaders never connect to a database. Accepted flags are refreshed into aggregated, pre-split snapshots whenever an analyst runs Semaphore, and answers re-add them. **To do:** an IT-approved `--refresh` runner for when analysts are away.
+- Snapshots: leaders never connect to a database. Accepted flags are refreshed into aggregated, pre-split snapshots whenever an analyst runs Semaphore, and answers re-add them. `--refresh` runs every snapshot headless for an always-on machine; scheduling it is an IT-approved exception.
 - Question-to-entry matching: same words, same binding, re-addable from an entry or its snapshot; deterministic and explainable.
 - Leadership view: one question box, answer cards labelled reviewed / drafted, not reviewed / can't answer yet, follow-up chips.
 - Analyst stand-in: headline numbers and what changed, question queue with "Build the answer", coverage report.

@@ -84,7 +84,9 @@ Leaders should not need a DSN, a login or an IT ticket. They read **snapshots** 
 **Keeping snapshots fresh.** Snapshots are refreshed by whoever has database access:
 
 1. **Now (no IT work):** whenever any analyst runs Semaphore, it refreshes stale snapshots in the background. While every analyst is out, answers keep working and say how old they are.
-2. **Next (one-time IT setup):** a refresher on an always-on machine, running `Launch-Semaphore.bat --refresh` each morning under one read-only service account, keeps snapshots current while analysts are away. The suite conventions do not allow scheduled tasks, so this needs IT's approval as a recorded exception; until then, option 1 stands on its own.
+2. **With IT's approval:** a refresher on an always-on machine keeps snapshots current while analysts are away. `Launch-Semaphore.bat --refresh` starts the server, opens the page in a headless Edge or Chrome with its own profile folder, refreshes every snapshot that computer can reach, writes a report, and stops (at most `refreshTimeoutMin` minutes, default 30). If someone is already using Semaphore on that computer it does nothing, because that copy refreshes stale snapshots itself. The suite conventions do not allow scheduled tasks, so running it each morning is IT's decision, recorded as an exception; see [Setting up the refresher](#setting-up-the-refresher-it). Until then, option 1 stands on its own.
+
+The Ask view's data date shows when the oldest answer was read, and its tooltip names the last full refresh and how many snapshots failed. Failures are also in the refresher's log.
 
 **Who can see snapshots.** Anyone who can read the snapshot folder can see the aggregated numbers in it. The folder's Windows permissions are therefore the access control: limit it to the people allowed to see those figures. Snapshots can additionally be encrypted with a key held in the Lazarette vault if the data calls for it.
 
@@ -116,5 +118,18 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 2. Done: snapshots, refreshed in the background by whoever can reach the source; answers re-add their partials (`src/core/snapshot.ts`, tested).
 3. Done: the leadership view with trust labels, data dates, follow-up chips, headline numbers and what changed.
 4. Done: question queue with "Build the answer", answers in use, needs review with reasons, retire and restore, coverage.
-5. To do: the `--refresh` mode for an IT-approved refresher.
+5. Done: the `--refresh` mode. Scheduling it is IT's call (below).
+
+## Setting up the refresher (IT)
+
+Only with IT's approval, recorded as an exception to the suite's "no scheduled tasks" rule.
+
+1. An always-on Windows machine with Windows PowerShell 5.1 and Edge or Chrome.
+2. A dedicated, **read-only** service account with access to the sources, and the same `sources.json` (DSNs or Windows authentication) as the analysts use.
+3. `SEMAPHORE_HOME` (or `"home"` in `config\settings.local.json`) pointing at the shared Semaphore folder.
+4. A scheduled run each morning, as that account, of:
+   `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <Semaphore>\server\Start-Semaphore.ps1 --refresh`
+5. Check `logs\Semaphore_*.log` on that machine after the first run: one "Snapshots refreshed: n done" line per run, and a "Snapshot failed" line for each failure.
+
+Anyone who can read the shared folder can read the snapshots, so its Windows permissions are the access control.
 6. Optional AI-gateway mode, which needs the server-side relay (the page's content security policy only allows the loopback server).

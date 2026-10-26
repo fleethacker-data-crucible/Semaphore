@@ -23,6 +23,8 @@ export interface AskViewProps {
   theme: 'light' | 'dark';
   onTheme: () => void;
   onBuilder: () => void;
+  /** The last full refresh (Launch-Semaphore.bat --refresh), when there has been one. */
+  lastRefresh?: { at: string; computer: string; refreshed: number; failed: unknown[] } | null;
 }
 
 interface Shown {
@@ -50,7 +52,7 @@ function asOfText(iso: string): string {
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
-export function AskView({ index, ctx, playbook, user, theme, onTheme, onBuilder }: AskViewProps) {
+export function AskView({ index, ctx, playbook, user, theme, onTheme, onBuilder, lastRefresh }: AskViewProps) {
   const [q, setQ] = useState('');
   const [answers, setAnswers] = useState<Shown[]>([]);
   const counter = useRef(0);
@@ -174,7 +176,10 @@ export function AskView({ index, ctx, playbook, user, theme, onTheme, onBuilder 
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-ink-3">
           {oldest && (
-            <span className="flex items-center gap-1" title="When the saved answers were last read from the source">
+            <span
+              className="flex items-center gap-1"
+              title={`When the oldest saved answer was read from its source.${lastRefresh ? ` Last full refresh ${asOfText(lastRefresh.at)} on ${lastRefresh.computer || 'the refresher'}: ${lastRefresh.refreshed} refreshed${lastRefresh.failed.length ? `, ${lastRefresh.failed.length} failed` : ''}.` : ' No scheduled refresh has run; answers refresh when an analyst opens Semaphore.'}`}
+            >
               <Clock size={13} /> Data as of {asOfText(oldest)} ({ago(oldest)})
             </span>
           )}

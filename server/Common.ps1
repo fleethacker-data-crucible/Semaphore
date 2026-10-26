@@ -57,7 +57,7 @@ function Get-SemDefaultSettings {
     return @{
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 20; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
-        view = 'builder'; playbookReviewer = ''
+        view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30
     }
 }
 
@@ -73,7 +73,7 @@ function Merge-SemSettingsFile {
     if ($names -contains 'appWindow' -and $null -ne $j.appWindow) { $Settings.appWindow = [bool]$j.appWindow }
     if ($names -contains 'view' -and @('builder', 'ask') -contains [string]$j.view) { $Settings.view = ([string]$j.view).ToLowerInvariant() }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
-    foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers')) {
+    foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0
             if ([int]::TryParse([string]$j.$k, [ref]$n) -and $n -ge 1 -and $n -le 3600) { $Settings[$k] = $n }
