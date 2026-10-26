@@ -71,7 +71,7 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
 
   if (flag.kind !== 'filter') {
     if (flag.behavior.onClick === 'filter-page') lines.push('Clicking a value filters the whole page.');
-    else if (flag.behavior.onClick === 'drill') lines.push('Clicking a value drills into it.');
+    else if (flag.behavior.onClick === 'drill') lines.push('Clicking a value selects it on the page (drill paths are planned).');
   } else lines.push('Choosing values filters the whole page.');
   if (flag.behavior.ignore.length) lines.push(`Ignores page selections on ${list(flag.behavior.ignore.map(field))}.`);
   for (const t of flag.behavior.thresholds) {

@@ -200,7 +200,8 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
     const valueAxes = (b.metrics.length === 2 && !series ? b.metrics : [b.metrics[0]!]).map((k) => ({
       type: 'value',
       splitLine: { lineStyle: { color: c.line } },
-      axisLabel: { color: c.ink3, formatter: fmt(k) },
+      axisLabel: { color: c.ink3, formatter: fmt(k), hideOverlap: true },
+      splitNumber: horizontal ? 3 : 5,
     }));
     return {
       ...base,

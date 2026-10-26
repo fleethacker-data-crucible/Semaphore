@@ -40,6 +40,20 @@ SQL is generated locally from the validated draft, never by the provider.
 | "clicking a bar filters the page", "drill into" | click behaviour |
 | "ignore the region filter" | that field's selections are skipped |
 | "turn red over $5M", "amber under 80%" | thresholds |
+| "which ship class had the most work orders?" | a question: that field, ranked, top 5 |
+| "vs last year", "compared with the previous quarter", "growth" | a comparison with an earlier window (`compare`) |
+| "as a % of total", "share of" | values as a share of the total (`share`) |
+| nothing about the chart | with "pick chart for me", the kind comes from the data's shape (`src/core/shape.ts`): one number is a KPI, time is a line, a few parts of a whole are a pie, more than 15 categories are cut to the top 15, two long lists are a table |
+
+When two tables answer to the same word ("spend"), the one the rest of the brief points to wins. "Clicking a bar filters the page" sets behaviour; it does not ask for a bar chart.
+
+## Helping the analyst while they type
+
+`annotateBrief` (`src/core/intelligence/annotate.ts`) reads a brief back as highlighted spans: measures, fields, time, ranking, behaviour, colour rules, comparisons. A word after "by"/"per" that matches nothing is underlined, and any word within a small edit distance of a catalog name gets "did you mean". Picking a suggestion fixes the brief and calls `learnSynonym`, so the catalog answers to that word from then on (a word that already means something else is never taken over).
+
+`describeFlag` (`src/core/describe.ts`) turns a flag back into plain English for the back of the card, and `findInsights` (`src/core/insights.ts`) finds what is worth a glance in a flag's own result: the latest move in a trend (skipping a period still running), a category that dominates, an outlier (median absolute deviation), the biggest move against the comparison window, and how many values break a red rule. None of these need a model or leave the page.
+
+With an empty brief, or one that matches nothing, `draftHoist` returns a **starter page** read off the catalog: headline numbers, pickers for the short lists, a monthly trend on the main date, the main measure by its most useful field, and the top 10 of the longest list.
 
 It also says what it could not match ("No field matches 'squadron'") and lowers its confidence.
 

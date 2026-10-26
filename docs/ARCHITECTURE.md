@@ -5,24 +5,34 @@
 ## Layers
 
 ```
-Launch-Semaphore.bat ──► PowerShell 5.1 loopback server (planned)
-                           ├─ static UI (compiled JS/CSS/WASM)
-                           ├─ /api/heartbeat, lifecycle per TechStack
-                           ├─ /api/query   runs a rendered SQL query against a source, binds params
-                           ├─ connectors   bundled managed .NET drivers via Add-Type (no installs)
-                           └─ vault bridge  connection secrets and AI tokens come from the Lazarette vault
+Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpListener on 127.0.0.1:8774-8776
+                           ├─ static UI from web/dist (compiled JS/CSS only)
+                           ├─ session token, Host/Origin checks, /__fleethacker/id and /shutdown
+                           ├─ /api/heartbeat, /api/leaving, /api/end   lifecycle per TechStack
+                           ├─ /api/hoists, /api/catalogs               JSON files in the user's Semaphore folder
+                           ├─ /api/query                               rendered SQL + typed parameters → ODBC / OLE DB
+                           └─ /api/profile                             tables, columns, types, distinct counts
 
 Browser
-  src/app (planned)       canvas, flag palette, flag inspector, report export
-  src/core                framework-free TypeScript, unit-tested
+  web/src                 React 19 UI: canvas, palette, inspector, brief editor, ask box, data panel
+    lib/data.ts           runs a flag: plan → page engine or /api/query → cross-filter → comparison
+  src/core                framework-free TypeScript, unit-tested, shared by the UI and the tests
     catalog.ts            semantic layer: sources, fields, metrics, defined once
+    profile.ts, csv.ts    propose a catalog from a profiled table or a CSV file
     hoist.ts              hoist (dashboard) and flag (block) model + validation
     layout.ts             lego grid placement
-    planner.ts            flag → query plan, sized for a thin client
+    planner.ts            flag → query plan, sized for a thin client; comparison windows
     sql.ts                plan → SQL per dialect, typed bound parameters
-    crossfilter.ts        page selections applied to cached results locally
-    intelligence/         provider contract, local rules, remote providers, fallback
+    engine.ts             plan → rows, in memory (sample data and CSV files in the page)
+    crossfilter.ts        page selections applied to cached results locally; totals; line-up
+    shape.ts              the chart a binding's shape calls for
+    describe.ts           a flag in plain English
+    insights.ts           what is worth a glance in a flag's own result
+    intelligence/         provider contract, local rules, brief annotation, remote providers
+  src/sample              generated rows for the fleet-maintenance example
 ```
+
+The UI never sends rows anywhere. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
 
 ## Thin clients: the database does the work
 
@@ -65,8 +75,10 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 
 ## Storage
 
-- **Hoists and the catalog are small JSON files.** On non-persistent VDI profiles, browser storage may be wiped at logoff, so these are saved by the server to the user's home or a network folder. IndexedDB holds only cached results, which are safe to lose.
-- Credentials never enter the browser or the hoist: a source names an Lazarette vault item.
+- **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
+- **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
+- **CSV files** are read in the page and kept in IndexedDB so they come back after a reload. They are never uploaded.
+- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may name a Lazarette vault item for when the vault bridge lands.
 
 ## Sharing
 
@@ -76,13 +88,13 @@ A report is exported as one self-contained HTML file (the same technique as Shel
 
 | TechStack item | Semaphore use | State |
 | --- | --- | --- |
-| `.bat` → `powershell.exe -File` | `Launch-Semaphore.bat` | Planned |
-| PowerShell 5.1 + `TcpListener` | Loopback server, query endpoint, lifecycle rules | Planned |
-| React 19 + TS, or Svelte 5 | UI | Waiting on the unified Data Crucible UI rules |
-| Tailwind 4 + shadcn-style | UI | Waiting, as above |
-| ECharts, React Flow, Motion | Flag rendering (ECharts); lineage view (Flow) | Planned |
+| `.bat` → `powershell.exe -File` | `Launch-Semaphore.bat` → `server\Start-Semaphore.ps1` | Done |
+| PowerShell 5.1 + `TcpListener` | Loopback server, query and profile endpoints, every lifecycle rule | Done |
+| React 19 + TS | UI (`web/src`) | Done |
+| Tailwind 4 + shadcn-style | Styling with theme tokens; Lucide icons | Done (CVA and Radix not needed yet) |
+| ECharts, React Flow, Motion | Flag rendering (ECharts, SVG renderer); lineage view (Flow) | ECharts done; Flow planned |
 | Rust → WebAssembly | Optional: cross-filter kernel if results grow; today's results are small enough for TypeScript | Not needed yet |
-| IndexedDB / localStorage | Cached results / settings | Planned |
-| Service workers, Web Workers | App-shell cache; queries and cross-filtering off the main thread | Planned |
+| IndexedDB / localStorage | CSV files / theme, working copy | Done |
+| Service workers, Web Workers | Queries and cross-filtering off the main thread | Planned |
 | Web Crypto, DPAPI | Report encryption; secrets via Lazarette | Planned |
-| C# via `Add-Type` | Managed DB drivers (Npgsql, Oracle.ManagedDataAccess), OLE DB for Access | Planned |
+| C# via `Add-Type` | Not needed: ODBC and OLE DB are in the .NET Framework BCL (`System.Data.Odbc`, `System.Data.OleDb`) | — |
