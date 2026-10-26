@@ -15,7 +15,7 @@ Local web apps: PowerShell 5.1 serves a browser UI on `127.0.0.1` (Edge/Chrome).
 | Storage | IndexedDB (data), localStorage (settings) |
 | Offline | Service workers, Web Workers |
 | Encryption | Web Crypto (AES-GCM) in browser; DPAPI from PowerShell for secrets at rest |
-| Native Windows | C# via `Add-Type` (.NET 4.8.1); WinForms/WPF from PowerShell if needed |
+| Native Windows | C# ships as source and is compiled at start by Windows PowerShell 5.1 `Add-Type` (inbox .NET Framework compiler, C# 5 only); framework assemblies only; P/Invoke only into OS DLLs; WinForms/WPF from PowerShell if needed |
 
 ## Local server note
 
@@ -29,6 +29,8 @@ Tested on the workstation with the Nautilus Test Suite (Windows 11 Enterprise 26
 ## Build rules
 
 - Build off-workstation; ship compiled JS/CSS/WASM only
+- Never ship or load a prebuilt or custom DLL (`Add-Type -Path *.dll`, `Assembly.Load*`, a compiled DLL cached on disk): the workstation's application control blocks them (confirmed on the workstation 2026-10-26)
+- No third-party DLLs or NuGet packages; use framework assemblies only
 - Bundle all deps — no CDNs or runtime network calls
 - No admin, installers, or services on the workstation
 
@@ -53,3 +55,13 @@ Notes:
 - A hidden PowerShell console counts: if the window is hidden or minimised, the user has no Ctrl+C.
 - To find what holds a DLL, use the Windows Restart Manager (`RmRegisterResources` + `RmGetList`); `Process.Modules` misses .NET-mapped assemblies.
 - Reference implementation: Halyard (`web/src/lib/api.ts` `startHeartbeat`, `src/Halyard.Core/Host/HalyardHost.cs`, `scripts/Halyard-Process.ps1`, `scripts/Stop-Halyard.ps1`, `scripts/Start-Halyard.ps1`).
+
+## Intelligence router
+
+Direction (2026-10-26): Fleet tools stop hard-coding external endpoints and default to the Fleet intelligence router, [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), for AI/LLM endpoints, git repository access and database connections. Fairlead will own endpoint selection, credentials (through Lazarette / Windows Credential Manager, never in tool config), policy and routing. Until Semaphore is moved behind it, the current settings in the table below stay as they are; nothing has changed in code yet.
+
+| Access | Today | Where | Settings |
+| --- | --- | --- | --- |
+| AI/LLM | OpenAI-compatible (`/models`, `/chat/completions`) and contract providers; URL, model and token supplied by the caller, no default | `src/core/intelligence/remote.ts:23-32`; requests `:63`, `:123`, `:135` | `RemoteSettings.url`, `.model`, `.token` |
+| Git repositories | none |  |  |
+| Databases | data-source catalog only (postgres, oracle, access, tsql, ansi dialects; csv, Athena, Redshift, Azure SQL, Foundry sources); connection secrets named by Lazarette vault item; renders parameterised SQL, no driver or connection code yet | `src/core/catalog.ts:5-23`, `src/core/sql.ts:25` | `vaultItem` per source |
