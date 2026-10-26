@@ -9,7 +9,7 @@
 
 A local-first dashboard builder meant to replace Qlik on thin clients: analysts drop flags on a page and say in plain English what each should show, and Semaphore wires the data. Next, it learns from the analysts' reviewed work so leadership can simply ask, and so it can stand in when an analyst is away.
 
-> **Engineering preview (0.2).** Runs on sample data and CSV files today; database sources go through ODBC or OLE DB and have not yet been tried on the target Windows machines.
+> **Engineering preview (0.3).** Runs on sample data and CSV files today; database sources go through ODBC or OLE DB and have not yet been tried on the target Windows machines.
 
 Part of the Data Crucible family alongside Lazarette, Halyard and Shellback, and built on the same [TechStack](TechStack).
 
@@ -24,20 +24,28 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
   </picture>
 </p>
 
-## Where it is going
+## Analysts build, leadership asks
 
 Semaphore serves two people. **Analysts** build: they describe flags, check Semaphore's drafts and accept them. **Leadership** asks: they want an answer they can trust, not a dashboard tool.
 
-Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The planned **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people. Leaders never connect to a database: they are answered from small, already-summarised snapshots of the analysts' accepted flags, each showing how fresh it is.
+Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people. Leaders never connect to a database: they are answered from small, already-summarised snapshots of the analysts' accepted flags, each showing how fresh it is.
 
-This is the design for v0.3, not built yet: see [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-ask-dark.png">
+    <img src="docs/screenshot-ask-light.png" width="760" alt="The leadership view: a question box and the answer to 'Labor cost by ship class vs last year', labelled 'Drafted by Semaphore, not reviewed' and sent to the analysts, with bars for this year and a year earlier, two insights and follow-up chips">
+  </picture>
+</p>
+
+Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still to come: [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 
 ## Run it
 
 1. On a build machine, run `npm ci` then `npm run build` once. This writes the page to `web\dist` (the workstation never builds anything).
 2. Copy the folder to the workstation and double-click **`Launch-Semaphore.bat`**. It needs Windows PowerShell 5.1 and Edge or Chrome: no admin rights, no installs, no network.
 3. Semaphore opens on the fleet-maintenance example with generated sample data. Click **New hoist** for an empty page, or **Data** to add CSV files or a database.
-4. To stop, choose **End session**, or close the tab: the server stops itself about 20 seconds later. `server\Stop-Semaphore.ps1` stops any copy that is still running.
+4. Leadership double-clicks **`Ask-Semaphore.bat`** instead: a question box answered from the analysts' reviewed work, with no database access needed. Share the playbook by pointing `SEMAPHORE_HOME` at one network folder on every computer.
+5. To stop, choose **End session**, or close the tab: the server stops itself about 20 seconds later. `server\Stop-Semaphore.ps1` stops any copy that is still running.
 
 Launcher options: `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off.
 
@@ -93,7 +101,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
-- [docs/PLAYBOOK.md](docs/PLAYBOOK.md): the vision: learning from analysts, the leadership view, standing in for an absent analyst (planned)
+- [docs/PLAYBOOK.md](docs/PLAYBOOK.md): learning from analysts, the leadership view, snapshots, standing in for an absent analyst
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the thin-client data strategy, storage, and how the TechStack maps on
 - [docs/FLAG_SPEC.md](docs/FLAG_SPEC.md): the catalog, hoist and flag formats
 - [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md): what local rules understand, AI providers, and the contract

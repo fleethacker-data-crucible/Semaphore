@@ -4,7 +4,7 @@
 
 Framework-free core with tests: catalog, hoist and flag model, validation, lego grid, thin-client query planner, SQL for four dialects, local cross-filtering, and the intelligence layer (local rules, contract endpoint, OpenAI-compatible gateway, fallback).
 
-## v0.2: local server, sources and the canvas (this release)
+## v0.2: local server, sources and the canvas
 
 Done:
 
@@ -23,16 +23,16 @@ Still to do from the original v0.2 list:
 - Remote intelligence providers from the UI: the browser's CSP allows only the loopback server, so gateway calls need a server-side relay.
 - Restyle to the unified Data Crucible UI rules once they are published.
 
-## v0.3: the playbook and the leadership view
+## v0.3: the playbook and the leadership view (this release)
 
-The vision: Semaphore learns from analysts' reviewed work, so leadership can simply ask, and so it can stand in when an analyst is away. Design and open decisions in [PLAYBOOK.md](PLAYBOOK.md).
+Semaphore learns from analysts' reviewed work, so leadership can simply ask, and so it can stand in when an analyst is away. See [PLAYBOOK.md](PLAYBOOK.md). Built, except where marked:
 
 - Playbook store with provenance; learn on accept, on corrections and on chosen synonyms; "do not learn"; retiring entries; automatic "needs review"; a named reviewer.
-- Snapshots: leaders never connect to a database. Accepted flags are refreshed into aggregated, pre-split snapshots whenever an analyst runs Semaphore, and answers re-add them. Later, an IT-approved `--refresh` runner for when analysts are away.
-- Question-to-entry matching on the annotation signature, deterministic and explainable.
+- Snapshots: leaders never connect to a database. Accepted flags are refreshed into aggregated, pre-split snapshots whenever an analyst runs Semaphore, and answers re-add them. **To do:** an IT-approved `--refresh` runner for when analysts are away.
+- Question-to-entry matching: same words, same binding, re-addable from an entry or its snapshot; deterministic and explainable.
 - Leadership view: one question box, answer cards labelled reviewed / drafted, not reviewed / can't answer yet, follow-up chips.
-- Analyst stand-in: briefing of what changed, question queue, coverage report.
-- Optional: reviewed examples sent to an approved AI gateway, through the server-side relay.
+- Analyst stand-in: headline numbers and what changed, question queue with "Build the answer", coverage report.
+- **To do (optional):** reviewed examples sent to an approved AI gateway, through the server-side relay.
 
 ## v0.4: depth
 
