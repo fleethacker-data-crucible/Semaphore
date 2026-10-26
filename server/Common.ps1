@@ -57,6 +57,7 @@ function Get-SemDefaultSettings {
     return @{
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 20; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
+        view = 'builder'; playbookReviewer = ''
     }
 }
 
@@ -70,6 +71,8 @@ function Merge-SemSettingsFile {
     if ($names -contains 'port' -and $null -ne $j.port) { $p = 0; if ([int]::TryParse([string]$j.port, [ref]$p) -and $p -ge 0 -and $p -le 65535) { $Settings.port = $p } }
     if ($names -contains 'browser' -and @('auto', 'edge', 'chrome', 'default') -contains [string]$j.browser) { $Settings.browser = ([string]$j.browser).ToLowerInvariant() }
     if ($names -contains 'appWindow' -and $null -ne $j.appWindow) { $Settings.appWindow = [bool]$j.appWindow }
+    if ($names -contains 'view' -and @('builder', 'ask') -contains [string]$j.view) { $Settings.view = ([string]$j.view).ToLowerInvariant() }
+    if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0
@@ -128,7 +131,7 @@ function Resolve-SemHome {
     }
     $h = [IO.Path]::GetFullPath($h)
     if ($Create) {
-        foreach ($d in @($h, (Join-Path $h 'hoists'), (Join-Path $h 'catalogs'))) {
+        foreach ($d in @($h, (Join-Path $h 'hoists'), (Join-Path $h 'catalogs'), (Join-Path $h 'playbook'), (Join-Path $h 'snapshots'), (Join-Path $h 'questions'))) {
             if (-not (Test-Path -LiteralPath $d)) { [void][IO.Directory]::CreateDirectory($d) }
         }
     }

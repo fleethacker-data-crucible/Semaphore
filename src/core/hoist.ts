@@ -86,6 +86,8 @@ export interface Flag {
   notes: string[];
   /** Body for `text` flags. */
   text?: string;
+  /** false: the analyst marked this flag "do not learn", so the playbook never takes it. */
+  learn?: boolean;
 }
 
 export interface Hoist {
@@ -239,6 +241,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   };
   if (confidence !== undefined) flag.confidence = confidence;
   if (kind === 'text') flag.text = str(raw.text).slice(0, 20000);
+  if (raw.learn === false) flag.learn = false;
   return flag;
 }
 

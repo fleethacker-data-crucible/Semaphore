@@ -18,6 +18,7 @@
     -ShowConsole / --console      started in a visible console (questions are asked there)
     -Port n      / --port n       use exactly this port
     -CheckOnly   / --check-only   self-check only (scripts parse, settings, sources); no server
+    -Ask         / --ask          open the leadership view (Ask-Semaphore.bat); settings "view" sets the default
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -27,6 +28,7 @@ param(
     [switch]$Stay,
     [switch]$Replace,
     [switch]$CheckOnly,
+    [switch]$Ask,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
@@ -42,6 +44,7 @@ for ($i = 0; $i -lt $restArgs.Count; $i++) {
         '^(--?|/)replace$' { $Replace = $true; continue }
         '^(--?|/)no-?browser$' { $NoBrowser = $true; continue }
         '^(--?|/)check-?only$' { $CheckOnly = $true; continue }
+        '^(--?|/)ask$' { $Ask = $true; continue }
         '^(--?|/)port$' {
             if ($i + 1 -lt $restArgs.Count) { $i++; $p = 0; if ([int]::TryParse([string]$restArgs[$i], [ref]$p)) { $Port = $p } }
             continue
@@ -243,7 +246,11 @@ $script:Sem.Stay = [bool]$Stay
 $script:Sem.Token = New-SemToken
 $script:Sem.Port = $res.Port
 $baseUrl = 'http://127.0.0.1:{0}/' -f $res.Port
+$script:Sem.View = [string]$settings.view
+if ($Ask) { $script:Sem.View = 'ask' }
+$script:Sem.Reviewer = [string]$settings.playbookReviewer
 $sessionUrl = $baseUrl + '?session=' + $script:Sem.Token
+if ($script:Sem.View -eq 'ask') { $sessionUrl += '&view=ask' }
 
 if (-not (Test-Path -LiteralPath (Join-Path $script:Sem.WebRoot 'index.html'))) { Write-SemLog 'WARN' 'web\dist\index.html is missing: serving the "UI not built" page' }
 Write-SemLog 'INFO' ("Serving {0} (PID {1}, auto-stop {2}, stay {3})" -f $baseUrl, $PID, $autoStop, [bool]$Stay)
