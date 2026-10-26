@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Docs: the vision for v0.3, learning from analysts' reviewed work for a leadership view and an analyst stand-in ([docs/PLAYBOOK.md](docs/PLAYBOOK.md)), reflected in the README, architecture, intelligence and roadmap docs. Design only; nothing built yet.
+
 ## 0.2.0 (2026-10-26)
 
 Semaphore becomes a tool you can use: a local server, a browser UI, and intelligence that needs no model.

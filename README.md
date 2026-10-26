@@ -7,7 +7,7 @@
 
 # SEMAPHORE · Dashboard Intelligence
 
-A local-first dashboard builder for a single analyst, meant to replace Qlik on thin clients: drop flags on a page, say in plain English what each should show, and Semaphore wires the data.
+A local-first dashboard builder meant to replace Qlik on thin clients: analysts drop flags on a page and say in plain English what each should show, and Semaphore wires the data. Next, it learns from the analysts' reviewed work so leadership can simply ask, and so it can stand in when an analyst is away.
 
 > **Engineering preview (0.2).** Runs on sample data and CSV files today; database sources go through ODBC or OLE DB and have not yet been tried on the target Windows machines.
 
@@ -23,6 +23,14 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
     <img src="docs/screenshot-light.png" width="900" alt="Semaphore with the fleet-maintenance example: KPIs, a ship-class picker with Icebreaker selected, labor cost by region, a monthly trend, and a top-10 hulls chart compared with a year earlier; the inspector shows the brief highlighted and read back in plain English">
   </picture>
 </p>
+
+## Where it is going
+
+Semaphore serves two people. **Analysts** build: they describe flags, check Semaphore's drafts and accept them. **Leadership** asks: they want an answer they can trust, not a dashboard tool.
+
+Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The planned **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people, and runs every query with the asker's own database access.
+
+This is the design for v0.3, not built yet: see [docs/PLAYBOOK.md](docs/PLAYBOOK.md).
 
 ## Run it
 
@@ -85,6 +93,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
+- [docs/PLAYBOOK.md](docs/PLAYBOOK.md): the vision: learning from analysts, the leadership view, standing in for an absent analyst (planned)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the thin-client data strategy, storage, and how the TechStack maps on
 - [docs/FLAG_SPEC.md](docs/FLAG_SPEC.md): the catalog, hoist and flag formats
 - [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md): what local rules understand, AI providers, and the contract

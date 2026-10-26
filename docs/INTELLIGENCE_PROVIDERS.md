@@ -57,6 +57,14 @@ With an empty brief, or one that matches nothing, `draftHoist` returns a **start
 
 It also says what it could not match ("No field matches 'squadron'") and lowers its confidence.
 
+## Next: learning from analysts (planned)
+
+Local rules know the catalog; they do not yet know the team. The planned playbook ([PLAYBOOK.md](PLAYBOOK.md)) adds what analysts have reviewed:
+
+- **Learning** comes only from accepted flags, corrected drafts, chosen synonyms and saved hoists. Unaccepted drafts and anything flagged "do not learn" are never used, and nothing about how people work is recorded.
+- **Answering** matches a question's annotation signature against accepted flags. A match reruns the analyst's own binding and is labelled *reviewed*; anything else is a local-rules draft labelled *not reviewed*, or goes to the analyst's queue.
+- **With a provider**, reviewed examples (briefs and catalog keys and labels only) are added to the request as worked examples. The "never sent" list above does not change, and output still passes the same validation.
+
 ## Contract (version 1)
 
 One endpoint, `POST`, JSON in and out, `Authorization: Bearer <token>` when a token is configured.

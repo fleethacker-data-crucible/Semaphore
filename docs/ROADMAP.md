@@ -23,14 +23,24 @@ Still to do from the original v0.2 list:
 - Remote intelligence providers from the UI: the browser's CSP allows only the loopback server, so gateway calls need a server-side relay.
 - Restyle to the unified Data Crucible UI rules once they are published.
 
-## v0.3: depth
+## v0.3: the playbook and the leadership view
+
+The vision: Semaphore learns from analysts' reviewed work, so leadership can simply ask, and so it can stand in when an analyst is away. Design and open decisions in [PLAYBOOK.md](PLAYBOOK.md).
+
+- Playbook store with provenance; learn on accept, on corrections and on chosen synonyms; "do not learn"; retiring entries.
+- Question-to-entry matching on the annotation signature, deterministic and explainable.
+- Leadership view: one question box, answer cards labelled reviewed / drafted, not reviewed / can't answer yet, follow-up chips.
+- Analyst stand-in: briefing of what changed, question queue, coverage report.
+- Optional: reviewed examples sent to an approved AI gateway, through the server-side relay.
+
+## v0.4: depth
 
 - Joins through catalog relationships, so a flag can read more than one table and selections reach related tables.
 - Drill paths (year → quarter → month), and drill on categories into a detail table.
 - Queries and cross-filtering in a Web Worker for very large CSV files.
 - Lineage view (React Flow): which flags read which measures, fields and sources.
 
-## v0.4: sharing
+## v0.5: sharing
 
 - Self-contained HTML report with cached results and working filters, optional passphrase encryption.
 
