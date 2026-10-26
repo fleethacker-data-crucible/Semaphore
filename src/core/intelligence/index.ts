@@ -28,8 +28,16 @@ export interface DraftOutcome<T> {
   fallbackReason?: string;
 }
 
-export async function draftFlag(provider: IntelligenceProvider, hoist: Hoist, flag: Flag, index: CatalogIndex): Promise<DraftOutcome<FlagDraft>> {
-  const request = { task: 'draft-flag' as const, brief: effectiveBrief(hoist, flag), catalog: summarizeCatalog(index.catalog) };
+export async function draftFlag(
+  provider: IntelligenceProvider,
+  hoist: Hoist,
+  flag: Flag,
+  index: CatalogIndex,
+  options: { auto?: boolean } = {},
+): Promise<DraftOutcome<FlagDraft>> {
+  const brief = effectiveBrief(hoist, flag);
+  if (options.auto) brief.auto = true;
+  const request = { task: 'draft-flag' as const, brief, catalog: summarizeCatalog(index.catalog) };
   try {
     return { draft: validateFlagDraft(await provider.draftFlag(request), index, flag.kind), providerId: provider.id };
   } catch (e) {

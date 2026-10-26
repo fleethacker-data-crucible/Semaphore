@@ -10,10 +10,14 @@
 //   "clicking a bar filters the page", "drill"     click behaviour
 //   "ignore the region filter"                     selections this flag skips
 //   "turn red over $5M", "amber under 80%"         thresholds
+//   "which region had the most cost"               a question: top 5, highest first
+//   "vs last year", "change from the prior period" a comparison with an earlier window
+//   "as a % of total", "share of"                  values as a share of the total
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
-import type { Behavior, Binding, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
+import type { Behavior, Binding, Comparison, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
+import { suggestKind } from '../shape.ts';
 import type { DraftFlagRequest, DraftHoistRequest, FlagDraft, HoistDraft, IntelligenceProvider } from './contract.ts';
 
 export class LocalRulesProvider implements IntelligenceProvider {
@@ -30,7 +34,7 @@ export class LocalRulesProvider implements IntelligenceProvider {
   }
 
   async draftFlag(request: DraftFlagRequest): Promise<FlagDraft> {
-    return draftFlagLocally(request.brief.flag, request.brief.kind, this.index);
+    return draftFlagLocally(request.brief.flag, request.brief.kind, this.index, { auto: request.brief.auto === true });
   }
 
   async draftHoist(request: DraftHoistRequest): Promise<HoistDraft> {
@@ -40,7 +44,7 @@ export class LocalRulesProvider implements IntelligenceProvider {
 
 // ---------------------------------------------------------------------------------------------
 
-interface Mention {
+export interface Mention {
   key: string;
   kind: 'metric' | 'field';
   start: number;
@@ -60,13 +64,15 @@ interface Analysis {
   clickFields: string[];
   ignore: string[];
   thresholds: Threshold[];
+  compare: Comparison | null;
+  share: boolean;
   dateField: Field | undefined;
   table: string | undefined;
   notes: string[];
   unresolved: string[];
 }
 
-const GRAIN_WORDS: Array<[RegExp, TimeGrain]> = [
+export const GRAIN_WORDS: Array<[RegExp, TimeGrain]> = [
   [/\b(daily|per day|by day|each day|every day)\b/, 'day'],
   [/\b(weekly|per week|by week|each week|every week)\b/, 'week'],
   [/\b(monthly|per month|by month|each month|every month|month over month|mom)\b/, 'month'],
@@ -74,13 +80,23 @@ const GRAIN_WORDS: Array<[RegExp, TimeGrain]> = [
   [/\b(yearly|annual|annually|per year|by year|each year|every year|year over year|yoy)\b/, 'year'],
 ];
 
-const KIND_WORDS: Array<[RegExp, FlagKind]> = [
+export const KIND_WORDS: Array<[RegExp, FlagKind]> = [
   [/\b(table|list|rows|grid|spreadsheet)\b/, 'table'],
   [/\b(pie|donut|doughnut|share of|mix)\b/, 'pie'],
   [/\barea\b(?!\s+(manager|office))/, 'area'],
   [/\b(line|trend|trending|over time)\b/, 'line'],
   [/\b(bar|bars|column chart|ranking|ranked)\b/, 'bar'],
 ];
+
+/** "vs last year", "compared with the previous quarter", "year over year", "growth". */
+export const COMPARE_RE =
+  /\b(?:(?:vs\.?|versus|compared (?:to|with)|against|from)\s+(?:the\s+)?(?:same\s+(?:period|time)\s+)?(last|previous|prior)\s+(year|period|month|quarter|week|day)|(?:same\s+(?:period|time)\s+)?last\s+year's|year over year|yoy|(?:change|growth|trend)\s+(?:from|since|over|on)\s+(?:the\s+)?(?:previous|prior|last)\s+(?:period|month|quarter|week|year)|(?:period|month|quarter) over (?:period|month|quarter)|change|growth)\b/;
+
+/** "% of total", "share of", "as a percentage". */
+export const SHARE_RE = /(?:%|\bpercent(?:age)?)\s+of\s+(?:the\s+)?(?:total|all)\b|\bas\s+a\s+(?:share|percent(?:age)?)\b|\bshare\s+of\b|\bproportion\b/;
+
+/** Questions: "which region had the most…", "what class has the lowest…". */
+const QUESTION_RE = /\b(?:which|what)\b[^.?;]{0,80}?\b(most|highest|largest|biggest|greatest|top|least|fewest|lowest|smallest)\b/;
 
 const TONES: Record<string, Tone> = { red: 'bad', green: 'good', amber: 'warn', yellow: 'warn', orange: 'warn' };
 
@@ -130,7 +146,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     if (m.kind !== 'field') continue;
     const before = text.slice(Math.max(0, m.start - 30), m.start);
     const cued =
-      /\b(by|per|across|each|every|vs\.?|versus|split by|broken down by|grouped by|breakdown of)\s+(the\s+|each\s+)?$/.test(before) ||
+      /\b(by|per|across|each|every|vs\.?|versus|split by|broken down by|grouped by|breakdown of|which|what)\s+(the\s+|each\s+)?$/.test(before) ||
       /\b(top|bottom|highest|lowest|best|worst)\s+\d{1,4}\s+$/.test(before);
     const chained = lastDimEnd >= 0 && /^(\s*,\s*|\s+and\s+|\s*,\s*and\s+|\s*&\s*)(the\s+)?$/.test(text.slice(lastDimEnd, m.start));
     if (!cued && !chained) continue;
@@ -163,8 +179,18 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     break;
   }
   if (!grain && /\b(trend|trending|over time)\b/.test(text)) grain = 'month';
+  // Comparisons first: "vs last year" is a comparison, not a "last 1 year" filter.
+  let compare: Comparison | null = null;
+  const cm = COMPARE_RE.exec(text);
+  let timeText = text;
+  if (cm) {
+    const unit = cm[2];
+    compare = unit === 'year' || /year|yoy/.test(cm[0]) ? 'previous-year' : 'previous-period';
+    timeText = text.slice(0, cm.index) + ' '.repeat(cm[0].length) + text.slice(cm.index + cm[0].length);
+  }
+  const share = SHARE_RE.test(text);
   let last: Analysis['last'] = null;
-  const lm = /\b(last|past|previous|trailing|prior)\s+(\d{1,4}\s+)?(day|week|month|quarter|year)s?\b/.exec(text);
+  const lm = /\b(last|past|previous|trailing|prior)\s+(\d{1,4}\s+)?(day|week|month|quarter|year)s?\b/.exec(timeText);
   if (lm) last = { n: lm[2] ? Number(lm[2]) : 1, unit: lm[3] as TimeGrain };
   const mentionedDate = all.find((m) => m.kind === 'field' && index.field(m.key)?.type === 'date');
   const dateField = (mentionedDate && index.field(mentionedDate.key)?.table === table ? index.field(mentionedDate.key) : undefined) ??
@@ -181,6 +207,10 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   let top: Analysis['top'] = null;
   const tm = /\b(top|bottom|highest|lowest|worst|best)\s+(\d{1,4})\b/.exec(text);
   if (tm) top = { n: Number(tm[2]), dir: /^(bottom|lowest)/.test(tm[1]!) ? 'asc' : 'desc' };
+  else {
+    const qm = QUESTION_RE.exec(text);
+    if (qm && dims.length > 0) top = { n: 5, dir: /^(least|fewest|lowest|smallest)$/.test(qm[1]!) ? 'asc' : 'desc' };
+  }
 
   let kindWord: FlagKind | null = null;
   for (const [re, k] of KIND_WORDS) if (re.test(text)) {
@@ -200,10 +230,15 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     if (Number.isFinite(value)) thresholds.push({ metric: target, op, value, tone: TONES[m[1]!]! });
   }
 
-  return { text, metrics, dims, grain, last, top, kindWord, onClick, clickFields, ignore, thresholds, dateField, table, notes, unresolved };
+  return { text, metrics, dims, grain, last, top, kindWord, onClick, clickFields, ignore, thresholds, compare, share, dateField, table, notes, unresolved };
 }
 
-export function draftFlagLocally(brief: string, currentKind: FlagKind, index: CatalogIndex): FlagDraft {
+export interface LocalDraftOptions {
+  /** Pick the kind from the shape of the data unless the brief names one. */
+  auto?: boolean;
+}
+
+export function draftFlagLocally(brief: string, currentKind: FlagKind, index: CatalogIndex, options: LocalDraftOptions = {}): FlagDraft {
   if (!brief.trim()) {
     return { kind: currentKind, title: '', binding: null, behavior: { onClick: 'none', ignore: [], thresholds: [] }, confidence: 0, notes: ['Describe what this flag should show.'] };
   }
@@ -234,8 +269,9 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   }
 
   const hasTime = a.dims.some((d) => d.grain);
-  const inferred: FlagKind = a.dims.length === 0 ? 'kpi' : hasTime ? 'line' : 'bar';
-  let kind: FlagKind = a.kindWord ?? (currentKind === 'text' ? inferred : currentKind);
+  const shaped = suggestKind({ metrics: a.metrics, dimensions: a.dims, filters, ...(a.share ? { share: true } : {}) }, index);
+  const inferred: FlagKind = shaped.kind;
+  let kind: FlagKind = a.kindWord ?? (currentKind === 'text' || options.auto ? inferred : currentKind);
   if (kind === 'kpi' && a.dims.length > 0) {
     notes.push('A KPI shows one number, so this became a chart because the brief splits it by a field.');
     kind = inferred;
@@ -247,6 +283,12 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   }
 
   const binding: Binding = { metrics: a.metrics, dimensions: a.dims, filters };
+  if (a.compare) binding.compare = a.compare;
+  if (a.share) binding.share = true;
+  if (!a.top && !a.kindWord && shaped.limit && (kind === 'bar' || kind === 'pie')) {
+    a.top = { n: shaped.limit, dir: 'desc' };
+    notes.push(shaped.reason);
+  }
   if (a.top) {
     binding.limit = a.top.n;
     binding.sort = { by: a.metrics[0]!, dir: a.top.dir };
@@ -290,9 +332,80 @@ export function draftHoistLocally(brief: string, index: CatalogIndex): HoistDraf
     }
     if (a.grain || a.last) push(`${label(main)} per ${a.grain ?? 'month'}.`, 'line');
   }
-  if (flags.length === 0) notes.push('Nothing in the brief matched the catalog, so no flags were drafted.');
+  if (flags.length === 0) {
+    const starter = starterHoistLocally(index);
+    if (!brief.trim()) return starter;
+    return { ...starter, notes: ['Nothing in the brief matched the catalog, so this is a starter page built from the catalog instead.', ...starter.notes] };
+  }
   const title = a.metrics.length ? `${a.metrics.slice(0, 2).map(label).join(' and ')} overview` : 'New hoist';
   return { title, filters, flags, notes };
+}
+
+/**
+ * A first page with no brief at all, read off the catalog: headline numbers, pickers for the
+ * short lists, a trend over the main date, the main measure split by its most useful field, and
+ * the top items of the longest list. The table with the most measures is the subject.
+ */
+export function starterHoistLocally(index: CatalogIndex, table?: string): HoistDraft {
+  const cat = index.catalog;
+  const tableOf = (m: (typeof cat.metrics)[number]) => metricTable(index, m);
+  const byTable = new Map<string, number>();
+  for (const m of cat.metrics) {
+    const t = tableOf(m);
+    if (t) byTable.set(t, (byTable.get(t) ?? 0) + 1);
+  }
+  const subject = table ?? [...byTable.entries()].sort((x, y) => y[1] - x[1])[0]?.[0];
+  if (!subject) return { title: 'New hoist', filters: [], flags: [], notes: ['The catalog has no measures yet, so there is nothing to draft.'] };
+  const metrics = cat.metrics.filter((m) => tableOf(m) === subject);
+  const fields = cat.fields.filter((f) => f.table === subject);
+  // Headline order: a row count, totals, averages, distinct counts.
+  const rank = { count: 0, sum: 1, avg: 2, count_distinct: 3, max: 4, min: 5 } as const;
+  const headline = [...metrics].sort((x, y) => rank[x.agg] - rank[y.agg]).slice(0, 4);
+  const main = metrics.find((m) => m.agg === 'sum') ?? headline[0]!;
+  const date = fields.find((f) => f.type === 'date');
+  const groups = fields.filter((f) => (f.type === 'string' || f.type === 'boolean') && f.key !== main.field);
+  const known = (f: (typeof fields)[number]) => f.cardinality ?? 50;
+  const pickers = groups.filter((f) => known(f) >= 2 && known(f) <= 30).sort((x, y) => known(x) - known(y)).slice(0, 2);
+  const long = groups.filter((f) => known(f) > 30).sort((x, y) => known(x) - known(y))[0];
+  const splitBy = pickers[0] ?? groups[0];
+
+  const notes: string[] = [];
+  const flags: HoistDraft['flags'] = [];
+  const add = (brief: string, kind: FlagKind, d: Omit<FlagDraft, 'notes' | 'confidence'>) => flags.push({ ...d, kind, brief, confidence: 0.7, notes: [] });
+  const none: Behavior = { onClick: 'none', ignore: [], thresholds: [] };
+  for (const m of headline) add(`${m.label}.`, 'kpi', { kind: 'kpi', title: m.label, binding: { metrics: [m.key], dimensions: [], filters: [] }, behavior: none });
+  for (const f of pickers) {
+    add(`Pick ${f.label.toLowerCase()}.`, 'filter', { kind: 'filter', title: f.label, binding: { metrics: [], dimensions: [{ field: f.key }], filters: [] }, behavior: { ...none, onClick: 'filter-page' } });
+  }
+  if (date) {
+    add(`${main.label} per month.`, 'line', {
+      kind: 'line',
+      title: `${main.label} per month`,
+      binding: { metrics: [main.key], dimensions: [{ field: date.key, grain: 'month' }], filters: [], sort: { by: `${date.key}@month`, dir: 'asc' } },
+      behavior: none,
+    });
+  }
+  if (splitBy) {
+    add(`${main.label} by ${splitBy.label.toLowerCase()}. Clicking a bar filters the page.`, 'bar', {
+      kind: 'bar',
+      title: `${main.label} by ${splitBy.label.toLowerCase()}`,
+      binding: { metrics: [main.key], dimensions: [{ field: splitBy.key }], filters: [], sort: { by: main.key, dir: 'desc' } },
+      behavior: { ...none, onClick: 'filter-page' },
+    });
+  }
+  if (long) {
+    add(`Top 10 ${long.label.toLowerCase()} by ${main.label.toLowerCase()}.`, 'table', {
+      kind: 'table',
+      title: `Top 10 ${long.label.toLowerCase()} by ${main.label.toLowerCase()}`,
+      binding: { metrics: [main.key], dimensions: [{ field: long.key }], filters: [], sort: { by: main.key, dir: 'desc' }, limit: 10 },
+      behavior: none,
+    });
+  }
+  const filters: Filter[] = date ? [{ field: date.key, op: 'last', values: [12], unit: 'month' }] : [];
+  if (date) notes.push(`The page shows the last 12 months of ${date.label}; change it in the page brief.`);
+  notes.push('A starter page, built from the catalog. Rewrite any flag\'s brief to change it.');
+  const subjectWords = subject.split('.').at(-1)!.replace(/_/g, ' ');
+  return { title: `${subjectWords.charAt(0).toUpperCase()}${subjectWords.slice(1)} overview`, filters, flags, notes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -355,7 +468,7 @@ function phrases(index: CatalogIndex) {
 }
 
 /** Longest-first, non-overlapping catalog mentions in reading order. Metrics win ties. */
-function mentions(text: string, index: CatalogIndex): Mention[] {
+export function mentions(text: string, index: CatalogIndex): Mention[] {
   const found: Mention[] = [];
   for (const p of phrases(index)) {
     p.re.lastIndex = 0;

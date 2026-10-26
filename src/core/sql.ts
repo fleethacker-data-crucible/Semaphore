@@ -22,7 +22,15 @@ export interface RenderedSql {
 
 export class SqlError extends Error {}
 
-export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date()): RenderedSql {
+export interface RenderOptions {
+  /**
+   * `native` uses the dialect's own markers ($1, :p1, @p1, ?). `question` uses ? everywhere,
+   * for ODBC and OLE DB, which bind positionally whatever the database.
+   */
+  placeholders?: 'native' | 'question';
+}
+
+export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date(), options: RenderOptions = {}): RenderedSql {
   const source = index.source(plan.source);
   if (!source) throw new SqlError(`Unknown source "${plan.source}".`);
   const dialect = source.dialect;
@@ -30,6 +38,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   const bind = (p: SqlParam): string => {
     params.push(p);
     const n = params.length;
+    if (options.placeholders === 'question') return '?';
     return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' ? `@p${n}` : '?';
   };
 
