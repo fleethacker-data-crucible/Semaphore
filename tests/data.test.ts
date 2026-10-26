@@ -249,3 +249,17 @@ test('CSV to catalog to chart, end to end in memory', () => {
   assert.equal(r.rows.length, 3);
   assert.equal(r.rows.reduce((s, x) => s + (x.values[d.binding!.metrics[0]!] as number), 0), lines.slice(1).reduce((s, l) => s + Number(l.split(',')[1]), 0));
 });
+
+test('a word two tables share resolves to the table the rest of the brief points at', () => {
+  const lines = ['Vendor,Spend,Invoice Date,Category'];
+  for (let i = 0; i < 30; i++) lines.push(`V${i % 7},${100 + i},2026-0${1 + (i % 9)}-15,${['Fuel', 'Parts'][i % 2]}`);
+  const t = readCsv('vendors.csv', lines.join('\n'));
+  const { catalog } = proposeCatalog({ source: { id: 'files', label: 'Files', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, index.catalog);
+  const both = indexCatalog(catalog);
+  const spend = catalog.metrics.find((m) => m.label === 'Spend')!.key;
+  const d = draftFlagLocally('Spend by vendor and category', 'bar', both);
+  assert.deepEqual(d.binding?.metrics, [spend]);
+  assert.equal(d.binding?.dimensions.length, 2);
+  // On its own, "spend" keeps meaning Labor cost, which names it as a synonym, in the example.
+  assert.deepEqual(draftFlagLocally('Spend by region', 'bar', both).binding?.metrics, ['labor_cost']);
+});

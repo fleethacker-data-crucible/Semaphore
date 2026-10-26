@@ -1,6 +1,6 @@
 {
   "name": "semaphore",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Semaphore: local-first dashboard intelligence. Drop flags on a hoist, describe them, and Semaphore wires the data.",
   "type": "module",
@@ -10,11 +10,21 @@
   },
   "scripts": {
     "test": "node --test \"tests/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
+    "build": "node web/build.mjs",
+    "dev": "node web/build.mjs --watch"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.0",
+    "echarts": "6.1.0",
+    "esbuild": "0.28.2",
+    "lucide-react": "1.49.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwindcss": "4.3.3",
     "typescript": "6.0.3"
   }
 }
