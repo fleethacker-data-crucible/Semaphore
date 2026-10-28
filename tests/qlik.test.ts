@@ -1,6 +1,7 @@
 // Porting from Qlik (src/core/qlik.ts): load scripts and chart expressions.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { Catalog } from '../src/core/catalog.ts';
 import { parseLoadScript, parseQlikExpression, qlikAssociations, qlikLabels, qlikMappings } from '../src/core/qlik.ts';
 
 const SCRIPT = `
@@ -187,4 +188,56 @@ test('a name found in the tables just imported wins; a name in two other tables 
   const amb = qlikMeasures('Sum([Labor Cost])', cat);
   assert.equal(amb.metrics.length, 0);
   assert.match(amb.skipped[0]!.reason, /more than one table/);
+});
+
+test('Qlik part two: mapping loads become cleaning steps, associations become checked relationships', async () => {
+  const { qlikCleaningSteps, qlikRelationshipCandidates } = await import('../src/core/qlik.ts');
+  const { validateQlikReading } = await import('../src/core/intelligence/tasks.ts');
+  const script = parseLoadScript(`LIB CONNECT TO 'Yard';
+RegionMap:
+MAPPING LOAD * INLINE [
+raw, clean
+N.E., Northeast
+NE, Northeast
+];
+Jobs:
+LOAD wo_id AS [Work Order], ApplyMap('RegionMap', region, region) AS Region, ship_id AS ShipId, labor_hours AS Hours;
+SQL SELECT wo_id, region, ship_id, labor_hours FROM yard.jobs;
+Ships:
+LOAD id AS ShipId, class AS [Ship Class];
+SQL SELECT id, class FROM yard.ships;`);
+  const catalog: Catalog = {
+    version: 1,
+    sources: [{ id: 'y', label: 'Yard', kind: 'postgres', dialect: 'postgres' }],
+    fields: [
+      { key: 'jobs.region', label: 'region', source: 'y', table: 'jobs', column: 'region', type: 'string' },
+      { key: 'jobs.ship_id', label: 'ShipId', source: 'y', table: 'jobs', column: 'ship_id', type: 'string' },
+      { key: 'jobs.hours', label: 'Hours', source: 'y', table: 'jobs', column: 'labor_hours', type: 'number' },
+      { key: 'ships.id', label: 'ShipId', source: 'y', table: 'ships', column: 'id', type: 'string' },
+      { key: 'ships.class', label: 'Ship Class', source: 'y', table: 'ships', column: 'class', type: 'string' },
+    ],
+    metrics: [],
+  };
+  const imported = [
+    { qlik: 'Jobs', source: 'y', table: 'jobs' },
+    { qlik: 'Ships', source: 'y', table: 'ships' },
+  ];
+  const { steps } = qlikCleaningSteps(script, catalog, imported);
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0]!.field, 'jobs.region');
+  assert.deepEqual(steps[0]!.map, { 'N.E.': 'Northeast', NE: 'Northeast' });
+  assert.equal(steps[0]!.origin, 'qlik');
+  const pairs = qlikRelationshipCandidates(script, catalog, imported).map((c) => `${c.from.key}>${c.to.key}`);
+  assert.deepEqual(pairs.sort(), ['jobs.ship_id>ships.id', 'ships.id>jobs.ship_id']);
+
+  // The AI's reading of an expression is held to the catalog.
+  const r = validateQlikReading(
+    { measures: [{ label: 'Hours', agg: 'sum', field: 'jobs.hours', filters: [{ field: 'jobs.region', op: 'in', values: ['Gulf'] }] }, { agg: 'sum', field: 'ships.class' }, { agg: 'sum', field: 'made.up' }], explanation: 'Gulf hours.' },
+    'Gulf hours',
+    "Sum({<Region={'Gulf'}>} Hours)",
+    catalog,
+  );
+  assert.deepEqual(r.metrics.map((m) => [m.label, m.agg, m.field]), [['Hours', 'sum', 'jobs.hours']]);
+  assert.match(r.filterNotes[0]!, /region in Gulf/);
+  assert.equal(r.rejected.length, 2);
 });

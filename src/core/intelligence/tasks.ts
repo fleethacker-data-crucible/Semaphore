@@ -2,9 +2,10 @@
 // validates the answer as untrusted input before anything reaches the analyst. When there is no
 // model, or the answer does not hold up, the caller keeps what the local rules found.
 
+import type { Aggregate, Catalog, Metric } from '../catalog.ts';
 import type { CleaningStep } from '../cleaning.ts';
 import type { ValueCount } from '../quality.ts';
-import { IntelligenceError, type IntelligenceProvider } from './contract.ts';
+import { IntelligenceError, type IntelligenceProvider, summarizeCatalog } from './contract.ts';
 
 export const CLEANING_VALUES_MAX = 300;
 
@@ -86,4 +87,65 @@ export function validateCleaning(raw: unknown, field: { key: string; label: stri
 
 export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// ---------- Qlik expressions ----------
+
+const QLIK_PROMPT = `You translate one Qlik chart expression into measures for Semaphore, a BI tool whose measures are a single aggregate over one field: sum, avg, min, max, count or count_distinct. The request has the expression, the name it had in Qlik and a catalog of fields (key, label, type). Return {"measures":[{"label","agg","field":"<a field key from the catalog>","filters":[{"field":"<field key>","op":"in|eq|gte|lte|between","values":[]}]}],"explanation":"<one or two plain sentences>"}. Set analysis such as {<Region={'Gulf'}>} becomes "filters". A ratio or difference of aggregates becomes one measure per aggregate, and the explanation says how they combine (Semaphore shows them side by side). If the expression cannot be expressed this way, return {"measures":[],"explanation":"<why>"}. Use only field keys from the catalog. Answer with JSON only.`;
+
+export interface AiQlikResult {
+  metrics: Metric[];
+  /** Filters from set analysis, to put on the flags that use the measure. */
+  filterNotes: string[];
+  explanation: string;
+  rejected: string[];
+}
+
+/** Ask the model to read one Qlik expression. Sends the expression, its name and the catalog's field keys, labels and types. */
+export async function readQlikExpressionWithAi(provider: IntelligenceProvider, label: string, expression: string, catalog: Catalog): Promise<AiQlikResult> {
+  if (!provider.runTask) throw new IntelligenceError(`${provider.label} cannot read Qlik expressions.`);
+  const raw = await provider.runTask({
+    task: 'read-qlik-expression',
+    system: QLIK_PROMPT,
+    payload: { name: label.slice(0, 80), expression: expression.slice(0, 2000), fields: summarizeCatalog(catalog).fields },
+  });
+  return validateQlikReading(raw, label, expression, catalog);
+}
+
+const AGGS: ReadonlySet<string> = new Set(['sum', 'avg', 'min', 'max', 'count', 'count_distinct']);
+const OPS: ReadonlySet<string> = new Set(['in', 'eq', 'gte', 'lte', 'between']);
+
+export function validateQlikReading(raw: unknown, label: string, expression: string, catalog: Catalog): AiQlikResult {
+  if (!isObject(raw) || !Array.isArray(raw.measures)) throw new IntelligenceError('The model did not return measures.');
+  const fields = new Map(catalog.fields.map((f) => [f.key, f]));
+  const numeric = (key: string) => fields.get(key)?.type === 'number' || (catalog.cleaning ?? []).some((c) => c.field === key && c.kind === 'number');
+  const taken = new Set([...catalog.metrics.map((m) => m.key), ...catalog.fields.map((f) => f.key)]);
+  const out: AiQlikResult = { metrics: [], filterNotes: [], explanation: typeof raw.explanation === 'string' ? raw.explanation.slice(0, 400) : '', rejected: [] };
+  for (const m of raw.measures.slice(0, 6)) {
+    if (!isObject(m) || typeof m.agg !== 'string' || !AGGS.has(m.agg) || typeof m.field !== 'string') {
+      out.rejected.push('A measure without a known aggregate and field was left out.');
+      continue;
+    }
+    const field = fields.get(m.field);
+    if (!field) {
+      out.rejected.push(`"${m.field.slice(0, 60)}" is not a field in the catalog.`);
+      continue;
+    }
+    const agg = m.agg as Aggregate;
+    if ((agg === 'sum' || agg === 'avg' || agg === 'min' || agg === 'max') && !numeric(field.key)) {
+      out.rejected.push(`${agg} of ${field.label} was left out: ${field.label} is not a number.`);
+      continue;
+    }
+    const name = (typeof m.label === 'string' && m.label.trim() ? m.label.trim() : `${label} (${agg} of ${field.label})`).slice(0, 80);
+    let key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48) || 'measure';
+    for (let i = 2; taken.has(key); i++) key = `${key.replace(/_\d+$/, '')}_${i}`;
+    taken.add(key);
+    out.metrics.push({ key, label: name, agg, field: field.key, source: field.source, synonyms: [expression.slice(0, 80).toLowerCase()] });
+    const filters = Array.isArray(m.filters) ? m.filters.slice(0, 10) : [];
+    const said = filters
+      .filter((x): x is Record<string, unknown> => isObject(x) && typeof x.field === 'string' && fields.has(x.field) && typeof x.op === 'string' && OPS.has(x.op) && Array.isArray(x.values))
+      .map((x) => `${fields.get(x.field as string)!.label} ${x.op} ${(x.values as unknown[]).filter((v) => typeof v === 'string' || typeof v === 'number').slice(0, 20).join(', ')}`);
+    if (said.length) out.filterNotes.push(`"${name}" applies only where ${said.join('; ')}: add that as a filter on the flags that use it.`);
+  }
+  return out;
 }

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, indexCatalog, pruneCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
@@ -17,14 +17,16 @@ import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../sr
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
-import { applyQlikLabels, qlikMeasures } from '../../src/core/qlik.ts';
+import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } from '../../src/core/qlik.ts';
+import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
+import { readQlikExpressionWithAi } from '../../src/core/intelligence/tasks.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
-import { type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
+import { aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
@@ -436,7 +438,7 @@ export function App() {
   const importQlik = useCallback(
     async (plan: QlikImportPlan): Promise<string[]> => {
       const out: string[] = [];
-      const imported: Array<{ source: string; table: string }> = [];
+      const imported: QlikImported[] = [];
       let cat = catalog;
       try {
         for (const t of plan.tables) {
@@ -449,7 +451,7 @@ export function App() {
             cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
-            imported.push({ source: t.source, table: p.table });
+            imported.push({ source: t.source, table: p.table, qlik: t.qlik });
             out.push(`${p.table}: ${p.columns.length} columns profiled, ${labelled.renamed} named the way the Qlik app named them.`);
           } catch (e) {
             out.push(`${t.table}: could not be profiled (${(e as Error).message}).`);
@@ -462,6 +464,32 @@ export function App() {
           out.push(...m.filterNotes);
           for (const s of m.skipped) out.push(`Not added, ${s.label}: ${s.reason}`);
         }
+        if (plan.script && imported.length) {
+          // The cleaning Qlik's mapping loads did, and the links its same-named fields made.
+          const cleaning = qlikCleaningSteps(plan.script, cat, imported);
+          const have = new Set((cat.cleaning ?? []).map((s) => s.id));
+          const fresh = cleaning.steps.filter((s) => !have.has(s.id));
+          if (fresh.length) {
+            cat = { ...cat, cleaning: [...(cat.cleaning ?? []), ...fresh] };
+            out.push(`${fresh.length} mapping${fresh.length === 1 ? '' : 's'} carried over as cleaning steps (Data > Clean).`);
+          }
+          out.push(...cleaning.notes);
+          const candidates = qlikRelationshipCandidates(plan.script, cat, imported);
+          const checkCtx: DataContext = { ...ctx, index: indexCatalog(cat) };
+          for (const c of candidates) {
+            setBusy(`Checking the ${c.from.label} link…`);
+            try {
+              const [a, b] = [await runAnywhere(valuesPlan(checkCtx.index, c.from.key), checkCtx), await runAnywhere(valuesPlan(checkCtx.index, c.to.key), checkCtx)];
+              const rel = proposeRelationship(c, checkRelationship(toValueCounts(a.rows), toValueCounts(b.rows)));
+              if (rel && !(cat.relationships ?? []).some((r) => r.id === rel.id)) {
+                cat = { ...cat, relationships: [...(cat.relationships ?? []), { ...rel, origin: 'qlik' }] };
+                out.push(`Linked ${c.from.table} to ${c.to.table} on ${c.from.label}, as Qlik did (${Math.round((rel.match ?? 0) * 100)}% of values match).`);
+              }
+            } catch (e) {
+              out.push(`The ${c.from.label} link could not be checked: ${(e as Error).message}`);
+            }
+          }
+        }
         setCatalog(cat);
         notify('Qlik import done: check the new measures and fields under Data.');
       } finally {
@@ -469,8 +497,11 @@ export function App() {
       }
       return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
     },
-    [catalog, server, setCatalog, notify],
+    [catalog, server, setCatalog, notify, ctx],
   );
+
+  const readQlikWithAi = useCallback((label: string, expression: string) => readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
+  const addMeasures = useCallback((metrics: Metric[]) => setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] }), [catalog, setCatalog]);
 
   // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.
   const addBriefFlag = useCallback(
@@ -1007,7 +1038,7 @@ export function App() {
         />
       )}
 
-      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} onClose={() => setQlikOpen(false)} />}
+      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} ai={ai?.configured && useAi ? aiLabel(ai) : null} onReadWithAi={readQlikWithAi} onAddMeasures={addMeasures} onClose={() => setQlikOpen(false)} />}
 
       {openList && (
         <div className="fixed inset-0 z-40 flex items-start justify-center bg-ink/20 pt-24" onPointerDown={(e) => e.target === e.currentTarget && setOpenList(null)}>
