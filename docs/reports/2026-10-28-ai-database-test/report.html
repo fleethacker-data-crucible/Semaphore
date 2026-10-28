@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Semaphore Test Report: AI and Database, 28 Oct 2026</title>
+<style>
+  /* Fleet UI v0.2, Chart room (light) tokens, for print. */
+  :root {
+    --bg: #fbfaf2; --card: #ffffff; --muted: #efe9d9; --border: #dcd3bd;
+    --ink: #132633; --ink-2: #4f5d66; --brass: #8a6b45; --accent: #1f6f8b;
+    --ok: #2f7d57; --warn: #9a6412; --bad: #b8382b;
+    --serif: Cambria, 'Cambria Math', Georgia, 'Times New Roman', serif;
+    --sans: 'Segoe UI', system-ui, Arial, sans-serif;
+    --mono: 'Cascadia Mono', Consolas, monospace;
+  }
+  @page { size: Letter; margin: 0.6in 0.65in; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink); font: 10.5pt/1.45 var(--sans); }
+  h1, h2, h3 { font-family: var(--serif); color: var(--ink); margin: 0; line-height: 1.2; }
+  h1 { font-size: 22pt; }
+  h2 { font-size: 14pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1px solid var(--brass); break-after: avoid; }
+  h3 { font-size: 11pt; margin: 10pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 16pt; }
+  li { margin: 0 0 3pt; }
+  code { font: 9pt var(--mono); background: var(--muted); padding: 0 3px; border-radius: 3px; }
+  .masthead { display: flex; align-items: center; gap: 14pt; padding-bottom: 8pt; border-bottom: 2px solid var(--brass); }
+  .masthead img { width: 72pt; height: 72pt; }
+  .eyebrow { font: 600 8pt var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--brass); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4pt 16pt; font: 8.5pt var(--mono); color: var(--ink-2); margin-top: 4pt; }
+  .meta b { color: var(--ink); }
+  .bottomline { background: var(--muted); border-left: 4px solid var(--accent); padding: 8pt 10pt; margin: 10pt 0; }
+  .bottomline p:last-child { margin: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 8pt; font-size: 9.5pt; break-inside: avoid; }
+  th, td { text-align: left; vertical-align: top; padding: 4pt 6pt; border-bottom: 1px solid var(--border); }
+  th { background: var(--muted); font-weight: 600; color: var(--ink-2); }
+  td.n { font-family: var(--mono); white-space: nowrap; }
+  .ok { color: var(--ok); font-weight: 600; } .warn { color: var(--warn); font-weight: 600; } .bad { color: var(--bad); font-weight: 600; }
+  figure { margin: 6pt 0 10pt; break-inside: avoid; }
+  figure img { width: 100%; border: 1px solid var(--border); border-radius: 4pt; display: block; }
+  figcaption { font-size: 8.5pt; color: var(--ink-2); margin-top: 3pt; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10pt; }
+  .note { font-size: 8.5pt; color: var(--ink-2); border-top: 1px solid var(--border); padding-top: 6pt; margin-top: 14pt; }
+  .page-break { break-before: page; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <img src="../../../web/public/brand/emblem-light.png" alt="Semaphore">
+  <div>
+    <div class="eyebrow">Test report · Semaphore v0.3 preview</div>
+    <h1>AI and database test</h1>
+    <div class="meta">
+      <span>DATE <b>28 Oct 2026</b></span>
+      <span>DATA <b>Synthetic only</b></span>
+      <span>CODE <b>PR #13, commit 29ea970</b></span>
+      <span>AUTOMATED TESTS <b>152 of 152 pass</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="bottomline">
+  <p><b>Bottom line.</b> Semaphore connected to a real database with nothing installed, found the join between two tables on its own, and ran correct queries. Through Fairlead it drafted a correct chart from a plain-English question using both a commercial model (OpenAI) and a free one (NVIDIA Nemotron on OpenRouter). The test found six defects; all six are fixed and covered by tests.</p>
+  <p>The local model on the workstation is not yet good enough to draft on its own, but its cleaning suggestions help, and the built-in rules work with no model at all.</p>
+</div>
+
+<h2>What Semaphore is</h2>
+<p>Semaphore is a dashboard builder for analysts on standard Navy workstations. It is written in PowerShell 5.1 and runs in the browser, with no installation, no admin rights and no license. An analyst describes a chart in plain English and Semaphore drafts it, shows the exact SQL, and lets leadership ask questions answered from the analysts' reviewed work. It aims to cover the everyday Qlik workflow (sheets, master measures, associative filtering, reload tasks) as a no-cost alternative.</p>
+<p>AI goes through <b>Fairlead</b>, the Fleet's model router: one local address that sends each request to a local model or an approved cloud model. Models see only the analyst's words and the catalog's labels, never data rows. The one exception is a cleaning request, which sends one field's distinct labels, and only when the analyst asks. Semaphore writes every SQL query itself, so a model can never invent a number.</p>
+
+<h2>How it was tested</h2>
+<ul>
+  <li><b>Database:</b> a throwaway Microsoft Access file built for the test, read through the Access engine already on Windows. It held 5,000 synthetic work orders and 120 synthetic hulls (SIM-001 to SIM-120). Region names were deliberately misspelled in ten ways ("N.E.", "PNW", "Gulf Coast", ...), and one homeport (Mayport) was given higher labor costs, so the right answer was known in advance.</li>
+  <li><b>The question,</b> written as an analyst might ask it: <i>"Where are we bleeding the most labor money on parts-delayed jobs? Break it down by homeport."</i> Answering it needs a measure from one table, a field from another, and a filter.</li>
+  <li><b>Three AI routes through Fairlead:</b> a local model on the workstation (Ollama), OpenAI <code>gpt-5-mini</code>, and NVIDIA <code>Nemotron 3 Ultra</code> (free) on OpenRouter, held to an allow-list of free models.</li>
+  <li><b>Cleanup:</b> the database, its connection and every test flag were deleted afterwards, and no trace was left in Semaphore's files.</li>
+</ul>
+
+<h2>Results without AI</h2>
+<table>
+  <tr><th>Check</th><th>Result</th></tr>
+  <tr><td>Connect to the database and list its tables</td><td class="ok">Pass</td></tr>
+  <tr><td>Profile a table and propose measures and fields</td><td class="ok">Pass. It correctly treated the work order ID as an identifier, not a number to add up.</td></tr>
+  <tr><td>Find how the tables connect</td><td class="ok">Pass. "Each work order belongs to one hull", with all 120 of 120 hull numbers matching.</td></tr>
+  <tr><td>Run a hand-written join query (SQL desk)</td><td class="ok">Pass. 6 rows in 9 ms.</td></tr>
+  <tr><td>Refuse a query that would change data (<code>DELETE</code>)</td><td class="ok">Pass. "Only a single SELECT statement is allowed."</td></tr>
+  <tr><td>Find messy labels with built-in rules</td><td class="ok">Pass. 6 of the 10 misspellings and a stray space, covering 1,049 rows. Nothing changes until the analyst accepts.</td></tr>
+</table>
+
+<h2>Results with AI</h2>
+<table>
+  <tr><th></th><th>Local (Ollama)</th><th>OpenAI gpt-5-mini</th><th>OpenRouter Nemotron 3 Ultra (free)</th></tr>
+  <tr><td>Time to draft</td><td class="n">≈ 2.5 min</td><td class="n">≈ 20–30 s</td><td class="n">≈ 90 s</td></tr>
+  <tr><td>Chose the right table</td><td class="bad">No</td><td class="ok">Yes, and said why</td><td class="ok">Yes</td></tr>
+  <tr><td>Chart drafted</td><td class="bad">A single total from the wrong table</td><td class="ok">Labor cost and work orders by homeport</td><td class="ok">Labor cost by homeport, top 10</td></tr>
+  <tr><td>Right answer (Mayport highest)</td><td class="bad">No</td><td class="ok">Yes: $4.72M against a typical $2.39M</td><td class="ok">Yes: $4.72M against a typical $2.39M</td></tr>
+  <tr><td>"Parts-delayed" filter</td><td class="warn">Not applied</td><td class="warn">Not applied, and said so</td><td class="warn">Not applied, and said so</td></tr>
+  <tr><td>Misspellings found by AI cleaning (of 10)</td><td class="n">7</td><td class="n">9</td><td class="n">8</td></tr>
+</table>
+<p>Every draft is labelled with the model that made it and a confidence score, and stays a suggestion until an analyst accepts it. None of the models could map "parts-delayed" to the status value "Awaiting parts", because by design they never see the values in a field (see open items).</p>
+
+<figure><img src="img/05-openrouter-draft.jpg" alt=""><figcaption>The free NVIDIA model on OpenRouter drafted "Labor cost by homeport" (bottom left) from the plain-English brief (right), joined across two tables, with "Mayport stands out" noted automatically. OpenAI reached the same answer.</figcaption></figure>
+
+<h2>Defects found and fixed</h2>
+<table>
+  <tr><th>#</th><th>Defect</th><th>Effect</th><th>Fix</th></tr>
+  <tr><td class="n">1</td><td>Started from a PowerShell 7 window, the 5.1 launcher loaded PowerShell 7's modules</td><td>Semaphore would not start</td><td>The launcher ignores PowerShell 7's module folders</td></tr>
+  <tr><td class="n">2</td><td>OpenAI's newest models reject a setting Semaphore sent (<code>temperature: 0</code>)</td><td>Every OpenAI draft quietly fell back to the built-in rules</td><td>Ask again with the model's default setting</td></tr>
+  <tr><td class="n">3</td><td>A draft could mix measures and fields from two databases</td><td>The chart stopped with an error</td><td>Keep one database, swap in the same-named measure, drop the rest with a note</td></tr>
+  <tr><td class="n">4</td><td>Models added red/amber colour rules nobody asked for, and rated themselves 90% sure</td><td>Misleading drafts</td><td>Uninvited colour rules dropped; a model's own confidence capped at 80%</td></tr>
+  <tr><td class="n">5</td><td>The model was never told what "Pick chart for me" means</td><td>It kept drawing a single number</td><td>The prompt now explains it, and says to pick the database that has everything asked for</td></tr>
+  <tr><td class="n">6</td><td>A chart left with nothing to split by crashed the drawing code</td><td>The whole page went blank</td><td>The chart shows its total, and any flag that fails says so in its own card</td></tr>
+</table>
+
+<h2>Open items</h2>
+<ul>
+  <li><b>Matching words to values</b> ("parts-delayed" → "Awaiting parts"). This needs the model to see a short field's values. Possible fix: send the values of short lists only, with the analyst's consent, as cleaning already does.</li>
+  <li><b>Fairlead's fallback.</b> When a cloud model was unavailable, Fairlead sometimes answered from the local model while still reporting success, so the draft would have carried the wrong model's name. Fairlead should report which model actually answered.</li>
+  <li><b>Free models are rate-limited:</b> Google's free Gemma model refused requests during the test. Use a paid or approved model for anything time-critical.</li>
+  <li><b>The local model</b> is too slow and too weak to draft charts on its own. Built-in rules plus a stronger approved model is the practical setup today.</li>
+  <li><b>Not yet done:</b> testing on a target Navy workstation and against a real Navy database, and accreditation. Semaphore is a v0.3 preview and is not approved for operational data.</li>
+</ul>
+
+<h2>Why it matters</h2>
+<ul>
+  <li><b>No license and no installation:</b> it runs in the user's own account from a folder, using what Windows already has.</li>
+  <li><b>Data stays in place:</b> queries run against the source, results stay on the workstation, and models never receive data rows.</li>
+  <li><b>Nothing is hidden:</b> every chart shows its SQL, every AI suggestion is labelled and needs an analyst's approval, and the app refuses to change data.</li>
+  <li><b>Model choice is a setting:</b> the same Semaphore worked with a local model, a commercial API and a free open model, switched in Fairlead with no code change.</li>
+</ul>
+
+<div class="pair" style="margin-top:8pt; grid-template-columns: 1.55fr 1fr; align-items: start">
+  <figure><img src="img/02-sql-desk-join-crop.jpg" alt=""><figcaption>SQL desk: a join across the two test tables, 6 rows in 9 ms. Statements that change data are refused.</figcaption></figure>
+  <figure><img src="img/06-openai-cleaning-crop.jpg" alt=""><figcaption>Cleaning: built-in rules first (top two), then the AI's suggestions. Each fix is a sentence the analyst accepts or declines.</figcaption></figure>
+</div>
+
+<p class="note">Synthetic data only: no real Navy, personnel or operational data was used. The cloud models received the analyst's question, catalog labels and the made-up region spellings. Code: github.com/fleethacker-data-crucible/Semaphore, pull request #13.</p>
+
+</body>
+</html>
