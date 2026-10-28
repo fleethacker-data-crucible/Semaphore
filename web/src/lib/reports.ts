@@ -18,7 +18,10 @@ import type { PlaybookState } from './playbook.ts';
 export const EDITIONS_KEPT = 12;
 
 /** Every flag's answer as it stands, with no selections. Flags that fail keep their error. */
-export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex): Promise<FrozenFlag[]> {
+/** Rows kept per flag for offline filtering in a shared report; a flag with more is shown as it stands. */
+export const RAW_ROWS_MAX = 20_000;
+
+export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean } = {}): Promise<FrozenFlag[]> {
   const out: FrozenFlag[] = [];
   for (const flag of hoist.flags) {
     // A flag not set up yet has nothing to say to a reader.
@@ -30,8 +33,10 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
     try {
       const r: FlagResult = await computeFlag(hoist, flag, {}, ctx);
       const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index);
-      const { sql: _sql, ...kept } = r;
-      out.push({ flag, result: kept, insights });
+      // Editions are read as they stand; a shared report keeps the pre-split rows to filter offline.
+      const { sql: _sql, raw, ...kept } = r;
+      const keep = options.keepRaw && raw && raw.length <= RAW_ROWS_MAX;
+      out.push({ flag, result: keep ? { ...kept, raw } : kept, insights });
     } catch (e) {
       out.push({ flag, result: null, error: (e as Error).message.slice(0, 300), insights: [] });
     }

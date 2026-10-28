@@ -38,6 +38,8 @@ export interface FlagResult {
   ms: number;
   /** Selections that needed a fresh query for this flag. */
   requeried: string[];
+  /** The rows as the source returned them (pre-split), so a shared report can filter offline. */
+  raw?: ReadonlyArray<Record<string, string | number | boolean | null>>;
   /** Lake sources: how the numbers were paid for (or that they came from the result cache). */
   lake?: { cached: boolean; asOf?: string; scannedBytes?: number; warnings: string[] };
 }
@@ -147,7 +149,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
       }
     }
   }
-  const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried };
+  const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried, raw: ran.result.rows };
   const lake = ran.result as { cached?: boolean; asOf?: string; scannedBytes?: number; estimate?: { warnings: string[] } };
   if (lake.cached || lake.scannedBytes !== undefined) {
     out.lake = { cached: !!lake.cached, ...(lake.asOf ? { asOf: lake.asOf } : {}), ...(lake.scannedBytes !== undefined ? { scannedBytes: lake.scannedBytes } : {}), warnings: lake.estimate?.warnings ?? [] };

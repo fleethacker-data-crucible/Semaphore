@@ -333,3 +333,17 @@ test('lineage: a flag traces back through measures, fields, joins and tables to 
   assert.ok(down.has('g:f') && !down.has('f:classes.label'));
   assert.ok(buildLineage(c, hoist, true).nodes.some((n) => n.id === 'f:crews.name'), 'the whole catalog on request');
 });
+
+test('shared report: sealed with a passphrase, opened only with the same one', async () => {
+  const { seal, deriveKey, unb64 } = await import('../web/src/lib/share.ts');
+  const sealed = await seal('{"title":"Monday brief"}', 'harbor pilot lantern');
+  assert.equal(sealed.data.includes('Monday'), false);
+  const open = async (p: string) => {
+    const key = await deriveKey(p, unb64(sealed.salt));
+    return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(sealed.iv) }, key, unb64(sealed.data)));
+  };
+  assert.equal(await open('harbor pilot lantern'), '{"title":"Monday brief"}');
+  await assert.rejects(open('harbor pilot lanterns'));
+  const again = await seal('{"title":"Monday brief"}', 'harbor pilot lantern');
+  assert.notEqual(again.salt, sealed.salt, 'a fresh salt and nonce every time');
+});

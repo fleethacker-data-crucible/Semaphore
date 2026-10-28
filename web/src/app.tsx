@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -44,6 +44,8 @@ import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
 import { SqlDesk } from './components/SqlDesk.tsx';
 import { LineageView } from './components/LineageView.tsx';
+import { ShareDialog } from './components/ShareDialog.tsx';
+import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
@@ -120,6 +122,7 @@ export function App() {
   const [qlikOpen, setQlikOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -919,6 +922,9 @@ export function App() {
           <IconButton label="Download this hoist" onClick={exportHoist}>
             <Download size={16} />
           </IconButton>
+          <IconButton label="Share as a report: one HTML file with working filters" onClick={() => setShareOpen(true)}>
+            <FileDown size={16} />
+          </IconButton>
           <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
             <ScrollText size={16} />
           </IconButton>
@@ -1155,6 +1161,20 @@ export function App() {
             document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }}
           onClose={() => setBriefing(null)}
+        />
+      )}
+
+      {shareOpen && (
+        <ShareDialog
+          title={hoist.title}
+          onClose={() => setShareOpen(false)}
+          onSave={async (passphrase) => {
+            const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true });
+            const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
+            const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
+            download(name, html);
+            return name;
+          }}
         />
       )}
 
