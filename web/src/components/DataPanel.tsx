@@ -3,7 +3,7 @@
 // measures and fields or teach them more words. Every change is checked before it is used.
 
 import { useEffect, useState } from 'react';
-import { Database, FileSpreadsheet, Plus, Trash2, X } from 'lucide-react';
+import { Database, FileSpreadsheet, Network, Plus, Trash2, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { profileTables, type ServerInfo } from '../lib/api.ts';
@@ -28,6 +28,8 @@ export interface DataPanelProps {
   ctx: DataContext;
   /** The AI, when it is on, for cleaning suggestions. */
   provider: IntelligenceProvider;
+  /** Opens the lineage view for this page. */
+  onLineage: () => void;
 }
 
 export function DataPanel(p: DataPanelProps) {
@@ -38,6 +40,9 @@ export function DataPanel(p: DataPanelProps) {
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Database size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Data and catalog</h2>
+          <button type="button" onClick={p.onLineage} className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs hover:border-accent" title="Which flags read which measures and fields, back to the tables">
+            <Network size={13} /> Lineage
+          </button>
           <button type="button" onClick={p.onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>

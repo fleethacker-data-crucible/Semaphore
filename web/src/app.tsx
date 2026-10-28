@@ -43,6 +43,7 @@ import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
 import { SqlDesk } from './components/SqlDesk.tsx';
+import { LineageView } from './components/LineageView.tsx';
 import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
@@ -118,6 +119,7 @@ export function App() {
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
+  const [lineageOpen, setLineageOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -1132,6 +1134,7 @@ export function App() {
           onCatalog={setCatalog}
           ctx={ctx}
           provider={draftingProvider(index, ai, useAi)}
+          onLineage={() => setLineageOpen(true)}
           onAddCsv={addCsv}
           onRemoveSource={removeSource}
           onProfile={profile}
@@ -1154,6 +1157,8 @@ export function App() {
           onClose={() => setBriefing(null)}
         />
       )}
+
+      {lineageOpen && <LineageView catalog={catalog} hoist={hoist} onClose={() => setLineageOpen(false)} />}
 
       {sqlOpen && server && <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />}
 

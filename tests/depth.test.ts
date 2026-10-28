@@ -312,3 +312,24 @@ test('quality: on a tie the merged label is the one written like a name', async 
   const f = findIssues(index, 'jobs.region', [{ value: 'northeast', count: 5 }, { value: 'N.E.', count: 5 }, { value: 'Northeast', count: 5 }]).find((x) => x.kind === 'variants');
   assert.deepEqual(f?.step.map, { northeast: 'Northeast', 'N.E.': 'Northeast' });
 });
+
+test('lineage: a flag traces back through measures, fields, joins and tables to its source', async () => {
+  const { buildLineage, connected } = await import('../src/core/lineage.ts');
+  const c = yard();
+  c.cleaning = [{ id: 'c', field: 'jobs.region', kind: 'trim', sentence: 'x' }];
+  const { hoist, flag } = page({ metrics: ['hours'], dimensions: [{ field: 'classes.label' }], filters: [{ field: 'jobs.region', op: 'eq', values: ['Gulf'] }] });
+  flag.title = 'Hours by class';
+  const l = buildLineage(c, hoist);
+  const ids = new Set(l.nodes.map((n) => n.id));
+  for (const x of ['s:y', 't:y|jobs', 't:y|classes', 'f:jobs.hours', 'f:classes.label', 'f:jobs.region', 'm:hours', 'g:f']) assert.ok(ids.has(x), x);
+  assert.equal(ids.has('t:y|crews'), false, 'unused tables are left out');
+  assert.equal(l.nodes.find((n) => n.id === 'f:jobs.region')?.detail, 'cleaned: trim');
+  assert.ok(ids.has('t:y|ships'), 'the hop through ships is drawn');
+  assert.ok(l.edges.some((e) => e.join && e.from === 't:y|jobs' && e.to === 't:y|ships'));
+  assert.ok(l.edges.some((e) => e.join && e.from === 't:y|ships' && e.to === 't:y|classes'));
+  const up = connected(l, 'g:f');
+  assert.ok(up.has('s:y') && up.has('m:hours') && up.has('t:y|classes'));
+  const down = connected(l, 'f:jobs.hours');
+  assert.ok(down.has('g:f') && !down.has('f:classes.label'));
+  assert.ok(buildLineage(c, hoist, true).nodes.some((n) => n.id === 'f:crews.name'), 'the whole catalog on request');
+});
