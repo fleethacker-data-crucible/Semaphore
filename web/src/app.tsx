@@ -50,10 +50,11 @@ import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
+import { Welcome } from './components/Welcome.tsx';
 
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
-const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view' };
+const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view', skipWelcome: 'semaphore.skipWelcome' };
 /** Built-in skins (web/src/styles.css). A deployment may name another one defined in config\skin.css. */
 const SKINS = [
   { id: 'fleet', label: 'Fleet' },
@@ -103,6 +104,8 @@ export function App() {
   const [server, setServer] = useState<ServerInfo | null>(null);
   const [serverChecked, setServerChecked] = useState(false);
   const [view, setViewState] = useState<View | null>(initialView);
+  // The builder opens on the welcome page (components/Welcome.tsx) unless the analyst turned it off.
+  const [welcome, setWelcome] = useState(() => (initialView() ?? 'builder') === 'builder' && !readLocal<boolean>(K.skipWelcome));
   const [refreshLog, setRefreshLog] = useState<string[]>([]);
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
@@ -847,12 +850,44 @@ export function App() {
     );
   }
 
+  if (welcome) {
+    return (
+      <Welcome
+        lastTitle={hoist.title}
+        canOpenSaved={!!server}
+        onContinue={() => setWelcome(false)}
+        onNew={() => {
+          history.replace(blankHoist());
+          setSelections({});
+          setSelectedId(null);
+          setWelcome(false);
+        }}
+        onOpenSaved={() => {
+          setWelcome(false);
+          listItems('hoists').then(setOpenList, (e: Error) => notify(e.message));
+        }}
+        onData={() => {
+          setWelcome(false);
+          setDataOpen(true);
+        }}
+        onAsk={() => {
+          setWelcome(false);
+          setView('ask');
+        }}
+        skipNextTime={!!readLocal<boolean>(K.skipWelcome)}
+        onSkipNextTime={(skip) => writeLocal(K.skipWelcome, skip)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-panel px-4 py-2">
-        <img src="brand/mark.svg" alt="" className="h-7 w-7" />
+        <img src="brand/mark.svg" alt="" className="header-mark h-7 w-7" />
         <div className="flex min-w-0 flex-col">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-brass">Semaphore</span>
+          <button type="button" onClick={() => setWelcome(true)} title="Home: the welcome page" className="self-start text-[10px] font-semibold uppercase tracking-[0.18em] text-brass hover:underline">
+            Semaphore
+          </button>
           <input
             value={hoist.title}
             onChange={(e) => change((h) => ({ ...h, title: e.target.value.slice(0, 200) }), 'title')}
@@ -1055,7 +1090,7 @@ export function App() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <Palette onAdd={(k) => addFlag(k)} />
+        <Palette onAdd={(k) => addFlag(k)} onHome={() => setWelcome(true)} />
         <main className="relative min-w-0 flex-1 overflow-auto">
           {asked && (
             <AskAnswer

@@ -251,5 +251,27 @@ body {
   * { transition: none !important; }
 }
 
+/* Brand (UNIFIED-UI 5 and 8): the full emblem with its wordmark, the Night watch or Chart room
+   version of it, and the display serif for the welcome headline. */
+:root[data-theme='dark'] .only-light,
+:root:not([data-theme='dark']) .only-dark { display: none; }
+.font-display { font-family: Cambria, 'Cambria Math', Georgia, 'Times New Roman', serif; }
+
+/* Welcome: Semaphore opens on the emblem and the ways in. The emblem follows the window: it grows
+   with the height up to 380 px, and on a short or narrow window it gives way to the actions. */
+.welcome-emblem { width: clamp(160px, min(40vh, 60vw), 380px); height: auto; }
+@media (max-height: 520px) {
+  .welcome-emblem { width: clamp(96px, 30vh, 160px); }
+}
+
+/* The palette's brand: on a window with room for it, the full emblem tops the flag palette and the
+   header drops its small mark; smaller than that, the mark in the header is the brand. */
+.palette-emblem { display: none; }
+@media (min-width: 1200px) and (min-height: 760px) {
+  /* The theme rule above still hides the other theme's copy: it is the more specific selector. */
+  .palette-emblem { display: block; width: clamp(112px, 17vh, 144px); height: auto; margin: 0 auto 4px; }
+  .header-mark { display: none; }
+}
+
 .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll-thin::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }

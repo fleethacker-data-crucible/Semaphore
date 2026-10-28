@@ -5,6 +5,7 @@ import { AreaChart, BarChart3, Filter, Gauge, LineChart, PieChart, Sparkles, Tab
 import type { LucideIcon } from 'lucide-react';
 import type { FlagKind } from '../../../src/core/hoist.ts';
 import { KIND_MIME } from './Canvas.tsx';
+import { Emblem } from './Welcome.tsx';
 
 export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint: string }> = {
   kpi: { label: 'KPI', icon: Gauge, hint: 'One headline number' },
@@ -19,7 +20,7 @@ export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint
 
 const ORDER: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
 
-export function Palette({ onAdd }: { onAdd: (kind: FlagKind | 'auto') => void }) {
+export function Palette({ onAdd, onHome }: { onAdd: (kind: FlagKind | 'auto') => void; onHome: () => void }) {
   const item = (kind: FlagKind | 'auto', label: string, hint: string, Icon: LucideIcon, accent = false) => (
     <li key={kind}>
       <button
@@ -42,7 +43,11 @@ export function Palette({ onAdd }: { onAdd: (kind: FlagKind | 'auto') => void })
     </li>
   );
   return (
-    <nav aria-label="Flag palette" className="flex w-[168px] shrink-0 flex-col gap-2 border-r border-line bg-panel-2 p-3">
+    <nav aria-label="Flag palette" className="flex w-[168px] shrink-0 flex-col gap-2 overflow-y-auto border-r border-line bg-panel-2 p-3">
+      {/* Shown only on a window with room for it (styles.css); otherwise the header's mark is the brand. */}
+      <button type="button" onClick={onHome} title="Home: the welcome page" className="rounded-lg">
+        <Emblem className="palette-emblem" alt="Semaphore home" />
+      </button>
       <h2 className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Flags</h2>
       <ul className="flex flex-col gap-1.5">
         {item('auto', 'Smart flag', 'Describe it; Semaphore picks the chart', Sparkles, true)}
