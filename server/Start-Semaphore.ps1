@@ -36,6 +36,12 @@ param(
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
+# Started from a PowerShell 7 console, 5.1 inherits 7's PSModulePath and autoloads 7's core modules,
+# which fail here (Import-PowerShellDataFile "not recognized"). Keep only the 5.1-compatible entries.
+if ($PSVersionTable.PSVersion.Major -lt 6 -and $env:PSModulePath) {
+    $env:PSModulePath = (($env:PSModulePath -split ';') |
+        Where-Object { $_ -and $_ -notmatch '\\PowerShell\\|\\microsoft\.powershell_' }) -join ';'
+}
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
 
