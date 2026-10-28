@@ -66,9 +66,15 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 | **Flip a flag over** | The flag in plain English, why Semaphore drafted it that way, and the exact SQL with its parameters. |
 | **Cross-filtering** | Click a bar or a picker value and the whole page filters from cached results, asking the source again only when it must. |
 | **Lego grid** | Drag, resize, drop from the palette, arrow keys, undo and redo. Light and dark themes. |
-| **Catalog from your data** | Add a CSV file or profile a database table and Semaphore proposes measures and fields, with labels and synonyms from the column names, for you to check. |
+| **Catalog from your data** | Add a CSV file or profile a database table and Semaphore proposes measures and fields, with labels and synonyms from the column names, for you to check. Large CSV files are read in a Web Worker. |
+| **Joins and drill paths** | Relationships let a flag on one table group or filter by another (Data > Links finds them for you). Flags set to drill go year → quarter → month → day, or along a drill path, down to the rows. |
+| **Messy data, cleaned with you** | Data > Clean finds stray spaces, the same label spelt different ways, numbers kept as text, mixed date formats, blanks and duplicate rows, and offers each fix as a sentence to accept or undo. The data itself is never changed. |
+| **Import from Qlik** | Paste a load script and chart expressions: tables, Qlik's field names, measures, mapping loads (as cleaning) and associations (as joins) come across for you to check. |
+| **SQL desk** | Write your own SELECT against a source on this computer, the lake included, under the same guard and cost guard. |
+| **Regular reports and briefings** | A page you open every Monday keeps coming while you are away, for leadership to read; "Brief me" says what a page shows in a few sentences, each linked to its flag. |
+| **Lineage and sharing** | See which flags read which measures, fields and tables. Share a page as one HTML file that keeps its filters, optionally locked with a passphrase. |
 
-Everything above runs in the page with no AI model. An approved AI gateway can be added later as a provider ([docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md)).
+Everything above runs with no AI model. With Fairlead the AI drafts flags and pages, suggests cleaning, reads hard Qlik expressions and writes briefings; Semaphore checks every answer before using it ([docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md)).
 
 ## Databases
 

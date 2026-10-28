@@ -1,6 +1,7 @@
 // What every intelligence provider receives and returns, and the one validation path all
 // provider output goes through. Providers see the catalog summary below and the analyst's
-// briefs. They never see rows, connection details, table or column names, or credentials.
+// briefs. They never see rows, connection details, table or column names, or credentials. The one
+// exception is a cleaning suggestion the analyst asks for: one field's distinct values (TaskRequest).
 
 import type { Catalog, CatalogIndex } from '../catalog.ts';
 import {
