@@ -42,6 +42,8 @@ const ABBREVIATIONS: Record<string, string> = {
 
 const MONEY = /\b(cost|costs|amount|price|spend|spent|revenue|sales|value|budget|fee|fees|charge|charges|payment|paid|salary|wage|wages|expense|expenses|invoice|total)\b/;
 const AVERAGED = /\b(days?|hours?|minutes?|seconds?|age|duration|rate|ratio|percent|score|rating|temperature|temp|speed|price|unit|latitude|longitude|lat|lon|lng|average|mean)\b/;
+/** Work or time spent, which adds up across rows (unlike ages, rates and scores). */
+const ADDITIVE = /\b(hours?|minutes?|seconds?|duration|man ?hours?)\b/;
 const IDENTIFIER = /(^|\s)(id|key|number|code|guid|uuid|serial|reference|zip|postcode|phone)$/;
 const YEARISH = /\b(year|fiscal year|month|quarter|week|period)\b/;
 
@@ -96,7 +98,14 @@ export function proposeCatalog(profile: SourceProfile, existing?: Catalog): Cata
       if (syn.length) field.synonyms = syn;
       fields.push(field);
 
-      if (type === 'number') {
+      if (type === 'number' && ADDITIVE.test(words) && !/\b(total|count|amount|average|mean)\b/.test(words)) {
+        // Hours of work add up: "most labor hours" means the total, and "average labor hours" the mean.
+        const total: Metric = { key: uniqueKey(slug(c.name)), label: `Total ${words}`, agg: 'sum', field: key, source: sid, synonyms: unique([words, ...syn, `sum of ${words}`]) };
+        const meanLabel = `Average ${words}`;
+        const mean: Metric = { key: uniqueKey(slug(`avg_${c.name}`)), label: meanLabel, agg: 'avg', field: key, source: sid };
+        mean.synonyms = unique([`mean ${words}`, `avg ${words}`, ...syn.map((x) => `average ${x}`)]).filter((x) => x.toLowerCase() !== meanLabel.toLowerCase());
+        metrics.push(total, mean);
+      } else if (type === 'number') {
         const avg = AVERAGED.test(words) && !/\b(total|count|amount)\b/.test(words);
         const metricLabel = avg ? `Average ${words}` : label;
         const m: Metric = { key: uniqueKey(slug(`${avg ? 'avg_' : ''}${c.name}`)), label: metricLabel, agg: avg ? 'avg' : 'sum', field: key, source: sid };
