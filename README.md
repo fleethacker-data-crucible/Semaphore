@@ -105,6 +105,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
+- [docs/semaphore-for-analysts.html](docs/semaphore-for-analysts.html): an illustrated introduction for data analysts coming from Qlik (download it and open it in a browser; GitHub shows only its source)
 - [docs/PLAYBOOK.md](docs/PLAYBOOK.md): learning from analysts, the leadership view, snapshots, standing in for an absent analyst
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the thin-client data strategy, storage, and how the TechStack maps on
 - [docs/FLAG_SPEC.md](docs/FLAG_SPEC.md): the catalog, hoist and flag formats
