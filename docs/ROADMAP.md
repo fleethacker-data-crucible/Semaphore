@@ -55,9 +55,10 @@ Semaphore is meant to be an AI tool that still works without AI: the model draft
 **Where the data lives:**
 
 - Today: CSV in the page, Access through ACE, Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC.
-- The S3 data lake through Athena, by way of the **Sounding Line** proposal (comms repo, `proposals/sounding-line`): a query desk with a cost guard (scan size and price before a query runs, partition-filter warnings, per-user daily limits), a local result cache, and short AWS sessions brokered through Lazarette so analysts hold no AWS keys. Semaphore already writes Athena-ready SQL; one aggregate query per flag and leadership answering from snapshots keep scans small.
+- **Done:** the lake engine (`server/Lake.ps1`): Athena as a Semaphore source with SigV4 signing (BCL only), a cost guard (size and price before a query runs, partition-filter warning, approval above a threshold, a daily per-user limit), a result cache, usage records and free profiling from Glue; tested against a simulated AWS and AWS's SigV4 test vector. **Next:** the raw-SQL desk on the same engine, and AWS sessions brokered through Lazarette.
+- Origin: the S3 data lake through Athena, by way of the **Sounding Line** proposal (comms repo, `proposals/sounding-line`): a query desk with a cost guard (scan size and price before a query runs, partition-filter warnings, per-user daily limits), a local result cache, and short AWS sessions brokered through Lazarette so analysts hold no AWS keys. Semaphore already writes Athena-ready SQL; one aggregate query per flag and leadership answering from snapshots keep scans small.
 
-**AI-assisted Qlik migration:** paste a load script or a set-analysis expression and get catalog entries and draft flags back for review (supersedes the "Qlik migration helper" under Later).
+**Porting from Qlik:** **done**: Data > Import from Qlik reads a load script (connections, SQL and file loads, renames, associations, mapping loads) and chart expressions (aggregates with literal set analysis), profiles the tables, labels the fields with Qlik's names and adds the measures; expressions it cannot read become flags to draft. **Next:** the AI reading those expressions directly, applying mapping loads as cleaning steps, and associations as joins.
 
 ## v0.4: depth
 

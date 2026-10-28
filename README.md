@@ -83,6 +83,20 @@ List them in `sources.json` in your Semaphore folder (`%USERPROFILE%\Semaphore`,
 
 ODBC and OLE DB come with Windows (.NET Framework), so nothing is installed; the database's own driver must already be on the machine. Then open **Data**, pick the table and choose **Profile and add**.
 
+**The S3 data lake (Athena).** A lake source needs no driver: Semaphore signs its own requests to Athena, Glue and S3.
+
+```json
+{ "id": "lake", "label": "Data lake", "kind": "aws-athena", "provider": "athena", "region": "us-gov-west-1",
+  "workgroup": "semaphore", "database": "maintenance", "priceUsdPerTB": 5, "approveAboveGB": 10, "dailyLimitGB": 200, "cacheHours": 12 }
+```
+
+- **Cost guard:** before a flag's query runs, Semaphore sizes the table on S3 and shows the most it could scan and cost; above `approveAboveGB` the flag asks before running, a partitioned table queried without a partition filter is warned about, and `dailyLimitGB` caps each analyst's scans per day. What Athena actually read is recorded per query.
+- **Result cache:** the same query within `cacheHours` is answered from `<home>lakecache`, free.
+- **Adding a lake table** reads the Glue catalog only: no scan, no cost.
+- **AWS keys never go in sources.json** (they are refused). Semaphore uses a short AWS session from the environment that starts it (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`); a session brokered through Lazarette is next.
+
+This is the lake engine from the Sounding Line proposal, built into Semaphore; a raw-SQL desk on the same engine is next.
+
 ## Privacy and security in short
 
 - The server listens on loopback only, checks every request's `Host` and `Origin`, and needs the session token the launcher gives the browser. The token is never written to disk or logged.

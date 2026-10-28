@@ -47,11 +47,13 @@ function Get-SemSources {
         if ($id -cnotmatch '\A[A-Za-z0-9_-]{1,64}\z') { Write-SemLog 'WARN' 'sources.json: skipping a source with an invalid id'; continue }
         if ($seen.ContainsKey($id)) { Write-SemLog 'WARN' "sources.json: duplicate source id '$id' skipped"; continue }
         $provider = ([string]$s.provider).ToLowerInvariant()
-        if (@('odbc', 'oledb') -notcontains $provider) { Write-SemLog 'WARN' "sources.json: source '$id' has an unknown provider (use odbc or oledb)"; continue }
+        if (@('odbc', 'oledb', 'athena') -notcontains $provider) { Write-SemLog 'WARN' "sources.json: source '$id' has an unknown provider (use odbc, oledb or athena)"; continue }
+        if ($provider -eq 'athena') { try { [void](Get-SemLakeSettings $s) } catch { Write-SemLog 'WARN' ("sources.json: lake source '$id' skipped: " + $_.Exception.Message); continue } }
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
         $seen[$id] = $true
-        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = [string]$s.connection })
+        # raw keeps the entry for providers with their own settings (athena); it is never sent to the browser.
+        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = [string]$s.connection; raw = $s })
     }
     return $out.ToArray()
 }
@@ -659,6 +661,7 @@ function Invoke-SemQueryRequest {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $plan = Get-SemQueryPlan -Body $Req.Json -HomeDir $HomeDir
     if ($plan.ContainsKey('Error')) { Send-SemError $plan.Error.Status $plan.Error.Code $plan.Error.Message; return }
+    if ($plan.Source.provider -eq 'athena') { Invoke-SemLakeRequest -Req $Req -Plan $plan -HomeDir $HomeDir; return }
     $conn = $null
     try { $conn = New-SemConnection -Source $plan.Source -TimeoutSec $plan.TimeoutSec }
     catch { $e = Get-SemQueryError -Exception $_.Exception -Source $plan.Source -Stage 'connect'; Write-SemLog 'WARN' ("Query on '{0}': {1}" -f $plan.Source.id, $e.Code); Send-SemError $e.Status $e.Code $e.Message; return }
@@ -683,6 +686,11 @@ function Invoke-SemProfileRequest {
     if ($bad) { Send-SemError 400 'credentials-in-connection' $bad; return }
     $table = Get-SemJsonProp $Req.Json 'table'
     if ($null -ne $table -and ($table -isnot [string] -or -not (Test-SemIdentifier $table))) { Send-SemError 400 'bad-identifier' 'The table name is not a valid identifier.'; return }
+    if ($src.provider -eq 'athena') {
+        try { Send-SemJson 200 (Get-SemLakeProfile -Lake (Get-SemLakeSettings $src.raw) -Table ([string]$table)) }
+        catch { Send-SemError 502 'lake-profile' (Get-SemLakeSafeText $_.Exception.Message) }
+        return
+    }
     $conn = $null
     try { $conn = New-SemConnection -Source $src -TimeoutSec 30 }
     catch { $e = Get-SemQueryError -Exception $_.Exception -Source $src -Stage 'connect'; Send-SemError $e.Status $e.Code $e.Message; return }
@@ -707,6 +715,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.RoutesPath
     . $Ctx.QueryPath
     . $Ctx.IntelligencePath
+    . $Ctx.LakePath
 }
 $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
@@ -739,7 +748,7 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
-        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); Root = (Split-Path -Parent $here)
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
         Port = 0
     }

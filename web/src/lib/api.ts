@@ -177,10 +177,16 @@ export interface QueryResponse {
   rows: Array<Record<string, string | number | boolean | null>>;
   truncated: boolean;
   ms: number;
+  /** Lake sources (Athena): answered from the result cache, and when it was taken. */
+  cached?: boolean;
+  asOf?: string;
+  /** Lake sources: bytes Athena actually read, and the cost guard's estimate before it ran. */
+  scannedBytes?: number;
+  estimate?: { bytes: number; usd: number; warnings: string[] };
 }
 
-export const runServerQuery = (source: string, sql: string, params: unknown[], rowCap: number, signal?: AbortSignal) =>
-  api<QueryResponse>('/api/query', { json: { source, sql, params, rowCap, timeoutSec: 60 }, ...(signal ? { signal } : {}) });
+export const runServerQuery = (source: string, sql: string, params: unknown[], rowCap: number, options: { approve?: boolean; signal?: AbortSignal } = {}) =>
+  api<QueryResponse>('/api/query', { json: { source, sql, params, rowCap, timeoutSec: 120, ...(options.approve ? { approve: true } : {}) }, ...(options.signal ? { signal: options.signal } : {}) });
 
 export interface ProfileTables {
   tables: Array<{ name: string; schema?: string }>;

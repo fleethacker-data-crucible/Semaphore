@@ -9,7 +9,7 @@ import { runPlan, type TableRows } from '../../../src/core/engine.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
 import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from '../../../src/core/planner.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
-import { runServerQuery, type ServerInfo } from './api.ts';
+import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
 
 export interface DataContext {
   index: CatalogIndex;
@@ -34,9 +34,32 @@ export interface FlagResult {
   ms: number;
   /** Selections that needed a fresh query for this flag. */
   requeried: string[];
+  /** Lake sources: how the numbers were paid for (or that they came from the result cache). */
+  lake?: { cached: boolean; asOf?: string; scannedBytes?: number; warnings: string[] };
 }
 
 export class DataError extends Error {}
+
+/**
+ * A lake query the cost guard holds until the analyst approves it (the server's 409 lake-approval).
+ * `key` identifies the query; approveQuery(key) lets it run, once per page session.
+ */
+export class ApprovalNeeded extends DataError {
+  readonly key: string;
+  constructor(message: string, key: string) {
+    super(message);
+    this.name = 'ApprovalNeeded';
+    this.key = key;
+  }
+}
+
+const approved = new Set<string>();
+
+/** Let a held lake query run (and drop the failed attempt so it is asked again). */
+export function approveQuery(key: string): void {
+  approved.add(key);
+  cache.delete(key);
+}
 
 const cache = new Map<string, Promise<{ rows: Array<Record<string, string | number | boolean | null>>; truncated: boolean; ms: number }>>();
 const CACHE_MAX = 300;
@@ -77,7 +100,12 @@ async function run(plan: QueryPlan, ctx: DataContext) {
   const sql = sourceSql(plan, ctx);
   if (!sql) throw new DataError('This flag cannot be turned into SQL for its source.');
   const key = `server|${plan.source}|${sql.sql}|${JSON.stringify(sql.params)}|${plan.rowCap}`;
-  return { origin: 'server' as const, result: await remember(key, () => runServerQuery(plan.source, sql.sql, sql.params, plan.rowCap)) };
+  try {
+    return { origin: 'server' as const, result: await remember(key, () => runServerQuery(plan.source, sql.sql, sql.params, plan.rowCap, { approve: approved.has(key) })) };
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 'lake-approval') throw new ApprovalNeeded(e.message, key);
+    throw e;
+  }
 }
 
 /** Selections the plan cannot answer locally, turned into filters on the flag itself. */
@@ -114,6 +142,10 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
     }
   }
   const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried };
+  const lake = ran.result as { cached?: boolean; asOf?: string; scannedBytes?: number; estimate?: { warnings: string[] } };
+  if (lake.cached || lake.scannedBytes !== undefined) {
+    out.lake = { cached: !!lake.cached, ...(lake.asOf ? { asOf: lake.asOf } : {}), ...(lake.scannedBytes !== undefined ? { scannedBytes: lake.scannedBytes } : {}), warnings: lake.estimate?.warnings ?? [] };
+  }
   const earlier = comparisonPlan(plan, ctx.today);
   if (earlier) {
     const prev = await run(earlier, ctx);

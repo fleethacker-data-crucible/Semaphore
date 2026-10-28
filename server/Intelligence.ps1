@@ -170,13 +170,22 @@ function Invoke-SemAiForward {
     } catch [Net.WebException] {
         $s = $_.Exception.Status
         if ($s -eq [Net.WebExceptionStatus]::Timeout) { return @{ Status = 0; Code = 'ai-timeout'; Error = "Fairlead did not answer within $TimeoutSec s." } }
-        if ($s -eq [Net.WebExceptionStatus]::ConnectFailure) { return @{ Status = 0; Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
+        if ($s -eq [Net.WebExceptionStatus]::ConnectFailure -or (Test-SemConnectRefused $_.Exception)) { return @{ Status = 0; Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
         return @{ Status = 0; Code = 'ai-unreachable'; Error = ('Fairlead could not be reached: ' + (Get-SemAiSafeText $_.Exception.Message $Settings.Key)) }
     } catch {
         return @{ Status = 0; Code = 'ai-unreachable'; Error = ('Fairlead could not be reached: ' + (Get-SemAiSafeText $_.Exception.Message $Settings.Key)) }
     } finally {
         if ($null -ne $resp) { try { $resp.Close() } catch { } }
     }
+}
+
+function Test-SemConnectRefused {
+    # Nothing listening. PowerShell 5.1 says ConnectFailure; 7 (HttpClient underneath) only says so in an inner SocketException.
+    param([Exception]$Exception)
+    for ($e = $Exception; $null -ne $e; $e = $e.InnerException) {
+        if ($e -is [Net.Sockets.SocketException] -and $e.SocketErrorCode -eq [Net.Sockets.SocketError]::ConnectionRefused) { return $true }
+    }
+    return $false
 }
 
 function Get-SemAiErrorText {
@@ -217,7 +226,7 @@ function Test-SemAiIdentity {
         $who = if ($tool -is [string] -and $tool -cmatch '\A[A-Za-z0-9._-]{1,40}\z') { '"' + $tool + '"' } else { 'something else' }
         return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' is ' + $who + ', not Fairlead, so the Fairlead key was not sent. Start Fairlead (it must have port ' + $u.Port + ') and try again.') }
     } catch [Net.WebException] {
-        if ($_.Exception.Status -eq [Net.WebExceptionStatus]::ConnectFailure) { return @{ Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
+        if ($_.Exception.Status -eq [Net.WebExceptionStatus]::ConnectFailure -or (Test-SemConnectRefused $_.Exception)) { return @{ Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
         if ($_.Exception.Status -eq [Net.WebExceptionStatus]::Timeout) { return @{ Code = 'ai-timeout'; Error = ('Nothing answered at ' + $u.Authority + ' within ' + $TimeoutSec + ' s.') } }
         return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' did not identify itself as Fairlead, so the Fairlead key was not sent.') }
     } catch {

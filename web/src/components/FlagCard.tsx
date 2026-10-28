@@ -8,7 +8,7 @@ import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
 import type { Flag, Hoist } from '../../../src/core/hoist.ts';
 import { findInsights } from '../../../src/core/insights.ts';
-import { computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
+import { ApprovalNeeded, approveQuery, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
 
 export interface FlagCardProps {
@@ -25,7 +25,13 @@ export interface FlagCardProps {
   onDragStart: (e: React.PointerEvent, id: string, mode: 'move' | 'resize') => void;
 }
 
-type Load = { state: 'idle' } | { state: 'loading'; last?: FlagResult } | { state: 'ready'; result: FlagResult } | { state: 'error'; error: string };
+type Load = { state: 'idle' } | { state: 'loading'; last?: FlagResult } | { state: 'ready'; result: FlagResult } | { state: 'error'; error: string; approve?: () => void };
+
+function formatBytes(n: number): string {
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
 
 /** Only the selections that can change this flag's numbers, so unrelated clicks do not reload it. */
 function relevant(selections: Selections, flag: Flag): string {
@@ -36,6 +42,7 @@ function relevant(selections: Selections, flag: Flag): string {
 
 export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext): Load {
   const [load, setLoad] = useState<Load>({ state: 'idle' });
+  const [attempt, setAttempt] = useState(0);
   const selKey = relevant(selections, flag);
   const planKey = JSON.stringify([flag.kind, flag.binding, flag.behavior.ignore, hoist.filters, hoist.flags.map((f) => [f.id, f.kind, f.behavior.onClick, f.binding?.dimensions])]);
   useEffect(() => {
@@ -47,14 +54,20 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
     setLoad((l) => ({ state: 'loading', ...(l.state === 'ready' ? { last: l.result } : l.state === 'loading' && l.last ? { last: l.last } : {}) }));
     computeFlag(hoist, flag, selections, ctx).then(
       (result) => live && setLoad({ state: 'ready', result }),
-      (e: Error) => live && setLoad({ state: 'error', error: e.message }),
+      (e: Error) => {
+        if (!live) return;
+        // A lake query the cost guard is holding: the card asks, and Run approves and retries it.
+        if (e instanceof ApprovalNeeded) {
+          setLoad({ state: 'error', error: e.message, approve: () => { approveQuery(e.key); setAttempt((a) => a + 1); } });
+        } else setLoad({ state: 'error', error: e.message });
+      },
     );
     return () => {
       live = false;
     };
     // Recompute on what changes the numbers, not on every new object identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planKey, selKey, ctx]);
+  }, [planKey, selKey, ctx, attempt]);
   return load;
 }
 
@@ -88,6 +101,14 @@ function FlagCardInner({ hoist, flag, ctx, index, selections, selected, themeKey
           {flag.title || <span className="font-normal text-ink-3">Untitled flag</span>}
         </h3>
         {load.state === 'loading' && <Loader2 size={13} className="animate-spin text-ink-3" aria-label="Loading" />}
+        {result?.lake && (
+          <span
+            title={[result.lake.cached ? `From the lake cache, taken ${result.lake.asOf ?? ''}: no scan, no cost.` : `Athena read ${formatBytes(result.lake.scannedBytes ?? 0)} for this flag.`, ...result.lake.warnings].join(' ')}
+            className={`text-[10px] ${result.lake.warnings.length ? 'text-warn' : 'text-ink-3'}`}
+          >
+            {result.lake.cached ? 'cached' : formatBytes(result.lake.scannedBytes ?? 0)}
+          </span>
+        )}
         {result?.requeried.length ? (
           <span title="This flag asked its source again for the current selection" className="text-ink-3">
             <RefreshCcw size={12} />
@@ -138,10 +159,22 @@ function FlagCardInner({ hoist, flag, ctx, index, selections, selected, themeKey
             <Empty flag={flag} />
           </div>
         ) : load.state === 'error' ? (
-          <p className="flex items-start gap-2 text-xs text-bad">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-            {load.error}
-          </p>
+          load.approve ? (
+            <div className="flex flex-col items-start gap-2 text-xs">
+              <p className="flex items-start gap-2 text-warn">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {load.error}
+              </p>
+              <button type="button" onClick={load.approve} className="rounded-md bg-accent px-2.5 py-1 font-semibold text-panel">
+                Run it
+              </button>
+            </div>
+          ) : (
+            <p className="flex items-start gap-2 text-xs text-bad">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              {load.error}
+            </p>
+          )
         ) : result ? (
           <div className="flex h-full flex-col gap-1">
             <div className="min-h-0 flex-1">
