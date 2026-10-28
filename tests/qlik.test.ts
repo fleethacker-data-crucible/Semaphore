@@ -136,3 +136,55 @@ test('expressions it leaves to the AI or the analyst say why', () => {
     if (!r.ok) assert.match(r.reason, why, e);
   }
 });
+
+test('Qlik names become labels after profiling; the old label stays a synonym', async () => {
+  const { loadCatalog } = await import('./fixtures.ts');
+  const { applyQlikLabels } = await import('../src/core/qlik.ts');
+  const cat = loadCatalog();
+  const out = applyQlikLabels(cat, 'maint', 'ops.work_orders', new Map([['labor_cost', 'Labor $'], ['region', 'Fleet Region'], ['nope', 'X']]));
+  assert.equal(out.renamed, 2);
+  const region = out.catalog.fields.find((f) => f.key === 'jobs.region')!;
+  assert.equal(region.label, 'Fleet Region');
+  assert.ok(region.synonyms!.includes('region'));
+  assert.ok(region.synonyms!.includes('area'), 'existing synonyms are kept');
+  assert.equal(out.catalog.fields.find((f) => f.key === 'parts.item')!.label, 'Part', 'other tables untouched');
+});
+
+test('chart expressions become measures over catalog fields', async () => {
+  const { loadCatalog } = await import('./fixtures.ts');
+  const { qlikMeasures } = await import('../src/core/qlik.ts');
+  const r = qlikMeasures(
+    [
+      "Gulf labor: Sum({<Region={'Gulf'}>} [Labor cost])",
+      'Count(DISTINCT hull_no)',
+      'Count(*)',
+      'Sum(Cost)/Sum(Hours)',
+      'Sum(Overtime)',
+    ].join('\n'),
+    loadCatalog(),
+  );
+  assert.deepEqual(r.metrics.map((m) => [m.label, m.agg, m.field]), [
+    ['Gulf labor', 'sum', 'jobs.cost'],
+    ['Distinct Hull number', 'count_distinct', 'jobs.hull'],
+    ['Count', 'count', undefined],
+  ]);
+  assert.equal(r.metrics[0]!.key, 'gulf_labor');
+  assert.match(r.filterNotes[0]!, /Region in Gulf/);
+  assert.deepEqual(r.skipped.map((s) => s.reason.slice(0, 20)), ['A calculation across', 'No field "Overtime" ']);
+});
+
+test('a name found in the tables just imported wins; a name in two other tables is not guessed', async () => {
+  const { loadCatalog } = await import('./fixtures.ts');
+  const { qlikMeasures } = await import('../src/core/qlik.ts');
+  const base = loadCatalog();
+  const yard = { key: 'work_orders.labor_cost', label: 'Labor Cost', source: 'shipyard', table: 'work_orders', column: 'labor_cost', type: 'number' as const };
+  const cat = { ...base, sources: [...base.sources, { id: 'shipyard', label: 'Shipyard', kind: 'access' as const, dialect: 'access' as const }], fields: [...base.fields, yard] };
+  const r = qlikMeasures('Gulf labor: Sum([Labor Cost])\nRows: Count(*)', cat, [{ source: 'shipyard', table: 'work_orders' }]);
+  assert.deepEqual(r.metrics.map((m) => [m.label, m.field, m.source, m.table]), [
+    ['Gulf labor', 'work_orders.labor_cost', 'shipyard', undefined],
+    ['Rows', undefined, 'shipyard', 'work_orders'],
+  ]);
+  const amb = qlikMeasures('Sum([Labor Cost])', cat);
+  assert.equal(amb.metrics.length, 0);
+  assert.match(amb.skipped[0]!.reason, /more than one table/);
+});

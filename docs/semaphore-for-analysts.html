@@ -297,9 +297,9 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
 </section>
 
 <section id="port">
-  <span class="eyebrow">Porting from Qlik · reader built, import screen next</span>
+  <span class="eyebrow">Porting from Qlik · in review</span>
   <h2>Bring your Qlik app with you</h2>
-  <p class="muted">Your Qlik app already knows what the data means. Paste its load script and chart expressions, and Semaphore reads them, with no model needed for the common cases. Everything comes back as a proposal you review before it reaches the catalog.</p>
+  <p class="muted">Your Qlik app already knows what the data means. Open <b>Data → Import from Qlik</b>, paste its load script and chart expressions, map each connection to a source, and pick the tables. Semaphore reads it all with no model needed for the common cases, profiles the real tables, and shows you everything before it reaches the catalog. Expressions it can't read become flags for the AI to draft.</p>
   <div class="map-head"><span>In your Qlik app</span><span></span><span>In Semaphore</span><span>How</span></div>
   <div class="map">
     <div class="fl-card pair"><span class="q">LIB CONNECT TO 'Warehouse'</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Source</span><span class="n">Map each Qlik connection to a Semaphore source once.</span></div>
@@ -397,8 +397,9 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
   <div class="grid">
     <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Files on your PC</h3></div><p>CSV files read in the page and never uploaded; Access databases through the engine already on Windows.</p><span class="fl-badge" style="color:var(--fl-success)">Works today</span></div>
     <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Databases</h3></div><p>Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC, with SQL written in each one's own dialect and every value a bound parameter.</p><span class="fl-badge" style="color:var(--fl-success)">Works today</span></div>
-    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-chart"/></svg><h3>The S3 data lake, through Athena</h3></div><p>Semaphore already writes Athena-ready SQL. The planned way in is <b>Sounding Line</b>, a query desk for the lake: it shows the scan size and price of every query before it runs, warns when a partition filter is missing, keeps daily limits, and caches results so you can keep iterating for free.</p><span class="fl-badge" style="color:var(--fl-info)">Proposed</span></div>
-    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-check"/></svg><h3>No keys on your PC</h3></div><p>With Sounding Line, analysts get short AWS sessions brokered through Lazarette instead of AWS accounts, and every query is attributed to them in CloudTrail.</p><span class="fl-badge" style="color:var(--fl-info)">Proposed</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-chart"/></svg><h3>The S3 data lake, built in</h3></div><p>Sounding Line's lake engine becomes Semaphore's Athena source: every flag's query shows its scan size and price before it runs, warns when a partition filter is missing, keeps daily limits, and caches results so you can keep iterating for free.</p><span class="fl-badge" style="color:var(--fl-info)">Building now</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>A SQL desk for the lake</h3></div><p>For analysts who want to write their own SQL against the lake: the same engine, cost guard and cache, as a Semaphore panel.</p><span class="fl-badge" style="color:var(--fl-muted-foreground)">Next</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-check"/></svg><h3>No keys on your PC</h3></div><p>Analysts get short AWS sessions brokered through Lazarette instead of AWS accounts, and every query is attributed to them in CloudTrail.</p><span class="fl-badge" style="color:var(--fl-muted-foreground)">Next, with Lazarette</span></div>
   </div>
   <div class="fl-card" style="display:grid;gap:8px">
     <h3>Why the lake and Semaphore fit</h3>
@@ -446,7 +447,7 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
     <li>What should the team style card capture about how you build?</li>
     <li>Which databases and file types should come first?</li>
   </ol>
-  <div class="status-line"><svg class="icon"><use href="#i-alert"/></svg><span>Semaphore is a v0.3 preview and a prototype, not accredited for operational data. Try it with synthetic or sample data only. The Qlik script and expression reader is built and tested; the import screen that uses it is next.</span></div>
+  <div class="status-line"><svg class="icon"><use href="#i-alert"/></svg><span>Semaphore is a v0.3 preview and a prototype, not accredited for operational data. Try it with synthetic or sample data only. Qlik import, the analyst stand-in and the lake engine are in review or in development, as marked.</span></div>
 </section>
 
 </main>

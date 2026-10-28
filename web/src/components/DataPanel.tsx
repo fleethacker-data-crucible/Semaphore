@@ -19,6 +19,8 @@ export interface DataPanelProps {
   onRemoveSource: (id: string) => void;
   onProfile: (source: string, table: string) => void;
   onLoadExample: () => void;
+  /** Opens the Import from Qlik screen. */
+  onImportQlik: () => void;
 }
 
 export function DataPanel(p: DataPanelProps) {
@@ -109,6 +111,10 @@ function Sources(p: DataPanelProps) {
           </span>
           <input type="file" accept=".csv,.tsv,.txt,text/csv" multiple className="sr-only" onChange={(e) => e.target.files?.length && p.onAddCsv(e.target.files)} />
         </label>
+        <button type="button" onClick={p.onImportQlik} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
+          <span className="font-medium">Import from Qlik</span>
+          <span className="block text-[11px] text-ink-3">Paste a load script and chart expressions: tables, field names and measures come across for you to check.</span>
+        </button>
         {!inCatalog.has('maint') && (
           <button type="button" onClick={p.onLoadExample} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
             <span className="font-medium">Fleet maintenance example</span>

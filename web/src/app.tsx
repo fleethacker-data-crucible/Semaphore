@@ -17,6 +17,7 @@ import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../sr
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
+import { applyQlikLabels, qlikMeasures } from '../../src/core/qlik.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
@@ -34,6 +35,7 @@ import { PlaybookPanel } from './components/PlaybookPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
+import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
@@ -103,6 +105,7 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
+  const [qlikOpen, setQlikOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -426,6 +429,63 @@ export function App() {
       }
     },
     [server, catalog, setCatalog, notify],
+  );
+
+  // Import from Qlik: profile each picked table, name its fields the way the Qlik app did, then add
+  // the chart expressions as measures. One catalog update at the end; returns what happened.
+  const importQlik = useCallback(
+    async (plan: QlikImportPlan): Promise<string[]> => {
+      const out: string[] = [];
+      const imported: Array<{ source: string; table: string }> = [];
+      let cat = catalog;
+      try {
+        for (const t of plan.tables) {
+          setBusy(`Profiling ${t.table}…`);
+          try {
+            const p = await profileTable(t.source, t.table);
+            const s = server?.sources.find((x) => x.id === t.source);
+            const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
+            const dialect = kind === 'postgres' ? 'postgres' : kind === 'oracle' ? 'oracle' : kind === 'access' ? 'access' : kind === 'azure-sql' ? 'tsql' : 'ansi';
+            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
+            const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
+            cat = labelled.catalog;
+            imported.push({ source: t.source, table: p.table });
+            out.push(`${p.table}: ${p.columns.length} columns profiled, ${labelled.renamed} named the way the Qlik app named them.`);
+          } catch (e) {
+            out.push(`${t.table}: could not be profiled (${(e as Error).message}).`);
+          }
+        }
+        if (plan.expressions.trim()) {
+          const m = qlikMeasures(plan.expressions, cat, imported);
+          cat = { ...cat, metrics: [...cat.metrics, ...m.metrics] };
+          if (m.metrics.length) out.push(`${m.metrics.length} measure${m.metrics.length === 1 ? '' : 's'} added: ${m.metrics.map((x) => x.label).join(', ')}.`);
+          out.push(...m.filterNotes);
+          for (const s of m.skipped) out.push(`Not added, ${s.label}: ${s.reason}`);
+        }
+        setCatalog(cat);
+        notify('Qlik import done: check the new measures and fields under Data.');
+      } finally {
+        setBusy(null);
+      }
+      return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
+    },
+    [catalog, server, setCatalog, notify],
+  );
+
+  // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.
+  const addBriefFlag = useCallback(
+    (title: string, brief: string) => {
+      const id = newId();
+      change((h) => {
+        const items = h.flags.map((f) => ({ id: f.id, layout: f.layout }));
+        const flag: Flag = { id, kind: 'bar', title, brief, layout: findSlot(items, 4, 4, h.grid.cols), binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
+        return { ...h, flags: [...h.flags, flag] };
+      });
+      setAutoKinds((x) => ({ ...x, [id]: true }));
+      setSelectedId(id);
+      notify(`Added "${title}" as a flag: select Draft to let Semaphore work it out.`);
+    },
+    [change, notify],
   );
 
   const removeSource = useCallback(
@@ -930,8 +990,14 @@ export function App() {
           onRemoveSource={removeSource}
           onProfile={profile}
           onLoadExample={loadExample}
+          onImportQlik={() => {
+            setDataOpen(false);
+            setQlikOpen(true);
+          }}
         />
       )}
+
+      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} onClose={() => setQlikOpen(false)} />}
 
       {openList && (
         <div className="fixed inset-0 z-40 flex items-start justify-center bg-ink/20 pt-24" onPointerDown={(e) => e.target === e.currentTarget && setOpenList(null)}>

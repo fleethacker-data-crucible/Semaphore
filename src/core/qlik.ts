@@ -16,7 +16,7 @@
 // a proposal the analyst reviews before it reaches the catalog. Input is capped and the parser uses
 // no backtracking-prone regular expressions on whole statements.
 
-import type { Aggregate } from './catalog.ts';
+import type { Aggregate, Catalog, Field, Metric } from './catalog.ts';
 
 export const QLIK_LIMITS = { scriptChars: 500_000, statements: 2000, fields: 500, mappingPairs: 5000, expressionChars: 2000 };
 
@@ -514,4 +514,101 @@ export function parseQlikExpression(expr: string): QlikExpression {
   const field = unquote(inner);
   const word = { sum: 'Total', avg: 'Average', min: 'Lowest', max: 'Highest', count: 'Count of', count_distinct: 'Distinct' }[agg];
   return { ok: true, agg, field, filters, label: `${word} ${field}` };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Into the catalog: after Semaphore has profiled a table, Qlik's words become its labels.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Give the fields of one profiled table the names Qlik gave their columns. The label Semaphore
+ * proposed is kept as a synonym, so both the analysts' words and the column's own name work.
+ */
+export function applyQlikLabels(catalog: Catalog, source: string, table: string, labels: ReadonlyMap<string, string>): { catalog: Catalog; renamed: number } {
+  let renamed = 0;
+  const fields = catalog.fields.map((f) => {
+    if (f.source !== source || f.table.toLowerCase() !== table.toLowerCase()) return f;
+    const name = labels.get(f.column.toLowerCase());
+    if (!name || name === f.label) return f;
+    renamed++;
+    const synonyms = [...new Set([...(f.synonyms ?? []), f.label.toLowerCase()].filter((s) => s && s !== name.toLowerCase()))].slice(0, 12);
+    return { ...f, label: name, synonyms };
+  });
+  return { catalog: { ...catalog, fields }, renamed };
+}
+
+export interface QlikMeasureResult {
+  metrics: Metric[];
+  /** Expressions turned into a measure whose set analysis must become a flag or page filter. */
+  filterNotes: string[];
+  /** Expressions not read, with why (for the AI or the analyst). */
+  skipped: Array<{ label: string; expression: string; reason: string }>;
+}
+
+/**
+ * Chart expressions ("Label: expression" or just "expression", one per line) into measures over
+ * fields already in the catalog. A Qlik field is found by its label (Qlik's name after
+ * applyQlikLabels), then its column, then a synonym. `prefer` lists the tables just imported: a
+ * name found there wins over the same name elsewhere in the catalog (another source may well have a
+ * "Labor cost" too). A name that still matches fields in two tables is not guessed: it is skipped.
+ */
+export function qlikMeasures(lines: string, catalog: Catalog, prefer: ReadonlyArray<{ source: string; table: string }> = []): QlikMeasureResult {
+  const metrics: Metric[] = [];
+  const filterNotes: string[] = [];
+  const skipped: QlikMeasureResult['skipped'] = [];
+  const taken = new Set([...catalog.metrics.map((m) => m.key), ...catalog.fields.map((f) => f.key)]);
+  const preferred = (f: Field) => prefer.some((p) => p.source === f.source && p.table.toLowerCase() === f.table.toLowerCase());
+  const findField = (name: string): Field | 'ambiguous' | undefined => {
+    const n = name.toLowerCase();
+    const tests: Array<(f: Field) => boolean> = [(f) => f.label.toLowerCase() === n, (f) => f.column.toLowerCase() === n, (f) => (f.synonyms ?? []).includes(n)];
+    for (const pool of [catalog.fields.filter(preferred), catalog.fields]) {
+      for (const t of tests) {
+        const hits = pool.filter(t);
+        if (!hits.length) continue;
+        return new Set(hits.map((f) => `${f.source}\u0000${f.table}`)).size > 1 ? 'ambiguous' : hits[0];
+      }
+    }
+    return undefined;
+  };
+  for (const raw of lines.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 200)) {
+    // "Labor cost: Sum(...)" names the measure; a bare expression gets a name from it.
+    const colon = /^([^:(){}=]{1,80}):\s*(.+)$/.exec(raw);
+    const given = colon ? colon[1]!.trim() : undefined;
+    const expression = colon ? colon[2]!.trim() : raw;
+    const parsed = parseQlikExpression(expression);
+    if (!parsed.ok) {
+      skipped.push({ label: given ?? expression.slice(0, 60), expression, reason: parsed.reason });
+      continue;
+    }
+    let field: Field | undefined;
+    if (parsed.field) {
+      const found = findField(parsed.field);
+      if (found === 'ambiguous') {
+        skipped.push({ label: given ?? parsed.label, expression, reason: `"${parsed.field}" matches fields in more than one table: add this measure under Data, picking the field.` });
+        continue;
+      }
+      if (!found) {
+        skipped.push({ label: given ?? parsed.label, expression, reason: `No field "${parsed.field}" in the catalog yet: import its table first.` });
+        continue;
+      }
+      field = found;
+    }
+    // Count(*) counts rows of the first imported table, else of the catalog's first source.
+    const table = field?.table ?? prefer[0]?.table ?? catalog.fields.find((f) => f.source === catalog.sources[0]?.id)?.table;
+    const source = field?.source ?? prefer[0]?.source ?? catalog.sources[0]?.id;
+    if (!source) {
+      skipped.push({ label: given ?? parsed.label, expression, reason: 'No source in the catalog yet.' });
+      continue;
+    }
+    const label = given ?? (field ? parsed.label.replace(parsed.field!, field.label) : parsed.label);
+    let key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48) || 'measure';
+    for (let i = 2; taken.has(key); i++) key = `${key.replace(/_\d+$/, '')}_${i}`;
+    taken.add(key);
+    metrics.push({ key, label, agg: parsed.agg, source, ...(field ? { field: field.key } : table ? { table } : {}), synonyms: [expression.slice(0, 80).toLowerCase()] });
+    if (parsed.filters.length) {
+      const f = parsed.filters.map((x) => `${x.field} ${x.op === 'in' ? 'in' : x.op === 'not-in' ? 'not in' : x.op} ${x.values.join(', ')}`).join('; ');
+      filterNotes.push(`"${label}" had set analysis (${f}): add it as a filter on the flags that use it.`);
+    }
+  }
+  return { metrics, filterNotes, skipped };
 }
