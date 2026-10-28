@@ -203,6 +203,15 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
       axisLabel: { color: c.ink3, formatter: fmt(k), hideOverlap: true },
       splitNumber: horizontal ? 3 : 5,
     }));
+    // Bars laid sideways swap the axes: the second measure's own scale is then a second x axis.
+    if (horizontal) {
+      for (const s of seriesList) {
+        if (s.yAxisIndex !== undefined) {
+          s.xAxisIndex = s.yAxisIndex;
+          delete s.yAxisIndex;
+        }
+      }
+    }
     return {
       ...base,
       tooltip: { ...base.tooltip, valueFormatter: (n: number | null) => (n === null || n === undefined ? '–' : fmt(b.metrics[0]!)(n)) },

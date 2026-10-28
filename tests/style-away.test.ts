@@ -174,3 +174,29 @@ test('the while-you-were-out digest covers the period and what needs the analyst
   assert.equal(d.actionNeeded, true);
   assert.equal(d.to, '2026-11-07');
 });
+
+test('recurring reports: a rhythm is noticed, editions fall due once per date, never before the schedule', async () => {
+  const r = await import('../src/core/reports.ts');
+  const mondays = ['2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26'];
+  const wed = new Date('2026-10-28T09:00:00Z');
+  assert.deepEqual(r.detectCadence(mondays, wed), { every: 'week', weekday: 1 });
+  assert.equal(r.describeCadence({ every: 'week', weekday: 1 }), 'every Monday');
+  assert.equal(r.detectCadence(['2026-10-05', '2026-10-19'], wed), null, 'twice is not a rhythm');
+  const daily: string[] = [];
+  for (let i = 1; i <= 20; i++) daily.push(new Date(wed.getTime() - i * 86_400_000).toISOString().slice(0, 10));
+  assert.equal(r.detectCadence(daily, wed), null, 'a page opened most days is not a report');
+  assert.deepEqual(r.detectCadence(['2026-07-01', '2026-08-03', '2026-09-02', '2026-10-01'], wed), { every: 'month', day: 1 });
+  assert.equal(r.describeCadence({ every: 'month', day: 2 }), 'on the 2nd of each month');
+
+  const s = r.newSchedule('h1', 'Monday brief', 'jdoe', { every: 'week', weekday: 1 }, new Date('2026-10-20T10:00:00Z'));
+  assert.equal(r.editionDue(s, wed), '2026-10-26');
+  assert.equal(r.editionDue({ ...s, lastEdition: '2026-10-26' }, wed), null);
+  assert.equal(r.editionDue(s, new Date('2026-10-19T10:00:00Z')), null, 'not before the schedule began');
+  assert.equal(r.lastScheduled({ every: 'month', day: 15 }, new Date('2026-10-10T00:00:00Z')), '2026-09-15');
+
+  const log = r.noteOpened(undefined, 'h1', 'Monday brief', 'jdoe', wed)!;
+  assert.deepEqual(log.opened, ['2026-10-28']);
+  assert.equal(r.noteOpened(log, 'h1', 'Monday brief', 'jdoe', wed), null, 'once a day');
+  assert.ok(r.isReportSchedule(s) && r.isUsageLog(log));
+  assert.equal(r.isReportSchedule({ ...s, cadence: { every: 'week', weekday: 9 } }), false);
+});

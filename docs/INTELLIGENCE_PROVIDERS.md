@@ -131,3 +131,13 @@ One endpoint, `POST`, JSON in and out, `Authorization: Bearer <token>` when a to
 ```
 
 Semaphore places drafted flags on the grid itself. Formats for bindings, filters and behaviour are in [FLAG_SPEC.md](FLAG_SPEC.md).
+
+## Smaller tasks
+
+Besides drafting flags and pages, three smaller tasks use the same provider (`runTask` in `src/core/intelligence/contract.ts`). An OpenAI-compatible model gets Semaphore's own instructions with each; a contract endpoint receives `{ contract: 1, payload: { task, ... } }` and returns `{ ok, result }`. Every answer is validated in `src/core/intelligence/tasks.ts`, and the local rules take over when there is no model or the answer does not hold up.
+
+| Task | What is sent | What comes back, and how it is checked |
+| --- | --- | --- |
+| `propose-cleaning` | One field's label and up to 300 of its distinct values with row counts, when the analyst presses the button that says so. Never rows or other fields. | `{ groups: [{ keep, merge[] }] }`. Only values from the list; each value in one group; the analyst accepts the result as a cleaning step. |
+| `read-qlik-expression` | One Qlik chart expression, its name, and the catalog's field keys, labels and types. | `{ measures: [{ label, agg, field, filters[] }], explanation }`. Known aggregates and field keys only; sums and averages over numbers only; added on the analyst's say-so. |
+| `write-briefing` | The page title and the facts Semaphore computed (flag ids, chart titles, sentences such as "Gulf stands out: $3.24M against a typical $1.9M."). Never rows. | `{ sentences: [{ text, flag }] }`. A sentence is kept only when it cites a real flag and every number in it appears in that flag's facts. |

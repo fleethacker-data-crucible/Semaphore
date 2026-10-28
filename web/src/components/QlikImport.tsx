@@ -5,12 +5,16 @@
 
 import { useMemo, useState } from 'react';
 import { ArrowRight, CircleAlert, FileCode2, Link2, Sparkles, Wand2, X } from 'lucide-react';
+import type { Metric } from '../../../src/core/catalog.ts';
+import type { AiQlikResult } from '../../../src/core/intelligence/tasks.ts';
 import { parseLoadScript, parseQlikExpression, qlikAssociations, qlikLabels, qlikMappings, type QlikScript } from '../../../src/core/qlik.ts';
 import type { ServerSource } from '../lib/api.ts';
 
 export interface QlikImportPlan {
-  tables: Array<{ source: string; table: string; labels: Map<string, string> }>;
+  tables: Array<{ source: string; table: string; labels: Map<string, string>; qlik: string }>;
   expressions: string;
+  /** The script as read, for its mappings and associations. */
+  script: QlikScript | null;
 }
 
 export interface QlikImportProps {
@@ -18,6 +22,10 @@ export interface QlikImportProps {
   busy: string | null;
   onImport: (plan: QlikImportPlan) => Promise<string[]>;
   onDraftAsFlag: (title: string, brief: string) => void;
+  /** The AI's name when it is on, to read expressions Semaphore cannot. */
+  ai: string | null;
+  onReadWithAi: (label: string, expression: string) => Promise<AiQlikResult>;
+  onAddMeasures: (metrics: Metric[]) => void;
   onClose: () => void;
 }
 
@@ -26,7 +34,17 @@ WorkOrders:
 LOAD wo_id AS [Work Order], region AS Region, labor_cost AS [Labor Cost];
 SQL SELECT wo_id, region, labor_cost FROM work_orders;`;
 
-export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: QlikImportProps) {
+export function QlikImport({ sources, busy, onImport, onDraftAsFlag, ai, onReadWithAi, onAddMeasures, onClose }: QlikImportProps) {
+  const [aiRead, setAiRead] = useState<Record<string, AiQlikResult | string>>({});
+  const askAi = async (label: string, expression: string, line: string) => {
+    setAiRead((m) => ({ ...m, [line]: 'Reading…' }));
+    try {
+      const r = await onReadWithAi(label, expression);
+      setAiRead((m) => ({ ...m, [line]: r }));
+    } catch (e) {
+      setAiRead((m) => ({ ...m, [line]: (e as Error).message }));
+    }
+  };
   const [script, setScript] = useState('');
   const [expressions, setExpressions] = useState('');
   const [read, setRead] = useState<QlikScript | null>(null);
@@ -73,8 +91,8 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
   const run = async () => {
     const tables = importable
       .filter((t) => picked[t.label] && sourceFor(t.connection))
-      .map((t) => ({ source: sourceFor(t.connection), table: t.from!.split('.').pop()!, labels: labels.get(t.from!) ?? new Map<string, string>() }));
-    setResult(await onImport({ tables, expressions }));
+      .map((t) => ({ source: sourceFor(t.connection), table: t.from!.split('.').pop()!, labels: labels.get(t.from!) ?? new Map<string, string>(), qlik: t.label }));
+    setResult(await onImport({ tables, expressions, script: read }));
   };
 
   return (
@@ -160,7 +178,7 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
                       </li>
                     ))}
                   </ul>
-                  <p className="text-[11px] text-ink-3">Recorded as proposed joins; flags read one table until catalog relationships arrive.</p>
+                  <p className="text-[11px] text-ink-3">Each becomes a relationship between the imported tables once the data shows which side identifies one row. See Data &gt; Links.</p>
                 </div>
               )}
 
@@ -176,7 +194,7 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
                       </li>
                     ))}
                   </ul>
-                  <p className="text-[11px] text-ink-3">Kept as proposed cleaning steps; Semaphore applies them once cleaning steps ship.</p>
+                  <p className="text-[11px] text-ink-3">Each becomes a cleaning step on the imported field, applied wherever it is read. Undo any of them under Data &gt; Clean.</p>
                 </div>
               )}
 
@@ -195,7 +213,7 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
               <h3 className="text-sm font-semibold">Measures</h3>
               <ul className="space-y-1">
                 {exprs.map((e) => (
-                  <li key={e.line} className="flex items-center gap-2 text-xs">
+                  <li key={e.line} className="flex flex-wrap items-center gap-2 text-xs">
                     <span className={`min-w-0 flex-1 truncate ${e.parsed.ok ? '' : 'text-ink-2'}`} title={e.line}>
                       <b>{e.label}</b> <span className="font-mono text-ink-3">{e.expression}</span>
                       {!e.parsed.ok && <span className="block text-[11px] text-warn">{e.parsed.reason}</span>}
@@ -203,10 +221,18 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
                     {e.parsed.ok ? (
                       <span className="text-good">will be added</span>
                     ) : (
-                      <button type="button" onClick={() => onDraftAsFlag(e.label, `${e.label}. In Qlik this was: ${e.expression}`)} className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 hover:border-accent">
-                        <Sparkles size={12} /> Draft as a flag
-                      </button>
+                      <span className="flex gap-1">
+                        {ai && (
+                          <button type="button" title={`Sends this expression and the catalog's field names to ${ai}`} onClick={() => askAi(e.label, e.expression, e.line)} className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 hover:border-accent">
+                            <Sparkles size={12} /> Ask the AI
+                          </button>
+                        )}
+                        <button type="button" onClick={() => onDraftAsFlag(e.label, `${e.label}. In Qlik this was: ${e.expression}`)} className="rounded-md border border-line px-2 py-0.5 hover:border-accent">
+                          Draft as a flag
+                        </button>
+                      </span>
                     )}
+                    <AiReading value={aiRead[e.line]} onAdd={(m) => (onAddMeasures(m), setAiRead((x) => ({ ...x, [e.line]: 'Added to the catalog.' })))} />
                   </li>
                 ))}
               </ul>
@@ -231,6 +257,36 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, onClose }: 
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function AiReading({ value, onAdd }: { value: AiQlikResult | string | undefined; onAdd: (m: Metric[]) => void }) {
+  if (value === undefined) return null;
+  if (typeof value === 'string') return <p className="basis-full text-[11px] text-ink-2">{value}</p>;
+  return (
+    <div className="basis-full space-y-1 rounded-md border border-dashed border-line p-2 text-[11px]">
+      {value.explanation && <p className="text-ink-2">{value.explanation}</p>}
+      {value.metrics.map((m) => (
+        <p key={m.key}>
+          <b>{m.label}</b>: {m.agg.replace('_', ' ')} of {m.field}
+        </p>
+      ))}
+      {value.filterNotes.map((n) => (
+        <p key={n} className="text-warn">
+          {n}
+        </p>
+      ))}
+      {value.rejected.map((n) => (
+        <p key={n} className="text-ink-3">
+          Left out: {n}
+        </p>
+      ))}
+      {value.metrics.length > 0 && (
+        <button type="button" onClick={() => onAdd(value.metrics)} className="rounded-md bg-accent px-2 py-0.5 font-semibold text-panel">
+          {value.metrics.length === 1 ? 'Add this measure' : `Add these ${value.metrics.length} measures`}
+        </button>
+      )}
     </div>
   );
 }

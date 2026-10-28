@@ -112,7 +112,7 @@ test('Access SQL: brackets, TOP, positional binds; page filters on other tables 
     binding: { metrics: ['parts_on_hand'], dimensions: [{ field: 'parts.item' }], filters: [{ field: 'parts.item', op: 'in', values: ["O'Ring", 'Gasket'] }], sort: { by: 'parts_on_hand', dir: 'desc' }, limit: 10 },
   };
   const p = plan(f);
-  assert.match(p.notes.join(' '), /Opened date.*another table/);
+  assert.match(p.notes.join(' '), /Opened date.*not related/);
   const q = renderSql(p, index, TODAY);
   assert.equal(
     q.sql,

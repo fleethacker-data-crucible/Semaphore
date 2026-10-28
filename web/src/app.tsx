@@ -3,10 +3,10 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
@@ -17,24 +17,35 @@ import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../sr
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
-import { applyQlikLabels, qlikMeasures } from '../../src/core/qlik.ts';
+import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } from '../../src/core/qlik.ts';
+import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
+import { readQlikExpressionWithAi } from '../../src/core/intelligence/tasks.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
-import { proposeCatalog } from '../../src/core/profile.ts';
+import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
-import { type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
+import { aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
+import { csvWorker, WorkerError } from './lib/worker.ts';
+import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
+import type { Briefing } from '../../src/core/briefing.ts';
+import { BriefingPanel, ReportChip } from './components/Reports.tsx';
+import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
 import { PlaybookPanel } from './components/PlaybookPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
+import { SqlDesk } from './components/SqlDesk.tsx';
+import { LineageView } from './components/LineageView.tsx';
+import { ShareDialog } from './components/ShareDialog.tsx';
+import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
@@ -99,6 +110,9 @@ export function App() {
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
   const [files, setFiles] = useState<TableRows>({});
+  // CSV files are kept in the CSV worker when there is one (lib/worker.ts); `files` is the fallback.
+  const worker = useMemo(() => csvWorker(), []);
+  const [workerTables, setWorkerTables] = useState<string[]>([]);
   const [dataVersion, setDataVersion] = useState(1);
   const [selections, setSelections] = useState<Selections>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -106,6 +120,9 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
+  const [sqlOpen, setSqlOpen] = useState(false);
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -159,18 +176,23 @@ export function App() {
 
   // CSV files kept in this browser come back on reload.
   useEffect(() => {
-    allFiles().then((stored) => {
+    allFiles().then(async (stored) => {
       const tables: TableRows = {};
+      const held: string[] = [];
       for (const f of stored) {
         try {
-          const t = readCsv(f.name, f.text);
-          tables[t.name] = t.rows;
+          if (worker) held.push((await worker.load(f.name, f.text)).name);
+          else {
+            const t = readCsv(f.name, f.text);
+            tables[t.name] = t.rows;
+          }
         } catch {
           /* a file that no longer parses is skipped; it can be removed from the data panel */
         }
       }
-      if (Object.keys(tables).length) {
+      if (Object.keys(tables).length || held.length) {
         setFiles(tables);
+        setWorkerTables(held);
         setDataVersion((v) => v + 1);
       }
     });
@@ -186,8 +208,8 @@ export function App() {
     }
     Object.assign(local, files);
     localSources.add(FILES_SOURCE);
-    return { index, local, localSources, server, today, version: dataVersion };
-  }, [index, sample, files, server, today, dataVersion, catalog.sources]);
+    return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
+  }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
   // Save: always to this browser; to the server's folder too when there is one.
   const saveTimer = useRef<number | null>(null);
@@ -380,11 +402,20 @@ export function App() {
       let cat = catalog;
       const notes: string[] = [];
       const tables: TableRows = { ...files };
+      const held = new Set(workerTables);
       for (const file of Array.from(list)) {
         try {
           const text = await file.text();
-          const t = readCsv(file.name, text);
-          tables[t.name] = t.rows;
+          // Parsed in the CSV worker when there is one: a large file never freezes the page.
+          let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
+          if (worker) {
+            t = await worker.load(file.name, text);
+            held.add(t.name);
+          } else {
+            const parsed = readCsv(file.name, text);
+            tables[parsed.name] = parsed.rows;
+            t = { ...parsed, rows: parsed.rows.length };
+          }
           await putFile({ name: file.name, text, added: new Date().toISOString() });
           // Replace the measures and fields of a file loaded before under the same name.
           const without: Catalog = {
@@ -393,13 +424,14 @@ export function App() {
             metrics: cat.metrics.filter((m) => !(m.source === FILES_SOURCE && (m.table === t.name || cat.fields.find((f) => f.key === m.field)?.table === t.name))),
           };
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
-          cat = proposal.catalog;
-          notes.push(`${file.name}: ${t.rows.length.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
+          cat = pruneCatalog(proposal.catalog);
+          notes.push(`${file.name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
         } catch (e) {
-          notes.push(`${file.name}: ${e instanceof CsvError ? e.message : 'could not be read.'}`);
+          notes.push(`${file.name}: ${e instanceof CsvError || e instanceof WorkerError ? e.message : 'could not be read.'}`);
         }
       }
       setFiles(tables);
+      setWorkerTables([...held]);
       setDataVersion((v) => v + 1);
       clearResultCache();
       setCatalog(cat);
@@ -407,7 +439,7 @@ export function App() {
       setBusy(null);
       notify('Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.');
     },
-    [catalog, files, setCatalog, notify],
+    [catalog, files, workerTables, worker, setCatalog, notify],
   );
 
   const profile = useCallback(
@@ -436,7 +468,7 @@ export function App() {
   const importQlik = useCallback(
     async (plan: QlikImportPlan): Promise<string[]> => {
       const out: string[] = [];
-      const imported: Array<{ source: string; table: string }> = [];
+      const imported: QlikImported[] = [];
       let cat = catalog;
       try {
         for (const t of plan.tables) {
@@ -449,7 +481,7 @@ export function App() {
             cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
-            imported.push({ source: t.source, table: p.table });
+            imported.push({ source: t.source, table: p.table, qlik: t.qlik });
             out.push(`${p.table}: ${p.columns.length} columns profiled, ${labelled.renamed} named the way the Qlik app named them.`);
           } catch (e) {
             out.push(`${t.table}: could not be profiled (${(e as Error).message}).`);
@@ -462,6 +494,32 @@ export function App() {
           out.push(...m.filterNotes);
           for (const s of m.skipped) out.push(`Not added, ${s.label}: ${s.reason}`);
         }
+        if (plan.script && imported.length) {
+          // The cleaning Qlik's mapping loads did, and the links its same-named fields made.
+          const cleaning = qlikCleaningSteps(plan.script, cat, imported);
+          const have = new Set((cat.cleaning ?? []).map((s) => s.id));
+          const fresh = cleaning.steps.filter((s) => !have.has(s.id));
+          if (fresh.length) {
+            cat = { ...cat, cleaning: [...(cat.cleaning ?? []), ...fresh] };
+            out.push(`${fresh.length} mapping${fresh.length === 1 ? '' : 's'} carried over as cleaning steps (Data > Clean).`);
+          }
+          out.push(...cleaning.notes);
+          const candidates = qlikRelationshipCandidates(plan.script, cat, imported);
+          const checkCtx: DataContext = { ...ctx, index: indexCatalog(cat) };
+          for (const c of candidates) {
+            setBusy(`Checking the ${c.from.label} link…`);
+            try {
+              const [a, b] = [await runAnywhere(valuesPlan(checkCtx.index, c.from.key), checkCtx), await runAnywhere(valuesPlan(checkCtx.index, c.to.key), checkCtx)];
+              const rel = proposeRelationship(c, checkRelationship(toValueCounts(a.rows), toValueCounts(b.rows)));
+              if (rel && !(cat.relationships ?? []).some((r) => r.id === rel.id)) {
+                cat = { ...cat, relationships: [...(cat.relationships ?? []), { ...rel, origin: 'qlik' }] };
+                out.push(`Linked ${c.from.table} to ${c.to.table} on ${c.from.label}, as Qlik did (${Math.round((rel.match ?? 0) * 100)}% of values match).`);
+              }
+            } catch (e) {
+              out.push(`The ${c.from.label} link could not be checked: ${(e as Error).message}`);
+            }
+          }
+        }
         setCatalog(cat);
         notify('Qlik import done: check the new measures and fields under Data.');
       } finally {
@@ -469,8 +527,11 @@ export function App() {
       }
       return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
     },
-    [catalog, server, setCatalog, notify],
+    [catalog, server, setCatalog, notify, ctx],
   );
+
+  const readQlikWithAi = useCallback((label: string, expression: string) => readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
+  const addMeasures = useCallback((metrics: Metric[]) => setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] }), [catalog, setCatalog]);
 
   // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.
   const addBriefFlag = useCallback(
@@ -494,17 +555,27 @@ export function App() {
         for (const name of Object.keys(files)) void deleteFile(name);
         allFiles().then((all) => all.forEach((f) => deleteFile(f.name)));
         setFiles({});
+        void worker?.clear();
+        setWorkerTables([]);
         setDataVersion((v) => v + 1);
       }
       const fieldKeys = new Set(catalog.fields.filter((f) => f.source === id).map((f) => f.key));
-      setCatalog({ ...catalog, sources: catalog.sources.filter((s) => s.id !== id), fields: catalog.fields.filter((f) => f.source !== id), metrics: catalog.metrics.filter((m) => m.source !== id && !(m.field && fieldKeys.has(m.field))) });
+      setCatalog({
+        ...catalog,
+        sources: catalog.sources.filter((s) => s.id !== id),
+        fields: catalog.fields.filter((f) => f.source !== id),
+        metrics: catalog.metrics.filter((m) => m.source !== id && !(m.field && fieldKeys.has(m.field))),
+        relationships: (catalog.relationships ?? []).filter((r) => r.source !== id),
+        cleaning: (catalog.cleaning ?? []).filter((c) => !fieldKeys.has(c.field)),
+        hierarchies: (catalog.hierarchies ?? []).filter((h) => !h.levels.some((l) => fieldKeys.has(l))),
+      });
     },
     [catalog, files, setCatalog],
   );
 
   const loadExample = useCallback(() => {
     const ex = exampleCatalog as Catalog;
-    setCatalog({ version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
+    setCatalog({ ...catalog, version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
     const h = parseHoist(exampleHoist, indexCatalog(ex)).hoist;
     if (h) history.replace(h);
     setSelections({});
@@ -603,6 +674,48 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.entries, ctx]);
 
+  // Recurring reports: note the days this analyst opens the page (once a day), offer a schedule
+  // when there is a rhythm, and produce any edition that is due while its owner is away.
+  const [offerTick, setOfferTick] = useState(0);
+  useEffect(() => {
+    if (!playbook.loaded || currentView !== 'builder' || !hoist.flags.length || hoist.experiment) return;
+    const log = noteOpened(playbook.usage.find((u) => u.hoistId === hoist.id), hoist.id, hoist.title, user, today);
+    if (log) void playbook.saveReportDoc(log).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, hoist.id, currentView]);
+  const hoistSchedule = playbook.schedules.find((s) => s.hoistId === hoist.id);
+  const reportOffer = useMemo(() => {
+    if (hoistSchedule || readLocal<string>(`semaphore.reportOffer.${hoist.id}`) === 'no') return null;
+    const log = playbook.usage.find((u) => u.hoistId === hoist.id);
+    return log ? detectCadence(log.opened, today) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.usage, hoistSchedule, hoist.id, today, offerTick]);
+  const producing = useRef(false);
+  useEffect(() => {
+    if (!playbook.loaded || producing.current || currentView === 'refresh') return;
+    if (!dueSchedules(playbook, new Date()).length) return;
+    producing.current = true;
+    produceDueEditions(playbook, ctx, index, user, hoist, draftingProvider(index, ai, useAi))
+      .catch(() => [])
+      .finally(() => {
+        producing.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, playbook.schedules, playbook.away, ctx]);
+
+  // "Brief me": the open page's briefing, written by the AI when it is on, checked against the facts.
+  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
+  const briefMe = useCallback(async () => {
+    setBriefing('loading');
+    try {
+      const frozen = await freezeHoist(hoist, ctx, index);
+      setBriefing(await briefFrozen(frozen, hoist.title, index, draftingProvider(index, ai, useAi)));
+    } catch (e) {
+      setBriefing(null);
+      notify(`Could not read the page: ${(e as Error).message}`);
+    }
+  }, [hoist, ctx, index, ai, useAi, notify]);
+
   // The refresher (Launch-Semaphore.bat --refresh, in a headless browser): refresh every snapshot
   // this computer can reach, report to the server, and end the session.
   const refreshRun = useRef(false);
@@ -632,6 +745,8 @@ export function App() {
         }
       }
       say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
+      // Regular reports due while their analyst is away.
+      for (const line of await produceDueEditions(playbook, ctx, index, user, null, draftingProvider(index, ai, useAi)).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
         await api('/api/refresh-report', { json: { refreshed, skipped, failed } }).catch(() => undefined);
         await endSession().catch(() => undefined);
@@ -766,6 +881,19 @@ export function App() {
             While you were out
           </button>
         )}
+        {!hoist.experiment && hoistSchedule && (
+          <ReportChip
+            title={hoist.title}
+            cadence={reportOffer}
+            schedule={hoistSchedule}
+            onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
+            onDismiss={() => {
+              writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
+              setOfferTick((t) => t + 1);
+            }}
+            onStop={() => hoistSchedule && void playbook.removeReportDoc(hoistSchedule.id)}
+          />
+        )}
         <div className="ml-4 flex items-center gap-0.5">
           <IconButton label="Undo (Ctrl+Z)" onClick={history.undo} disabled={!history.canUndo}>
             <Undo2 size={16} />
@@ -794,6 +922,12 @@ export function App() {
           <IconButton label="Download this hoist" onClick={exportHoist}>
             <Download size={16} />
           </IconButton>
+          <IconButton label="Share as a report: one HTML file with working filters" onClick={() => setShareOpen(true)}>
+            <FileDown size={16} />
+          </IconButton>
+          <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
+            <ScrollText size={16} />
+          </IconButton>
           <button type="button" onClick={() => setPlaybookOpen(true)} className="relative ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="What leadership can ask for, their questions, and what needs review">
             <BookOpen size={14} className="text-brass" /> Playbook
             {waiting > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-bad px-1.5 text-[10px] font-bold text-panel">{waiting}</span>}
@@ -804,6 +938,11 @@ export function App() {
           <button type="button" onClick={() => setDataOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent">
             <Database size={14} className="text-brass" /> Data
           </button>
+          {server && server.sources.length > 0 && (
+            <button type="button" onClick={() => setSqlOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="Write your own SELECT against a source on this computer">
+              <TerminalSquare size={14} className="text-brass" /> SQL
+            </button>
+          )}
           {server && ai && (
             <button
               type="button"
@@ -843,6 +982,19 @@ export function App() {
           )}
         </div>
       </header>
+      {!hoist.experiment && !hoistSchedule && reportOffer && (
+          <ReportChip
+            title={hoist.title}
+            cadence={reportOffer}
+            schedule={hoistSchedule}
+            onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
+            onDismiss={() => {
+              writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
+              setOfferTick((t) => t + 1);
+            }}
+            onStop={() => undefined}
+          />
+      )}
 
       <section aria-label="Page brief" className="border-b border-line bg-panel-2 px-4 py-3">
         <div className="mx-auto flex max-w-[1400px] items-start gap-3">
@@ -986,6 +1138,9 @@ export function App() {
           busy={busy}
           onClose={() => setDataOpen(false)}
           onCatalog={setCatalog}
+          ctx={ctx}
+          provider={draftingProvider(index, ai, useAi)}
+          onLineage={() => setLineageOpen(true)}
           onAddCsv={addCsv}
           onRemoveSource={removeSource}
           onProfile={profile}
@@ -997,7 +1152,37 @@ export function App() {
         />
       )}
 
-      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} onClose={() => setQlikOpen(false)} />}
+      {briefing && (
+        <BriefingPanel
+          briefing={briefing}
+          flags={hoist.flags}
+          onFlag={(id) => {
+            setSelectedId(id);
+            document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }}
+          onClose={() => setBriefing(null)}
+        />
+      )}
+
+      {shareOpen && (
+        <ShareDialog
+          title={hoist.title}
+          onClose={() => setShareOpen(false)}
+          onSave={async (passphrase) => {
+            const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true });
+            const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
+            const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
+            download(name, html);
+            return name;
+          }}
+        />
+      )}
+
+      {lineageOpen && <LineageView catalog={catalog} hoist={hoist} onClose={() => setLineageOpen(false)} />}
+
+      {sqlOpen && server && <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />}
+
+      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} ai={ai?.configured && useAi ? aiLabel(ai) : null} onReadWithAi={readQlikWithAi} onAddMeasures={addMeasures} onClose={() => setQlikOpen(false)} />}
 
       {openList && (
         <div className="fixed inset-0 z-40 flex items-start justify-center bg-ink/20 pt-24" onPointerDown={(e) => e.target === e.currentTarget && setOpenList(null)}>

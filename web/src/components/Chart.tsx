@@ -1,6 +1,6 @@
 // ECharts, imported piece by piece so the bundle carries only the charts Semaphore draws.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as echarts from 'echarts/core';
 import { BarChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TooltipComponent, MarkLineComponent } from 'echarts/components';
@@ -20,6 +20,7 @@ export function EChart({ option, onClick, label }: { option: EChartsCoreOption; 
   const chart = useRef<echarts.ECharts | null>(null);
   const click = useRef(onClick);
   click.current = onClick;
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
     if (!el.current) return;
@@ -36,10 +37,22 @@ export function EChart({ option, onClick, label }: { option: EChartsCoreOption; 
   }, []);
 
   useEffect(() => {
-    chart.current?.setOption(option, { notMerge: true });
+    // A chart that cannot be drawn says so in its own card; it must never take the page down with it.
+    try {
+      chart.current?.setOption(option, { notMerge: true });
+      setFailed(null);
+    } catch (e) {
+      chart.current?.clear();
+      setFailed((e as Error).message);
+    }
   }, [option]);
 
-  return <div ref={el} className="h-full w-full" role="img" aria-label={label} />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={el} className="h-full w-full" role="img" aria-label={label} />
+      {failed && <p className="absolute inset-0 flex items-center justify-center p-2 text-center text-xs text-warn" title={failed}>This chart could not be drawn. Try another kind for it.</p>}
+    </div>
+  );
 }
 
 const SERIES_FALLBACK = {

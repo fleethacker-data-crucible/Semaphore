@@ -75,6 +75,42 @@ async function run() {
   await mkdir(path.join(outDir, 'assets'), { recursive: true });
   const files = await listFiles(srcDir);
 
+  // The CSV worker is its own bundle (same-origin, so the page's CSP allows it); the app learns its
+  // hashed name through a define.
+  const workerOut = await build({
+    entryPoints: [path.join(srcDir, 'worker.ts')],
+    bundle: true,
+    minify: !watch,
+    sourcemap: watch ? 'inline' : false,
+    format: 'iife',
+    target: ['es2020', 'edge120', 'chrome120'],
+    write: false,
+    outfile: 'worker.js',
+    legalComments: 'none',
+    logLevel: 'warning',
+  });
+  const workerJs = workerOut.outputFiles[0].text;
+  const workerName = `worker.${createHash('sha256').update(workerJs).digest('hex').slice(0, 10)}.js`;
+  await writeFile(path.join(outDir, 'assets', workerName), workerJs);
+
+  // The reader inside a shared HTML report (web/src/lib/share.ts inlines it into the file).
+  const readerOut = await build({
+    entryPoints: [path.join(srcDir, 'report.tsx')],
+    bundle: true,
+    minify: true,
+    format: 'iife',
+    target: ['es2020', 'edge120', 'chrome120'],
+    jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': JSON.stringify('production') },
+    write: false,
+    outfile: 'report.js',
+    legalComments: 'none',
+    logLevel: 'warning',
+  });
+  const readerJs = readerOut.outputFiles[0].text;
+  const readerName = `report.${createHash('sha256').update(readerJs).digest('hex').slice(0, 10)}.js`;
+  await writeFile(path.join(outDir, 'assets', readerName), readerJs);
+
   const result = await build({
     entryPoints: [path.join(srcDir, 'main.tsx')],
     bundle: true,
@@ -83,7 +119,7 @@ async function run() {
     format: 'iife',
     target: ['es2020', 'edge120', 'chrome120'],
     jsx: 'automatic',
-    define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production') },
+    define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production'), __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`), __SEMAPHORE_REPORT__: JSON.stringify(`assets/${readerName}`) },
     write: false,
     outfile: 'app.js',
     legalComments: 'none',

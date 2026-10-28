@@ -206,7 +206,7 @@ export function Inspector(p: InspectorProps) {
               >
                 <option value="none">does nothing</option>
                 <option value="filter-page">filters the page</option>
-                <option value="drill">drills (planned; selects for now)</option>
+                <option value="drill">drills down (dates, or a drill path under Data &gt; Links)</option>
               </select>
             </label>
             <div className="text-xs">

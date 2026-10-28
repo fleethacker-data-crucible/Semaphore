@@ -19,7 +19,7 @@ Done:
 Still to do from the original v0.2 list:
 
 - Secrets from the Lazarette vault via the bridge Halyard uses (today: DSN or integrated authentication only).
-- AWS (Athena, Redshift), Azure SQL/Synapse and Palantir Foundry connectors beyond what ODBC reaches. For the S3 data lake, see Sounding Line under "AI-first" below.
+- Redshift, Azure SQL/Synapse and Palantir Foundry connectors beyond what ODBC reaches. Athena (the S3 data lake) is done: see "Where the data lives" below.
 - ~~Remote intelligence providers from the UI~~: done, through Fairlead and the server-side relay (`/api/ai`, [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)).
 - ~~Restyle to the unified UI~~: done, Fleet UI v0.2 as the default skin, with skins for last-minute changes ([SKINS.md](SKINS.md)).
 
@@ -36,43 +36,43 @@ Semaphore learns from analysts' reviewed work, so leadership can simply ask, and
 
 ## AI-first: the AI does the heavy lifting, the rules engine is the safety net
 
-Semaphore is meant to be an AI tool that still works without AI: the model drafts, cleans and explains; Semaphore's own code writes the SQL and computes every number; and with no model (a disconnected ship, no approval yet) the local rules carry on. AI goes through Fairlead, on a local model by default or an approved cloud model.
+Semaphore is meant to be an AI tool that still works without AI: the model drafts, cleans and explains; Semaphore's own code writes the SQL and computes every number; and with no model (a disconnected ship, no approval yet) the local rules carry on. AI goes through Fairlead, on a local model by default or an approved cloud model. Every AI answer is validated before it is used (see `src/core/intelligence/tasks.ts`).
 
 **Standing in for an absent analyst** (the point is cover and freedom to experiment, not replacing analysts):
 
-- **Done:** team style card (`src/core/style.ts`): chart per kind of question, time grain, top N, page window and colour rules, learnt from accepted flags with their evidence; analysts switch rules off or pin them (`team/style`). Every draft, by AI or local rules, is finished in the team's style where its brief is silent, and the AI receives the style as context.
-- **Done:** away mode and the "while you were out" digest (`src/core/away.ts`, `team/away-<user>`): leadership sees who is out; familiar questions are answered from reviewed work; new ones are queued; on return the analyst gets what was asked, what was used, what was drafted and what needs sign-off.
-- **Done:** experiment pages ("Try freely"): never learnt from by the playbook or the style.
-- **Next:** recurring reports: recognise a dashboard refreshed on a schedule (the Monday brief) and produce it while its analyst is out, same structure, new data.
-- **Next:** AI-written briefings for leadership from the "what changed" insights, each sentence linked to its flag.
+- **Done:** team style card (`src/core/style.ts`), away mode and the "while you were out" digest (`src/core/away.ts`), experiment pages ("Try freely").
+- **Done:** recurring reports (`src/core/reports.ts`): Semaphore notices that a page is opened on a weekly or monthly rhythm and offers to keep it coming; while its analyst is marked away, whoever can reach the data (an analyst, the Ask view, or the `--refresh` run) produces a dated edition on schedule, read by leadership under Regular reports.
+- **Done:** briefings (`src/core/briefing.ts`): what a page says in a few sentences, each linked to its flag. The AI may only rephrase Semaphore's own facts; a sentence is kept only when every number in it is in the facts of the flag it cites. Editions carry one; "Brief me" shows the open page's.
 
-**Messy data, done with the analyst instead of by them** (the load-script work that takes much of an analyst's time in Qlik):
+**Messy data, done with the analyst instead of by them** (`src/core/quality.ts`, `src/core/cleaning.ts`, Data > Clean):
 
-- Profile data quality: inconsistent labels ("N.E." vs "Northeast"), stray spaces, mixed date formats, numbers stored as text, duplicates, blanks that mean zero.
-- AI proposes cleaning steps as readable sentences; the analyst accepts or undoes each; accepted steps live in the catalog and Semaphore applies them in its own SQL and in snapshots.
-- Relationship discovery: proposed joins between tables with how many rows actually match, feeding "joins through catalog relationships" below.
+- **Done:** stray spaces, the same label spelt different ways (case, punctuation, compass abbreviations), numbers kept as text, mixed date formats (page data), blanks, duplicate rows; each proposed as a sentence to accept or undo. The AI suggests abbreviations and misspellings per field on request (it is sent that field's distinct values and counts, not rows).
+- **Done:** accepted steps live in the catalog and are applied wherever a field is read, in Semaphore's SQL (once, in an inner query, every value bound) and in the page. The data itself is never changed.
+- **Done:** relationship discovery (Data > Links): key columns proposed from their names, kept only when the values match and the target identifies one row.
 
 **Where the data lives:**
 
-- Today: CSV in the page, Access through ACE, Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC.
-- **Done:** the lake engine (`server/Lake.ps1`): Athena as a Semaphore source with SigV4 signing (BCL only), a cost guard (size and price before a query runs, partition-filter warning, approval above a threshold, a daily per-user limit), a result cache, usage records and free profiling from Glue; tested against a simulated AWS and AWS's SigV4 test vector. **Next:** the raw-SQL desk on the same engine, and AWS sessions brokered through Lazarette.
-- Origin: the S3 data lake through Athena, by way of the **Sounding Line** proposal (comms repo, `proposals/sounding-line`): a query desk with a cost guard (scan size and price before a query runs, partition-filter warnings, per-user daily limits), a local result cache, and short AWS sessions brokered through Lazarette so analysts hold no AWS keys. Semaphore already writes Athena-ready SQL; one aggregate query per flag and leadership answering from snapshots keep scans small.
+- CSV in the page (large files in a Web Worker), Access through ACE, Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC.
+- **Done:** the lake engine (`server/Lake.ps1`, from the Sounding Line proposal): Athena with SigV4 signing (BCL only), a cost guard (every table a query reads is sized, partition-filter warning, approval above a threshold, daily per-user limit), result cache, usage records, free profiling from Glue; tested against a simulated AWS, not yet against real AWS.
+- **Done:** the SQL desk: analysts write their own SELECT against any server source, the lake included, with the same guard, cost guard and cache; CSV download.
+- **Next:** AWS sessions brokered through Lazarette, so analysts hold no AWS keys; database secrets from the Lazarette vault.
 
-**Porting from Qlik:** **done**: Data > Import from Qlik reads a load script (connections, SQL and file loads, renames, associations, mapping loads) and chart expressions (aggregates with literal set analysis), profiles the tables, labels the fields with Qlik's names and adds the measures; expressions it cannot read become flags to draft. **Next:** the AI reading those expressions directly, applying mapping loads as cleaning steps, and associations as joins.
+**Porting from Qlik:** **done**: Data > Import from Qlik reads a load script and chart expressions, profiles the tables and uses Qlik's names; mapping loads (ApplyMap) become cleaning steps; associations become relationships the data confirms; expressions Semaphore cannot read can be read by the AI, validated against the catalog and added only when the analyst says so.
 
-## v0.4: depth
+## v0.4: depth (done in this release)
 
-- Joins through catalog relationships, so a flag can read more than one table and selections reach related tables.
-- Drill paths (year → quarter → month), and drill on categories into a detail table.
-- Queries and cross-filtering in a Web Worker for very large CSV files.
-- Lineage view (React Flow): which flags read which measures, fields and sources.
+- **Done:** joins through catalog relationships (`src/core/joins.ts`): a flag's measures stay on one table and it groups or filters by any table reached many-to-one, so totals never double; LEFT JOINs in every dialect (Access nested, Oracle without AS) and in the page.
+- **Done:** drill paths (`src/core/drill.ts`): dates drill year → quarter → month → day, categories follow drill paths set under Data > Links, the last level opens the rows; the click narrows that flag only.
+- **Done:** large CSV files in a Web Worker: parsed and queried off the page's thread.
+- **Done:** lineage view (Data > Lineage): sources, tables, fields, measures and flags, every join hop; built with SVG, no new dependency.
 
-## v0.5: sharing
+## v0.5: sharing (done in this release)
 
-- Self-contained HTML report with cached results and working filters, optional passphrase encryption.
+- **Done:** Share as a report: one self-contained HTML file with every flag's answers, working filters from the pre-split results, no network (its own CSP), and optional AES-256-GCM encryption with a passphrase.
 
 ## Later
 
 - Databricks serving endpoint provider.
-- Qlik migration helper: read a QVF/QVW load script or field list into the catalog.
 - Flag kits: saved flag sets that remap to a new catalog.
+- Comparisons under a drill and in shared reports (today they show at the top level only).
+- Joins one-to-many (a measure on the one side split by the many side) with distinct handling.

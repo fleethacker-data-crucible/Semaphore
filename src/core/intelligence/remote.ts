@@ -12,6 +12,7 @@ import {
   type DraftHoistRequest,
   IntelligenceError,
   type IntelligenceProvider,
+  type TaskRequest,
 } from './contract.ts';
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal: AbortSignal; credentials: 'omit'; referrerPolicy: 'no-referrer' }) => Promise<{
@@ -108,6 +109,9 @@ export class ContractProvider extends RemoteBase implements IntelligenceProvider
   draftHoist(request: DraftHoistRequest): Promise<unknown> {
     return this.task({ ...request });
   }
+  runTask(request: TaskRequest): Promise<unknown> {
+    return this.task({ task: request.task, ...request.payload });
+  }
 }
 
 /** Any OpenAI-compatible chat completions API. Semaphore writes the prompts. */
@@ -130,7 +134,10 @@ export class OpenAICompatibleProvider extends RemoteBase implements Intelligence
   draftHoist(request: DraftHoistRequest): Promise<unknown> {
     return this.complete(HOIST_PROMPT, request);
   }
-  private async complete(system: string, request: DraftFlagRequest | DraftHoistRequest): Promise<unknown> {
+  runTask(request: TaskRequest): Promise<unknown> {
+    return this.complete(request.system, { task: request.task, ...request.payload });
+  }
+  private async complete(system: string, request: unknown): Promise<unknown> {
     const r = await this.call(
       `${this.base}/chat/completions`,
       'POST',

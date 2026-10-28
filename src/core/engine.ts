@@ -7,6 +7,8 @@ import type { CatalogIndex, FieldType } from './catalog.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import type { QueryPlan } from './planner.ts';
 import type { Cell, ResultRow } from './crossfilter.ts';
+import { cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
+import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { periodStart } from './sql.ts';
 
 /** Rows per table, keyed by the catalog's table name. Values are keyed by column name. */
@@ -22,17 +24,52 @@ export class EngineError extends Error {}
 
 export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows, today: Date = new Date()): RunResult {
   const started = Date.now();
-  const source = tables[plan.table];
-  if (!source) throw new EngineError(`No rows are loaded for table "${plan.table}".`);
-  const col = (fieldKey: string): { column: string; type: FieldType } => {
+  const loaded = tables[plan.table];
+  if (!loaded) throw new EngineError(`No rows are loaded for table "${plan.table}".`);
+  const source = !plan.raw && dedupes(index, plan.source, plan.table) ? distinctRows(loaded) : loaded;
+
+  // A joined row is the base row and, per join, the matching row of the related table (or none,
+  // as with LEFT JOIN). Related tables are looked up by key; a key that appears twice keeps its
+  // first row, so a join never repeats a base row.
+  const joins = plan.joins ?? [];
+  const lookups = joins.map((j) => {
+    const rows = tables[j.table];
+    if (!rows) throw new EngineError(`No rows are loaded for table "${j.table}".`);
+    const byKey = new Map<string, Record<string, Cell>>();
+    for (const r of rows) {
+      const k = r[j.column];
+      if (k === null || k === undefined || k === '') continue;
+      if (!byKey.has(String(k))) byKey.set(String(k), r);
+    }
+    return byKey;
+  });
+  const slot = new Map<string, number>([[BASE_ALIAS, 0]]);
+  joins.forEach((j, i) => slot.set(j.alias, i + 1));
+  type Joined = Array<Record<string, Cell> | undefined>;
+  const joinRow = (base: Record<string, Cell>): Joined => {
+    const out: Joined = [base];
+    joins.forEach((j, i) => {
+      const left = out[slot.get(j.left.alias)!];
+      const k = left?.[j.left.column];
+      out.push(k === null || k === undefined ? undefined : lookups[i]!.get(String(k)));
+    });
+    return out;
+  };
+
+  const col = (fieldKey: string): { get: (row: Joined) => Cell; type: FieldType } => {
     const f = index.field(fieldKey);
     if (!f) throw new EngineError(`Unknown field "${fieldKey}".`);
-    return { column: f.column, type: f.type };
+    const alias = f.source === plan.source ? aliasOf(plan.table, joins, f.table) : undefined;
+    if (!alias) throw new EngineError(`Field "${fieldKey}" is not in ${plan.table} or a table joined to it.`);
+    const at = slot.get(alias)!;
+    const steps = plan.raw ? [] : stepsFor(index, fieldKey);
+    const read = (row: Joined): Cell => row[at]?.[f.column] ?? null;
+    return { get: steps.length ? (row) => cleanValue(steps, read(row)) : read, type: plan.raw ? f.type : cleanType(index, fieldKey) };
   };
 
   const tests = plan.filters.map((f) => filterTest(f, col(f.field), today));
-  const dims = plan.dimensions.map((d) => ({ alias: d.alias, column: col(d.field).column, grain: d.grain }));
-  const aggs = plan.aggregates.map((a) => ({ alias: a.alias, fn: a.fn, column: a.field === null ? null : col(a.field).column }));
+  const dims = plan.dimensions.map((d) => ({ alias: d.alias, get: col(d.field).get, grain: d.grain }));
+  const aggs = plan.aggregates.map((a) => ({ alias: a.alias, fn: a.fn, get: a.field === null ? null : col(a.field).get }));
 
   interface Group {
     dims: Record<string, Cell>;
@@ -40,10 +77,11 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
     distinct: Record<string, Set<string>>;
   }
   const groups = new Map<string, Group>();
-  for (const row of source) {
+  for (const base of source) {
+    const row = joinRow(base);
     if (!tests.every((t) => t(row))) continue;
     const values = dims.map((d) => {
-      const v = row[d.column] ?? null;
+      const v = d.get(row);
       return d.grain ? truncateDate(v, d.grain) : v;
     });
     const key = JSON.stringify(values);
@@ -58,7 +96,7 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
       groups.set(key, g);
     }
     for (const a of aggs) {
-      const raw = a.column === null ? 1 : (row[a.column] ?? null);
+      const raw = a.get === null ? 1 : a.get(row);
       if (raw === null || raw === '') continue;
       if (a.fn === 'count') {
         g.acc[a.alias] = (g.acc[a.alias] ?? 0) + 1;
@@ -105,11 +143,11 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
   return { rows, truncated, ms: Date.now() - started };
 }
 
-function filterTest(f: Filter, c: { column: string; type: FieldType }, today: Date): (row: Record<string, Cell>) => boolean {
-  const get = (row: Record<string, Cell>) => row[c.column] ?? null;
+function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: FieldType }, today: Date): (row: R) => boolean {
+  const get = c.get;
   if (c.type === 'date') {
     const day = (v: unknown) => String(v).slice(0, 10);
-    const val = (row: Record<string, Cell>) => {
+    const val = (row: R) => {
       const v = get(row);
       return v === null ? null : day(v);
     };
@@ -188,4 +226,17 @@ function compareCells(a: Cell, b: Cell): number {
   if (b === null) return -1;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   return String(a).localeCompare(String(b), 'en', { numeric: true });
+}
+
+/** Rows with exact duplicates removed, first one kept (a dedupe cleaning step). */
+function distinctRows(rows: ReadonlyArray<Record<string, Cell>>): Array<Record<string, Cell>> {
+  const seen = new Set<string>();
+  const out: Array<Record<string, Cell>> = [];
+  for (const r of rows) {
+    const k = JSON.stringify(Object.keys(r).sort().map((c) => r[c] ?? null));
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
 }

@@ -180,6 +180,19 @@ Describe 'Lake engine' {
             } finally { Stop-FakeAws $fake }
         }
 
+        It 'sizes every table a joined or hand-written query reads' {
+            $fake = Start-FakeAws -TableBytes (4GB)
+            try {
+                $l = New-Lake -Endpoint $fake.Endpoint
+                $sql = 'SELECT "t1"."class" AS "d0", COUNT(*) AS "a0" FROM (SELECT DISTINCT * FROM "work_orders") AS "t0" LEFT JOIN "hulls" AS "t1" ON "t0"."hull" = "t1"."hull" WHERE "t0"."year" = 2026 GROUP BY 1'
+                @(Get-SemLakeTableNames $sql) -join ',' | Should -Be 'work_orders,hulls'
+                $j = (Invoke-LakeRoute -Raw $l.Raw -Sql $sql).Body | ConvertFrom-Json
+                $j.estimate.bytes | Should -Be (8GB)
+                $j.estimate.table | Should -Be 'work_orders, hulls'
+                @($fake.State.Requests | Where-Object { $_.Head -match 'AWSGlue.GetTable' }).Count | Should -Be 2
+            } finally { Stop-FakeAws $fake }
+        }
+
         It 'refuses past the daily limit' {
             $fake = Start-FakeAws -TableBytes (5GB)
             try {

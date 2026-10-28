@@ -218,9 +218,14 @@ Context '/api/ai routes' {
     }
 
     It 'answers 409 with setup steps when no key is stored' {
-        $r = Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root
-        $r.Status | Should -Be 409
-        $r.Body | Should -Match 'Set-SemaphoreAiKey'
+        # The real key file of this machine (if any) must not count: look in an empty folder instead.
+        $saved = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $script:Root
+        try {
+            $r = Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root
+            $r.Status | Should -Be 409
+            $r.Body | Should -Match 'Set-SemaphoreAiKey'
+        } finally { $env:LOCALAPPDATA = $saved }
     }
 
     It 'passes a draft request through and adds the target, without the key anywhere' {

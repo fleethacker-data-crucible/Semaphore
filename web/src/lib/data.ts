@@ -10,6 +10,7 @@ import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
 import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from '../../../src/core/planner.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
+import type { CsvWorker } from './worker.ts';
 
 export interface DataContext {
   index: CatalogIndex;
@@ -21,6 +22,9 @@ export interface DataContext {
   today: Date;
   /** Changes whenever local rows change, so cached results are not reused across data. */
   version: number;
+  /** CSV files held in the CSV worker (lib/worker.ts), by table name; their flags run there. */
+  worker?: CsvWorker | null;
+  workerTables?: ReadonlySet<string>;
 }
 
 export interface FlagResult {
@@ -34,6 +38,8 @@ export interface FlagResult {
   ms: number;
   /** Selections that needed a fresh query for this flag. */
   requeried: string[];
+  /** The rows as the source returned them (pre-split), so a shared report can filter offline. */
+  raw?: ReadonlyArray<Record<string, string | number | boolean | null>>;
   /** Lake sources: how the numbers were paid for (or that they came from the result cache). */
   lake?: { cached: boolean; asOf?: string; scannedBytes?: number; warnings: string[] };
 }
@@ -89,8 +95,10 @@ function sourceSql(plan: QueryPlan, ctx: DataContext): RenderedSql | null {
 
 async function run(plan: QueryPlan, ctx: DataContext) {
   if (ctx.localSources.has(plan.source)) {
-    const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}`;
-    return { origin: 'page' as const, result: await remember(key, async () => runPlan(plan, ctx.index, ctx.local, ctx.today)) };
+    // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
+    const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
+    const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table)].every((t) => ctx.workerTables?.has(t));
+    return { origin: 'page' as const, result: await remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);
   if (!server) {
@@ -141,7 +149,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
       }
     }
   }
-  const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried };
+  const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried, raw: ran.result.rows };
   const lake = ran.result as { cached?: boolean; asOf?: string; scannedBytes?: number; estimate?: { warnings: string[] } };
   if (lake.cached || lake.scannedBytes !== undefined) {
     out.lake = { cached: !!lake.cached, ...(lake.asOf ? { asOf: lake.asOf } : {}), ...(lake.scannedBytes !== undefined ? { scannedBytes: lake.scannedBytes } : {}), warnings: lake.estimate?.warnings ?? [] };

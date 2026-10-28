@@ -17,6 +17,8 @@
 // no backtracking-prone regular expressions on whole statements.
 
 import type { Aggregate, Catalog, Field, Metric } from './catalog.ts';
+import type { CleaningStep } from './cleaning.ts';
+import type { RelationshipCandidate } from './quality.ts';
 
 export const QLIK_LIMITS = { scriptChars: 500_000, statements: 2000, fields: 500, mappingPairs: 5000, expressionChars: 2000 };
 
@@ -611,4 +613,72 @@ export function qlikMeasures(lines: string, catalog: Catalog, prefer: ReadonlyAr
     }
   }
   return { metrics, filterNotes, skipped };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The work the load script was doing, carried over: mapping loads become cleaning steps, and the
+// links Qlik made between same-named fields become relationship candidates (checked on the data).
+// ---------------------------------------------------------------------------------------------
+
+/** A Qlik table that was imported: its label in the script and where it now is in the catalog. */
+export interface QlikImported {
+  qlik: string;
+  source: string;
+  table: string;
+}
+
+function catalogField(catalog: Catalog, at: QlikImported, column: string): Field | undefined {
+  const c = column.toLowerCase();
+  return catalog.fields.find((f) => f.source === at.source && f.table.toLowerCase() === at.table.toLowerCase() && f.column.toLowerCase() === c);
+}
+
+/** ApplyMap('Region map', region) over an inline mapping table → a map step on that field. */
+export function qlikCleaningSteps(script: QlikScript, catalog: Catalog, imported: readonly QlikImported[]): { steps: CleaningStep[]; notes: string[] } {
+  const steps: CleaningStep[] = [];
+  const notes: string[] = [];
+  for (const m of qlikMappings(script)) {
+    for (const use of m.usedBy) {
+      const dot = use.lastIndexOf('.');
+      const label = use.slice(0, dot);
+      const name = use.slice(dot + 1);
+      const at = imported.find((i) => i.qlik === label);
+      if (!at) continue;
+      const qf = script.tables.find((t) => t.label === label)?.fields.find((f) => f.name === name);
+      const field = qf ? catalogField(catalog, at, qf.column) : undefined;
+      if (!field) {
+        notes.push(`The mapping "${m.name}" on ${name} was not carried over: its column is not in the catalog.`);
+        continue;
+      }
+      if (!m.pairs.length) {
+        notes.push(`The mapping "${m.name}" on ${field.label} reads its pairs from ${m.from ?? 'a query'}; add it under Data > Clean once that table is in the catalog.`);
+        continue;
+      }
+      const map = Object.fromEntries(m.pairs.filter(([a, b]) => a !== b));
+      steps.push({
+        id: `qlik-${m.name}-${field.key}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-'),
+        field: field.key,
+        kind: 'map',
+        map,
+        sentence: `Read ${field.label} through the Qlik mapping “${m.name}” (${Object.keys(map).length} value${Object.keys(map).length === 1 ? '' : 's'}, e.g. ${m.pairs.slice(0, 2).map(([a, b]) => `“${a}” as “${b}”`).join(', ')})`,
+        origin: 'qlik',
+      });
+    }
+  }
+  return { steps, notes };
+}
+
+/** Each association between two imported tables of one source, in both directions; the data decides which holds. */
+export function qlikRelationshipCandidates(script: QlikScript, catalog: Catalog, imported: readonly QlikImported[]): RelationshipCandidate[] {
+  const out: RelationshipCandidate[] = [];
+  for (const a of qlikAssociations(script)) {
+    const ends = a.tables
+      .map((t) => {
+        const at = imported.find((i) => i.qlik === t.label);
+        const field = at ? catalogField(catalog, at, t.column) : undefined;
+        return field ? { field } : null;
+      })
+      .filter((x): x is { field: Field } => x !== null);
+    for (const x of ends) for (const y of ends) if (x !== y && x.field.source === y.field.source && x.field.table !== y.field.table) out.push({ from: x.field, to: y.field });
+  }
+  return out;
 }
