@@ -44,6 +44,8 @@ if ($s.Problem) { Write-Host $s.Problem -ForegroundColor Red; exit 1 }
 if (-not $s.Key) { Write-Host 'No Fairlead key is stored. Run this script without -Check to set one.' -ForegroundColor Yellow; exit 1 }
 if ($s.KeySource -eq 'environment') { Write-Host 'Note: SEMAPHORE_AI_KEY is set, so it is used instead of the stored key.' -ForegroundColor Yellow }
 Write-Host ('Checking Fairlead at ' + $s.Url + ' ...')
+$notFairlead = Test-SemAiIdentity -Settings $s
+if ($notFairlead) { Write-Host $notFairlead.Error -ForegroundColor Yellow; Write-Host 'The key is stored; Semaphore will use it once Fairlead answers on that port.'; exit 2 }
 $r = Invoke-SemAiForward -Settings $s -Method GET -RelPath '/models' -TimeoutSec 15
 if ($r.Status -eq 200) {
     Write-Host ('Fairlead accepted the key. Drafts will use route "' + $s.Model + '"' + $(if ($s.PrivacyLocal) { ', kept on this machine.' } else { '.' })) -ForegroundColor Green

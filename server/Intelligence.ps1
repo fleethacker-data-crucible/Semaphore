@@ -13,6 +13,8 @@
 # DPAPI-protected for this Windows account by Set-SemaphoreAiKey.ps1. It never reaches the browser, the
 # log, the runtime file or an error message.
 #
+# Port authority: the key is sent only after the address answers /__fleethacker/id as "fairlead"
+# (Test-SemAiIdentity), the rule Lazarette uses, so a tool squatting on Fairlead's port never gets it.
 # Semaphore only ever calls a loopback address: Fairlead decides where a prompt goes. By default the
 # request asks for Fairlead's "local" route and sends X-Fairlead-Privacy: local, so prompts stay on
 # this machine. SEMAPHORE_AI_MODEL picks another route (auto, smart, fast); SEMAPHORE_AI_PRIVACY=off
@@ -190,6 +192,41 @@ function Get-SemAiErrorText {
     return ''
 }
 
+function Test-SemAiIdentity {
+    <#
+      Port authority (edge-ops PORTS.md, the same rule Lazarette uses): before the key is sent, the
+      address must answer GET /__fleethacker/id as "fairlead". Ports can be taken by another tool when
+      Fairlead is down (Semaphore's own block reaches 8776), and the key must never go to it.
+      Returns $null when it is Fairlead, else @{ Code; Error }. The id request carries no key.
+    #>
+    param($Settings, [int]$TimeoutSec = 3)
+    $u = [Uri]$Settings.Url
+    $idUrl = $u.GetLeftPart([UriPartial]::Authority) + '/__fleethacker/id'
+    $req = [Net.HttpWebRequest]::Create($idUrl)
+    $req.Method = 'GET'; $req.Timeout = $TimeoutSec * 1000; $req.ReadWriteTimeout = $TimeoutSec * 1000
+    $req.Proxy = $null; $req.AllowAutoRedirect = $false; $req.Accept = 'application/json'; $req.UserAgent = 'Semaphore'
+    $resp = $null
+    try {
+        $resp = $req.GetResponse()
+        $reader = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+        try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        if ($text.Length -gt 4096) { $text = '' }
+        $tool = $null
+        try { $tool = Get-SemJsonProp ($text | ConvertFrom-Json -ErrorAction Stop) 'tool' } catch { }
+        if ($tool -ceq 'fairlead') { return $null }
+        $who = if ($tool -is [string] -and $tool -cmatch '\A[A-Za-z0-9._-]{1,40}\z') { '"' + $tool + '"' } else { 'something else' }
+        return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' is ' + $who + ', not Fairlead, so the Fairlead key was not sent. Start Fairlead (it must have port ' + $u.Port + ') and try again.') }
+    } catch [Net.WebException] {
+        if ($_.Exception.Status -eq [Net.WebExceptionStatus]::ConnectFailure) { return @{ Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
+        if ($_.Exception.Status -eq [Net.WebExceptionStatus]::Timeout) { return @{ Code = 'ai-timeout'; Error = ('Nothing answered at ' + $u.Authority + ' within ' + $TimeoutSec + ' s.') } }
+        return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' did not identify itself as Fairlead, so the Fairlead key was not sent.') }
+    } catch {
+        return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' did not identify itself as Fairlead, so the Fairlead key was not sent.') }
+    } finally {
+        if ($null -ne $resp) { try { $resp.Close() } catch { } }
+    }
+}
+
 function Test-SemAiChatBody {
     # $null when the browser's request may be forwarded, else the reason. The model must be the
     # configured route, so a page cannot pick a different one.
@@ -211,6 +248,18 @@ function Invoke-SemAiRequest {
     $s = Get-SemAiSettings -Root $Root
     if ($s.Problem) { Send-SemError 400 'ai-config' $s.Problem; return }
     if (-not $s.Key) { Send-SemError 409 'ai-not-configured' 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.'; return }
+    if ($Req.Path -ne '/api/ai/check' -and $Req.Path -ne '/api/ai/v1/chat/completions') { Send-SemError 404 'not-found' 'Unknown API route.'; return }
+    if ($Req.Path -ne '/api/ai/check') {
+        $why = Test-SemAiChatBody -Req $Req -Settings $s
+        if ($why) { Send-SemError 400 'bad-request' $why; return }
+    }
+    $notFairlead = Test-SemAiIdentity -Settings $s
+    if ($notFairlead) {
+        Write-SemLog 'WARN' ('AI request not sent: ' + $notFairlead.Code)
+        if ($Req.Path -eq '/api/ai/check') { Send-SemJson 200 ([ordered]@{ ok = $false; code = $notFairlead.Code; detail = $notFairlead.Error }); return }
+        $status = 502; if ($notFairlead.Code -eq 'ai-down') { $status = 503 } elseif ($notFairlead.Code -eq 'ai-timeout') { $status = 504 }
+        Send-SemError $status $notFairlead.Code $notFairlead.Error; return
+    }
     if ($Req.Path -eq '/api/ai/check') {
         $r = Invoke-SemAiForward -Settings $s -Method GET -RelPath '/models' -TimeoutSec 15
         if ($r.Status -eq 0) { Send-SemJson 200 ([ordered]@{ ok = $false; code = $r.Code; detail = $r.Error }); return }
@@ -225,9 +274,6 @@ function Invoke-SemAiRequest {
         Write-SemLog 'INFO' 'AI check: Fairlead reachable'
         return
     }
-    if ($Req.Path -ne '/api/ai/v1/chat/completions') { Send-SemError 404 'not-found' 'Unknown API route.'; return }
-    $why = Test-SemAiChatBody -Req $Req -Settings $s
-    if ($why) { Send-SemError 400 'bad-request' $why; return }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $r = Invoke-SemAiForward -Settings $s -Method POST -RelPath '/chat/completions' -Body $Req.Body
     $secs = [Math]::Round($clock.Elapsed.TotalSeconds, 1)

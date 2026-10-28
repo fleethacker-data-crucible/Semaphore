@@ -45,8 +45,11 @@ BeforeAll {
     }
     function script:Stop-FakeFairlead {
         param($Fake)
-        try { $Fake.PS.Stop() } catch { }
+        # Close the listener first: a fake still waiting in AcceptTcpClient (a reply that was never
+        # asked for) is released by it, and PowerShell.Stop() would otherwise wait for it forever.
         try { $Fake.Listener.Stop() } catch { }
+        try { [void]$Fake.Handle.AsyncWaitHandle.WaitOne(3000) } catch { }
+        try { $Fake.PS.BeginStop($null, $null) | Out-Null } catch { }
         try { $Fake.PS.Dispose() } catch { }
     }
     function script:New-Settings {
@@ -209,6 +212,11 @@ Context 'Forwarding to Fairlead' {
 }
 
 Context '/api/ai routes' {
+    BeforeAll {
+        # Every route asks /__fleethacker/id first (port authority); a real Fairlead answers like this.
+        $script:Id = @{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }
+    }
+
     It 'answers 409 with setup steps when no key is stored' {
         $r = Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root
         $r.Status | Should -Be 409
@@ -217,7 +225,7 @@ Context '/api/ai routes' {
 
     It 'passes a draft request through and adds the target, without the key anywhere' {
         $answer = '{"choices":[{"message":{"content":"{\"kind\":\"bar\"}"}}]}'
-        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = $answer; Target = 'ollama/qwen3.8' })
+        $fake = Start-FakeFairlead -Replies @($script:Id, @{ Status = 200; Body = $answer; Target = 'ollama/qwen3.8' })
         try {
             $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
             $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json @{ model = 'local'; messages = @(@{ role = 'user'; content = 'hi' }) } -Root $script:Root
@@ -225,6 +233,36 @@ Context '/api/ai routes' {
             $r.Body | Should -Be $answer
             $r.Head | Should -Match 'X-Fairlead-Target: ollama/qwen3\.8'
             ($r.Head + $r.Body) | Should -Not -Match ([regex]::Escape($script:Key))
+            [string]$fake.Seen.Requests[0] | Should -Match '^GET /__fleethacker/id '
+            [string]$fake.Seen.Requests[0] | Should -Not -Match 'Authorization'
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'never sends the key to a port that is not Fairlead: <Why>' -TestCases @(
+        @{ Why = 'another tool'; Reply = @{ Status = 200; Body = '{"tool":"semaphore","version":"0.3.0","pid":1}' } },
+        @{ Why = 'no id endpoint'; Reply = @{ Status = 404; Body = '{"error":"not found"}' } },
+        @{ Why = 'not JSON'; Reply = @{ Status = 200; Body = 'hello' } }
+    ) {
+        $fake = Start-FakeFairlead -Replies @($Reply, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json @{ model = 'local'; messages = @(@{ role = 'user'; content = 'hi' }) } -Root $script:Root
+            $r.Status | Should -Be 502
+            ($r.Body | ConvertFrom-Json).code | Should -Be 'ai-not-fairlead'
+            ($r.Body | ConvertFrom-Json).error | Should -Match 'not sent'
+            $fake.Seen.Requests.Count | Should -Be 1
+            [string]$fake.Seen.Requests[0] | Should -Not -Match ([regex]::Escape($script:Key))
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'reports a check against a port that is not Fairlead without sending the key' {
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"eight-bells","version":"2.0.0","pid":1}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $j = (Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root).Body | ConvertFrom-Json
+            $j.ok | Should -BeFalse
+            $j.detail | Should -Match '"eight-bells", not Fairlead'
+            $fake.Seen.Requests.Count | Should -Be 1
         } finally { Stop-FakeFairlead $fake }
     }
 
@@ -243,7 +281,7 @@ Context '/api/ai routes' {
     }
 
     It 'turns a refused key into setup advice' {
-        $fake = Start-FakeFairlead -Replies @(@{ Status = 401; Body = ('{"error":{"message":"Missing key ' + $script:Key + '"}}') })
+        $fake = Start-FakeFairlead -Replies @($script:Id, @{ Status = 401; Body = ('{"error":{"message":"Missing key ' + $script:Key + '"}}') })
         try {
             $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
             $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json @{ model = 'local'; messages = @(@{ role = 'user'; content = 'hi' }) } -Root $script:Root
@@ -254,7 +292,7 @@ Context '/api/ai routes' {
     }
 
     It 'checks the key and lists the models' {
-        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"data":[{"id":"local"},{"id":"auto"}]}' })
+        $fake = Start-FakeFairlead -Replies @($script:Id, @{ Status = 200; Body = '{"data":[{"id":"local"},{"id":"auto"}]}' })
         try {
             $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
             $r = Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root
