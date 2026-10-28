@@ -16,6 +16,7 @@
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
+import { reachable } from '../joins.ts';
 import type { Behavior, Binding, Comparison, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
 import { suggestKind } from '../shape.ts';
 import type { DraftFlagRequest, DraftHoistRequest, FlagDraft, HoistDraft, IntelligenceProvider } from './contract.ts';
@@ -153,8 +154,9 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     const f = index.field(m.key)!;
     if (f.type === 'number') continue;
     if (table === undefined) table = f.table;
-    if (f.table !== table) {
-      notes.push(`"${f.label}" is in another table, so the flag cannot split by it.`);
+    const src = first?.source ?? f.source;
+    if (f.table !== table && (f.source !== src || !reachable(index, src, table, f.table))) {
+      notes.push(`"${f.label}" is in a table not related to this one, so the flag cannot split by it.`);
       continue;
     }
     if (!dims.some((d) => d.field === m.key)) dims.push({ field: m.key });

@@ -7,6 +7,7 @@
 
 import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
 import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
+import { type PlannedJoin, planJoins, reachable } from './joins.ts';
 
 export const DEFAULT_ROW_CAP = 50_000;
 
@@ -37,7 +38,12 @@ export interface PlannedMetric {
 export interface QueryPlan {
   flagId: string;
   source: string;
+  /** The base table: where the measures are. */
   table: string;
+  /** Related tables joined in for fields to group or filter by (many-to-one only). */
+  joins?: PlannedJoin[];
+  /** Read fields as stored, without the catalog's cleaning steps (data-quality profiling). */
+  raw?: boolean;
   /** The flag's own dimensions, then the slice dimensions. */
   dimensions: PlannedDimension[];
   aggregates: PlannedAggregate[];
@@ -92,48 +98,61 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   if (!b) return { ok: false, error: 'This flag has no data binding yet.' };
   const notes: string[] = [];
 
-  // One source and one table per query in v1. Joins come with the catalog's relationships.
-  const tables = new Set<string>();
+  // One source per query. Measures come from one table, the base; fields to group or filter by
+  // may come from tables the base reaches through the catalog's relationships (joins.ts).
   let source: string | undefined;
-  const useSource = (s: string, t: string, what: string): string | null => {
-    if (source && source !== s) return `${what} is in a different source; a flag reads from one source.`;
-    source = s;
-    tables.add(t);
-    return tables.size > 1 ? `${what} is in another table; joining tables is not supported yet.` : null;
-  };
+  let table: string | undefined;
   for (const key of b.metrics) {
     const m = index.metric(key);
     if (!m) return { ok: false, error: `Unknown metric "${key}".` };
     const t = metricTable(index, m);
     if (!t) return { ok: false, error: `Metric "${key}" has no table.` };
-    const problem = useSource(m.source, t, `Metric "${m.label}"`);
-    if (problem) return { ok: false, error: problem };
+    if (source && source !== m.source) return { ok: false, error: `Metric "${m.label}" is in a different source; a flag reads from one source.` };
+    if (table && table !== t) return { ok: false, error: `Metric "${m.label}" is in another table; a flag's measures come from one table.` };
+    source = m.source;
+    table = t;
   }
   for (const d of b.dimensions) {
     const f = index.field(d.field);
     if (!f) return { ok: false, error: `Unknown field "${d.field}".` };
-    const problem = useSource(f.source, f.table, `Field "${f.label}"`);
-    if (problem) return { ok: false, error: problem };
+    if (source && source !== f.source) return { ok: false, error: `Field "${f.label}" is in a different source; a flag reads from one source.` };
+    source = f.source;
+    table ??= f.table;
   }
-  const table = [...tables][0];
   if (!source || !table) return { ok: false, error: 'This flag binds nothing that can be queried.' };
+  const base = table;
+  const joined = new Set<string>();
 
-  const sameTable = (fieldKey: string): boolean => {
+  /** Whether a field can be read in this flag's query: its base table, or a table related to it. */
+  const inScope = (fieldKey: string): boolean => {
     const f = index.field(fieldKey);
-    return !!f && f.source === source && f.table === table;
+    return !!f && f.source === source && (f.table === base || reachable(index, source!, base, f.table));
   };
+  const use = (fieldKey: string): void => {
+    const t = index.field(fieldKey)!.table;
+    if (t !== base) joined.add(t);
+  };
+  for (const d of b.dimensions) {
+    if (!inScope(d.field)) {
+      return { ok: false, error: `"${labelOf(index, d.field)}" is in a table not related to ${base}. Add a relationship under Data > Relationships.` };
+    }
+    use(d.field);
+  }
 
-  // Filters: the hoist's fixed filters, then the flag's own. Fixed filters on other tables
+  // Filters: the hoist's fixed filters, then the flag's own. Fixed filters on unrelated tables
   // cannot apply here and are reported rather than silently dropped.
   const filters: Filter[] = [];
   for (const f of hoist.filters) {
     if (flag.behavior.ignore.includes(f.field)) continue;
-    if (sameTable(f.field)) filters.push(f);
-    else notes.push(`Page filter on "${labelOf(index, f.field)}" does not apply: it is in another table.`);
+    if (inScope(f.field)) {
+      filters.push(f);
+      use(f.field);
+    } else notes.push(`Page filter on "${labelOf(index, f.field)}" does not apply: it is in a table not related to this one.`);
   }
   for (const f of b.filters) {
-    if (!sameTable(f.field)) return { ok: false, error: `Filter on "${labelOf(index, f.field)}" is in another table.` };
+    if (!inScope(f.field)) return { ok: false, error: `Filter on "${labelOf(index, f.field)}" is in a table not related to ${base}.` };
     filters.push(f);
+    use(f.field);
   }
 
   // Aggregates, as re-aggregable partials.
@@ -175,7 +194,7 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     const key = dimensionKey(d);
     if (own.includes(key)) continue;
     if (flag.behavior.ignore.includes(d.field)) continue;
-    if (!sameTable(d.field)) continue; // Selections on other tables do not reach this flag in v1.
+    if (!inScope(d.field)) continue; // Selections on unrelated tables do not reach this flag.
     if (!reaggregable) {
       live.push(key);
       continue;
@@ -208,7 +227,10 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
       notes.push(`Selections on ${labelOf(index, d.field)} re-query the source (pre-splitting would exceed ${fmt(rowCap)} rows).`);
     }
   }
-  for (const d of chosen) dimensions.push({ alias: `d${dimensions.length}`, key: dimensionKey(d), ...d });
+  for (const d of chosen) {
+    dimensions.push({ alias: `d${dimensions.length}`, key: dimensionKey(d), ...d });
+    use(d.field);
+  }
 
   const plan: QueryPlan = {
     flagId: flag.id,
@@ -227,6 +249,7 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     estimatedRows: Math.min(estimate, Number.MAX_SAFE_INTEGER),
     notes,
   };
+  if (joined.size) plan.joins = planJoins(index, source, base, joined);
   if (b.sort) plan.sort = b.sort;
   if (b.share) plan.share = true;
   if (b.compare) {

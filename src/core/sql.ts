@@ -5,6 +5,8 @@
 // server binds the parameters with the driver's own API.
 
 import { type CatalogIndex, type Dialect, type FieldType, isIdentifier } from './catalog.ts';
+import { cleanSql, cleanType, dedupes, stepsFor } from './cleaning.ts';
+import { aliasOf, BASE_ALIAS } from './joins.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import type { PlannedAggregate, PlannedDimension, QueryPlan } from './planner.ts';
 
@@ -42,11 +44,57 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' ? `@p${n}` : '?';
   };
 
-  const column = (fieldKey: string): string => {
+  const joins = plan.joins ?? [];
+  const dedupe = !plan.raw && dedupes(index, plan.source, plan.table);
+  // Columns are qualified by table alias whenever more than one table, or a subquery, is read.
+  const aliased = joins.length > 0 || dedupe;
+  // Oracle takes no AS before a table alias; the others accept it.
+  const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${quote(alias, dialect)}`;
+  const stored = (fieldKey: string): string => {
     const f = index.field(fieldKey);
     if (!f) throw new SqlError(`Unknown field "${fieldKey}".`);
-    if (f.table !== plan.table || f.source !== plan.source) throw new SqlError(`Field "${fieldKey}" is not in ${plan.table}.`);
-    return quote(f.column, dialect);
+    const alias = f.source === plan.source ? aliasOf(plan.table, joins, f.table) : undefined;
+    if (!alias) throw new SqlError(`Field "${fieldKey}" is not in ${plan.table} or a table joined to it.`);
+    return aliased ? `${quote(alias, dialect)}.${quote(f.column, dialect)}` : quote(f.column, dialect);
+  };
+  const typeOf = (fieldKey: string): FieldType => (plan.raw ? (index.field(fieldKey)?.type ?? 'string') : cleanType(index, fieldKey));
+
+  let from = quoteTable(plan.table, dialect);
+  if (dedupe) from = `(SELECT DISTINCT * FROM ${from}) ${as(BASE_ALIAS)}`;
+  else if (aliased) from = `${from} ${as(BASE_ALIAS)}`;
+  for (const j of joins) {
+    const on = `${quote(j.left.alias, dialect)}.${quote(j.left.column, dialect)} = ${quote(j.alias, dialect)}.${quote(j.column, dialect)}`;
+    const joined = `LEFT JOIN ${quoteTable(j.table, dialect)} ${as(j.alias)} ON ${on}`;
+    // Access needs each join but the last wrapped: FROM ((a LEFT JOIN b ON …) LEFT JOIN c ON …).
+    from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
+  }
+
+  // Cleaning steps are applied once, in an inner query, and everything else reads its columns.
+  // Repeating a cleaned expression in GROUP BY would bind its values twice, and Postgres would not
+  // accept "CASE x WHEN $1 …" in SELECT as the same expression as "CASE x WHEN $5 …" in GROUP BY.
+  const used = [...new Set([...plan.dimensions.map((d) => d.field), ...plan.aggregates.flatMap((a) => (a.field ? [a.field] : [])), ...plan.filters.map((f) => f.field)])];
+  const inner = new Map<string, string>();
+  if (!plan.raw && used.some((k) => stepsFor(index, k).length)) {
+    const cols = used.map((k, i) => {
+      inner.set(k, `c${i}`);
+      const steps = stepsFor(index, k);
+      let expr = stored(k);
+      if (steps.length) {
+        try {
+          expr = cleanSql(steps, expr, dialect, (value, type) => bind({ value, type }));
+        } catch (e) {
+          throw new SqlError((e as Error).message);
+        }
+      }
+      return `${expr} AS ${quote(`c${i}`, dialect)}`;
+    });
+    from = `(SELECT ${cols.join(', ')} FROM ${from}) ${as('q')}`;
+  }
+  const column = (fieldKey: string): string => {
+    if (!inner.size) return stored(fieldKey);
+    const c = inner.get(fieldKey);
+    if (!c) throw new SqlError(`Field "${fieldKey}" is not read by this query.`);
+    return `${quote('q', dialect)}.${quote(c, dialect)}`;
   };
 
   const dimExpr = (d: PlannedDimension): string => (d.grain ? truncate(column(d.field), d.grain, dialect) : column(d.field));
@@ -67,7 +115,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   ];
   if (select.length === 0) throw new SqlError('Nothing to select.');
 
-  const where = plan.filters.map((f) => filterSql(f, column(f.field), index.field(f.field)!.type, bind, today));
+  const where = plan.filters.map((f) => filterSql(f, column(f.field), typeOf(f.field), bind, today));
   const groupBy = plan.dimensions.map(dimExpr);
 
   let orderBy = '';
@@ -87,8 +135,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   }
 
   const limit = Math.max(1, Math.floor(plan.limit));
-  const table = quoteTable(plan.table, dialect);
-  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${table}`;
+  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
