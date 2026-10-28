@@ -21,6 +21,8 @@ export interface AskViewProps {
   playbook: PlaybookState;
   user: string;
   theme: 'light' | 'dark';
+  /** Changes with the theme and the skin, so charts re-read their colours. */
+  themeKey: string;
   onTheme: () => void;
   onBuilder: () => void;
   /** The last full refresh (Launch-Semaphore.bat --refresh), when there has been one. */
@@ -52,7 +54,7 @@ function asOfText(iso: string): string {
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
-export function AskView({ index, ctx, playbook, user, theme, onTheme, onBuilder, lastRefresh }: AskViewProps) {
+export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, onBuilder, lastRefresh }: AskViewProps) {
   const [q, setQ] = useState('');
   const [answers, setAnswers] = useState<Shown[]>([]);
   const counter = useRef(0);
@@ -245,7 +247,7 @@ export function AskView({ index, ctx, playbook, user, theme, onTheme, onBuilder,
           )}
 
           {answers.map((a) => (
-            <AnswerCard key={a.key} shown={a} index={index} onAsk={(x) => void ask(x)} />
+            <AnswerCard key={a.key} shown={a} index={index} onAsk={(x) => void ask(x)} themeKey={themeKey} />
           ))}
 
           {briefing.length > 0 && (
@@ -293,7 +295,7 @@ const TRUST: Record<Answer['trust'], { label: string; tone: string; icon: typeof
   none: { label: "Can't answer yet", tone: 'bg-panel-2 text-ink-2', icon: Inbox },
 };
 
-function AnswerCard({ shown, index, onAsk }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void }) {
+function AnswerCard({ shown, index, onAsk, themeKey }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; themeKey: string }) {
   const [why, setWhy] = useState(false);
   const { answer, result } = shown;
   const t = TRUST[shown.state === 'unanswered' && answer.trust !== 'none' ? 'none' : answer.trust];
@@ -338,7 +340,7 @@ function AnswerCard({ shown, index, onAsk }: { shown: Shown; index: CatalogIndex
         <>
           <p className="mt-3 text-sm text-ink-2">{describeFlag(answer.flag, hoist, index).join(' ')}</p>
           <div className={`mt-3 rounded-xl border border-line p-3 ${tall ? 'h-72' : 'h-28'}`}>
-            <FlagView flag={answer.flag} result={result} index={index} selections={{}} onSelect={() => undefined} themeKey="ask" />
+            <FlagView flag={answer.flag} result={result} index={index} selections={{}} onSelect={() => undefined} themeKey={themeKey} />
           </div>
           {insights.length > 0 && (
             <ul className="mt-3 space-y-1 text-sm">

@@ -42,7 +42,12 @@ export function EChart({ option, onClick, label }: { option: EChartsCoreOption; 
   return <div ref={el} className="h-full w-full" role="img" aria-label={label} />;
 }
 
-/** Colours read from the theme tokens, so charts follow light and dark. */
+const SERIES_FALLBACK = {
+  dark: ['#5fb3d0', '#c9a66b', '#8fd18b', '#f07163', '#b39ddb', '#f0b429', '#4db6ac', '#e57fa8'],
+  light: ['#1f6f8b', '#a8834a', '#2e7d4f', '#c0392b', '#6a4fa3', '#b7791f', '#00796b', '#ad1457'],
+};
+
+/** Colours read from the skin's tokens (--ink, --series-1..8 ...), so charts follow the skin and light or dark. */
 export function themeColors() {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string) => css.getPropertyValue(name).trim();
@@ -56,8 +61,10 @@ export function themeColors() {
     warn: v('--warn'),
     bad: v('--bad'),
     accent: v('--accent'),
-    series: document.documentElement.dataset.theme === 'dark'
-      ? ['#5fb3d0', '#c9a66b', '#8fd18b', '#f07163', '#b39ddb', '#f0b429', '#4db6ac', '#e57fa8']
-      : ['#1f6f8b', '#a8834a', '#2e7d4f', '#c0392b', '#6a4fa3', '#b7791f', '#00796b', '#ad1457'],
+    // Canvas colours: a skin's --series-n must be a plain colour (no color-mix), or the fallback is used.
+    series: SERIES_FALLBACK[document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'].map((fallback, i) => {
+      const value = v(`--series-${i + 1}`);
+      return value && !value.includes('(') ? value : fallback;
+    }),
   };
 }

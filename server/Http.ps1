@@ -24,7 +24,7 @@ $script:SemMaxHeader = 32768
 
 if ($null -eq $script:Sem) {
     $script:Sem = @{
-        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''; View = 'builder'; Reviewer = ''; Deadline = $null
+        Port = 0; Token = ''; Version = '0.0.0'; ScriptPath = ''; Root = ''; WebRoot = ''; Home = ''; View = 'builder'; Reviewer = ''; Deadline = $null; Skin = ''
         Stream = $null; Responded = $false; Deferred = $false
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
@@ -301,9 +301,24 @@ function Get-SemNotBuiltPage {
 "@
 }
 
+function Get-SemSkinFile {
+    # config\skin.css in the tool folder, when present and at most 256 KB: the workstation's skin
+    # override (docs/SKINS.md), served as /skin.css instead of the build's empty one.
+    param([string]$Root = $script:Sem.Root)
+    if (-not $Root) { return $null }
+    $f = [IO.Path]::Combine($Root, 'config', 'skin.css')
+    if (-not [IO.File]::Exists($f)) { return $null }
+    if ((New-Object IO.FileInfo $f).Length -gt 262144) { Write-SemLog 'WARN' 'config\skin.css is larger than 256 KB and is ignored'; return $null }
+    return $f
+}
+
 function Send-SemStatic {
     param($Req)
     $head = ($Req.Method -eq 'HEAD')
+    if ($Req.Path -eq '/skin.css') {
+        $skin = Get-SemSkinFile
+        if ($skin) { Send-SemBytes -Status 200 -ContentType 'text/css; charset=utf-8' -Bytes ([IO.File]::ReadAllBytes($skin)) -NoStore $true -HeadOnly:$head; return }
+    }
     $r = Resolve-SemStaticFile -WebRoot $script:Sem.WebRoot -Path $Req.Path
     switch ($r.Kind) {
         'refused' { Send-SemError 404 'not-found' 'Not found.'; return }

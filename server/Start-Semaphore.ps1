@@ -296,6 +296,7 @@ $script:Sem.View = [string]$settings.view
 if ($Ask) { $script:Sem.View = 'ask' }
 if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).AddMinutes($settings.refreshTimeoutMin) }
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
+$script:Sem.Skin = [string]$settings.skin
 $sessionUrl = $baseUrl + '?session=' + $script:Sem.Token
 if ($script:Sem.View -eq 'ask' -or $script:Sem.View -eq 'refresh') { $sessionUrl += '&view=' + $script:Sem.View }
 

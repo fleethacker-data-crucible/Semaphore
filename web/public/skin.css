@@ -1,0 +1,3 @@
+/* Semaphore skin override. Empty by default.
+   On a workstation, put a skin in config\skin.css (next to settings.json): the server serves it here,
+   after the app's styles, so its token values win without a rebuild. See docs/SKINS.md. */

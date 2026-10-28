@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
@@ -38,7 +38,12 @@ import { Palette } from './components/Palette.tsx';
 
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
-const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', auto: 'semaphore.autoKind', view: 'semaphore.view' };
+const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view' };
+/** Built-in skins (web/src/styles.css). A deployment may name another one defined in config\skin.css. */
+const SKINS = [
+  { id: 'fleet', label: 'Fleet' },
+  { id: 'classic', label: 'Classic' },
+];
 
 type View = 'builder' | 'ask' | 'refresh';
 
@@ -108,6 +113,15 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     writeLocal(K.theme, theme);
   }, [theme]);
+
+  // Skin (docs/SKINS.md): settings.json "skin" is the deployment's choice and wins; otherwise the
+  // analyst's choice in this browser; otherwise Fleet UI.
+  const [skin, setSkin] = useState<string>(() => readLocal<string>(K.skin) ?? 'fleet');
+  const skinFixed = !!server?.skin;
+  useEffect(() => {
+    document.documentElement.dataset.skin = server?.skin || skin;
+    if (!server?.skin) writeLocal(K.skin, skin);
+  }, [skin, server]);
 
   const notify = useCallback((text: string) => {
     setToast(text);
@@ -621,7 +635,7 @@ export function App() {
     return values.map((v) => ({ key, value: v, text: `${label}: ${formatDim(v, grain as never)}` }));
   });
   const examples = useMemo(() => exampleBriefs(catalog), [catalog]);
-  const themeKey = theme;
+  const themeKey = `${theme}:${server?.skin || skin}`;
   const waiting = playbook.questions.filter((q) => q.status === 'open').length + playbook.entries.filter((e) => e.status === 'needs-review').length;
 
   if (currentView === 'refresh') {
@@ -636,7 +650,7 @@ export function App() {
   if (currentView === 'ask') {
     return (
       <>
-        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
         {serverLost && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
             <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
@@ -710,6 +724,19 @@ export function App() {
             >
               <Bot size={14} /> {ai.configured ? (useAi ? 'AI: Fairlead' : 'AI: off') : 'AI: local rules'}
             </button>
+          )}
+          {!skinFixed && (
+            <IconButton
+              label={`Skin: ${SKINS.find((s) => s.id === skin)?.label ?? skin}. Switch skin`}
+              onClick={() => {
+                const i = SKINS.findIndex((s) => s.id === skin);
+                const next = SKINS[(i + 1) % SKINS.length]!;
+                setSkin(next.id);
+                notify(`Skin: ${next.label}.`);
+              }}
+            >
+              <Paintbrush size={16} />
+            </IconButton>
           )}
           <IconButton label={theme === 'dark' ? 'Light theme' : 'Dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}

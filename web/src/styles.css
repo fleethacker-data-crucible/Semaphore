@@ -1,8 +1,70 @@
 @import 'tailwindcss';
+@import '../vendor/fleet/fleet.css';
 
-/* Semaphore palette, from the brand mark: deep sea navy, brass, signal-flag cream and amber.
-   Colours are tokens; the light and dark themes only change the tokens. */
+/* Skins (docs/SKINS.md). Every colour Semaphore draws comes from the tokens below (--bg, --ink,
+   --accent ...). A skin is one set of values for them; <html data-skin> picks the skin and
+   <html data-theme> light or dark. Components never name a colour, so a skin changes the whole app.
+     fleet    (default) Fleet Unified UI v0.2: the --fl-* tokens of vendor/fleet/fleet.css, which
+              already follow data-theme (Chart room light, Night watch dark).
+     classic  Semaphore's own palette before Fleet UI, from its brand mark.
+   A workstation can override any token without a rebuild: the server serves config\skin.css as
+   /skin.css after this file. */
+
+/* Semaphore's signature accent (proposed for UNIFIED-UI section 3.3): its brand sea blue.
+   4.5:1 or better on both Fleet backgrounds (7.4:1 Night watch, 5.4:1 Chart room). */
 :root {
+  --fl-accent-night: #5fb3d0;
+  --fl-accent-chart: #1f6f8b;
+}
+
+/* fleet: Semaphore tokens drawn from Fleet tokens. The soft tints are mixed from them. */
+:root {
+  --bg: var(--fl-background);
+  --panel: var(--fl-card);
+  --panel-2: var(--fl-sidebar);
+  --line: var(--fl-border);
+  --ink: var(--fl-foreground);
+  --ink-2: var(--fl-muted-foreground);
+  --ink-3: var(--fl-muted-foreground);
+  --brass: var(--fl-brass);
+  --brass-soft: color-mix(in srgb, var(--fl-brass) 18%, var(--fl-card));
+  --accent: var(--fl-accent);
+  --accent-soft: color-mix(in srgb, var(--fl-accent) 18%, var(--fl-card));
+  --good: var(--fl-success);
+  --warn: var(--fl-warning);
+  --bad: var(--fl-danger);
+  --good-soft: color-mix(in srgb, var(--fl-success) 16%, var(--fl-card));
+  --warn-soft: color-mix(in srgb, var(--fl-warning) 16%, var(--fl-card));
+  --bad-soft: color-mix(in srgb, var(--fl-danger) 16%, var(--fl-card));
+  --focus: var(--fl-brass);
+  --hl-metric: color-mix(in srgb, var(--fl-info) 24%, var(--fl-card));
+  --hl-field: color-mix(in srgb, var(--fl-brass) 24%, var(--fl-card));
+  --hl-time: color-mix(in srgb, var(--fl-accent) 22%, var(--fl-card));
+  --hl-behaviour: color-mix(in srgb, var(--fl-success) 22%, var(--fl-card));
+  --hl-unknown: color-mix(in srgb, var(--fl-danger) 22%, var(--fl-card));
+  --sem-font: var(--fl-font-body);
+  --sem-font-mono: var(--fl-font-mono);
+  --sem-radius-card: var(--fl-radius-card);
+  /* Chart series: plain colours only (charts draw on a canvas, which cannot read color-mix). */
+  --series-1: var(--fl-accent);
+  --series-2: var(--fl-brass);
+  --series-3: var(--fl-success);
+  --series-4: var(--fl-danger);
+  --series-5: var(--fl-info);
+  --series-6: var(--fl-warning);
+  --series-7: #4b45b8;
+  --series-8: #0f766e;
+}
+:root[data-theme='dark'] {
+  --series-7: #9b98f3;
+  --series-8: #3fb6a8;
+}
+
+/* classic: Semaphore's palette from its brand mark: deep sea navy, brass, signal-flag cream and amber. */
+:root[data-skin='classic'] {
+  --sem-font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --sem-font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  --sem-radius-card: 8px;
   --bg: #f4f1ea;
   --panel: #ffffff;
   --panel-2: #f9f7f2;
@@ -26,10 +88,18 @@
   --hl-time: #e6e3f6;
   --hl-behaviour: #e3f3e9;
   --hl-unknown: #fbe5e2;
+  --series-1: #1f6f8b;
+  --series-2: #a8834a;
+  --series-3: #2e7d4f;
+  --series-4: #c0392b;
+  --series-5: #6a4fa3;
+  --series-6: #b7791f;
+  --series-7: #00796b;
+  --series-8: #ad1457;
   color-scheme: light;
 }
 
-:root[data-theme='dark'] {
+:root[data-skin='classic'][data-theme='dark'] {
   --bg: #071420;
   --panel: #0d2233;
   --panel-2: #10293d;
@@ -53,6 +123,14 @@
   --hl-time: #2d2a4a;
   --hl-behaviour: #1b3d2a;
   --hl-unknown: #4a1f1b;
+  --series-1: #5fb3d0;
+  --series-2: #c9a66b;
+  --series-3: #8fd18b;
+  --series-4: #f07163;
+  --series-5: #b39ddb;
+  --series-6: #f0b429;
+  --series-7: #4db6ac;
+  --series-8: #e57fa8;
   color-scheme: dark;
 }
 
@@ -74,8 +152,9 @@
   --color-good-soft: var(--good-soft);
   --color-warn-soft: var(--warn-soft);
   --color-bad-soft: var(--bad-soft);
-  --font-sans: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  --font-sans: var(--sem-font);
+  --font-mono: var(--sem-font-mono);
+  --radius-lg: var(--sem-radius-card);
 }
 
 html,

@@ -29,6 +29,8 @@ export interface ServerInfo {
   reviewer?: string;
   /** The view this computer opens by default (settings view, or --ask). */
   view?: string;
+  /** The skin settings.json fixes for this deployment, or '' to let the analyst choose. */
+  skin?: string;
 }
 
 export interface StoredItem {

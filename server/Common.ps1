@@ -57,7 +57,7 @@ function Get-SemDefaultSettings {
     return @{
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 20; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
-        view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30
+        view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30; skin = ''
     }
 }
 
@@ -72,6 +72,8 @@ function Merge-SemSettingsFile {
     if ($names -contains 'browser' -and @('auto', 'edge', 'chrome', 'default') -contains [string]$j.browser) { $Settings.browser = ([string]$j.browser).ToLowerInvariant() }
     if ($names -contains 'appWindow' -and $null -ne $j.appWindow) { $Settings.appWindow = [bool]$j.appWindow }
     if ($names -contains 'view' -and @('builder', 'ask') -contains [string]$j.view) { $Settings.view = ([string]$j.view).ToLowerInvariant() }
+    # Skin name (docs/SKINS.md): a built-in one (fleet, classic) or one defined in config\skin.css.
+    if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
