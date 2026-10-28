@@ -7,6 +7,9 @@ import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { type Edition, editionDue, editionId, type FrozenFlag, type ReportSchedule } from '../../../src/core/reports.ts';
+import { type Briefing, briefingFacts } from '../../../src/core/briefing.ts';
+import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
+import { writeBriefingWithAi } from '../../../src/core/intelligence/tasks.ts';
 import { loadItem } from './api.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from './data.ts';
 import type { PlaybookState } from './playbook.ts';
@@ -26,7 +29,7 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
     }
     try {
       const r: FlagResult = await computeFlag(hoist, flag, {}, ctx);
-      const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index).map((i) => i.text);
+      const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index);
       const { sql: _sql, ...kept } = r;
       out.push({ flag, result: kept, insights });
     } catch (e) {
@@ -53,7 +56,7 @@ export function dueSchedules(playbook: PlaybookState, now: Date): Array<{ schedu
  * page open here), every flag must reach its data, and the edition is saved before the schedule
  * moves on. Returns one line per schedule for the refresher's log.
  */
-export async function produceDueEditions(playbook: PlaybookState, ctx: DataContext, index: CatalogIndex, by: string, current: Hoist | null, now = new Date()): Promise<string[]> {
+export async function produceDueEditions(playbook: PlaybookState, ctx: DataContext, index: CatalogIndex, by: string, current: Hoist | null, provider: IntelligenceProvider, now = new Date()): Promise<string[]> {
   const log: string[] = [];
   for (const { schedule, date } of dueSchedules(playbook, now)) {
     let hoist: Hoist | null = current && current.id === schedule.hoistId ? current : null;
@@ -69,7 +72,8 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
       continue;
     }
     const flags = await freezeHoist(hoist, ctx, index);
-    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, flags };
+    const briefing = await briefFrozen(flags, hoist.title || schedule.title, index, provider);
+    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, flags, briefing };
     try {
       await playbook.saveReportDoc(edition);
       await playbook.saveReportDoc({ ...schedule, lastEdition: date });
@@ -82,4 +86,13 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
     }
   }
   return log;
+}
+
+/** A briefing for frozen answers: written by the AI when it is on and holds up, else Semaphore's own sentences. */
+export function briefFrozen(flags: readonly FrozenFlag[], title: string, index: CatalogIndex, provider: IntelligenceProvider): Promise<Briefing> {
+  const facts = briefingFacts(
+    flags.map((f) => ({ flag: f.flag, insights: f.insights, ...(f.result ? { totals: (f.result as FlagResult).display.totals } : {}) })),
+    index,
+  );
+  return writeBriefingWithAi(provider, title, facts);
 }

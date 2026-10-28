@@ -7,6 +7,7 @@
 // Three small team documents: usage-<hoist> (days the page was opened), report-<hoist> (the
 // schedule the analyst accepted) and edition-<hoist>-<date> (one edition).
 
+import type { Briefing } from './briefing.ts';
 import type { Flag } from './hoist.ts';
 
 export type Cadence = { every: 'week'; weekday: number } | { every: 'month'; day: number };
@@ -41,7 +42,7 @@ export interface FrozenFlag {
   /** The computed result (lib/data FlagResult without its SQL), or null when it could not run. */
   result: unknown;
   error?: string;
-  insights: string[];
+  insights: Array<{ tone: string; text: string }>;
 }
 
 export interface Edition {
@@ -58,6 +59,8 @@ export interface Edition {
   by: string;
   cols: number;
   flags: FrozenFlag[];
+  /** What changed, in a few sentences linked to flags (briefing.ts). */
+  briefing?: Briefing;
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;

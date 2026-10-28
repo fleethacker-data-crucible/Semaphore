@@ -2,7 +2,8 @@
 // answers, read like the page), and the analyst's offer to keep a page coming while away.
 
 import { useState } from 'react';
-import { CalendarClock, Newspaper, X } from 'lucide-react';
+import { CalendarClock, Newspaper, ScrollText, X } from 'lucide-react';
+import type { Briefing } from '../../../src/core/briefing.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { type Cadence, describeCadence, type Edition, type FrozenFlag, latestEditions, type ReportSchedule } from '../../../src/core/reports.ts';
 import type { FlagResult } from '../lib/data.ts';
@@ -15,7 +16,7 @@ export function FrozenGrid({ flags, cols, index, themeKey }: { flags: FrozenFlag
   return (
     <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
       {flags.map(({ flag, result, error, insights }) => (
-        <article key={flag.id} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${flag.layout.x + 1} / span ${flag.layout.w}`, gridRow: `${flag.layout.y + 1} / span ${flag.layout.h}` }}>
+        <article key={flag.id} id={`frozen-${flag.id}`} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${flag.layout.x + 1} / span ${flag.layout.w}`, gridRow: `${flag.layout.y + 1} / span ${flag.layout.h}` }}>
           <h3 className="truncate px-1 text-[13px] font-semibold">{flag.title}</h3>
           <div className="min-h-0 flex-1">
             {flag.kind === 'text' ? (
@@ -26,7 +27,7 @@ export function FrozenGrid({ flags, cols, index, themeKey }: { flags: FrozenFlag
               <p className="p-1 text-xs text-warn">{error ?? 'No data.'}</p>
             )}
           </div>
-          {insights[0] && flag.layout.h >= 4 && <p className="truncate px-1 text-[11px] text-ink-2">{insights[0]}</p>}
+          {insights[0] && flag.layout.h >= 4 && <p className="truncate px-1 text-[11px] text-ink-2">{insights[0].text}</p>}
         </article>
       ))}
     </div>
@@ -49,10 +50,50 @@ export function EditionView({ edition, index, themeKey, onClose }: { edition: Ed
             <X size={16} />
           </button>
         </header>
-        <div className="p-5">
+        <div className="space-y-4 p-5">
+          {edition.briefing && <BriefingList briefing={edition.briefing} flags={edition.flags.map((f) => f.flag)} onFlag={(id) => document.getElementById(`frozen-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} />}
           <FrozenGrid flags={edition.flags} cols={edition.cols} index={index} themeKey={themeKey} />
         </div>
       </section>
+    </div>
+  );
+}
+
+/** A briefing: each sentence opens the flag it comes from. */
+export function BriefingList({ briefing, flags, onFlag }: { briefing: Briefing; flags: ReadonlyArray<{ id: string; title: string }>; onFlag: (id: string) => void }) {
+  if (!briefing.sentences.length) return <p className="text-sm text-ink-2">Nothing on this page stands out yet.</p>;
+  return (
+    <section className="space-y-1.5 rounded-lg border border-line bg-panel px-4 py-3">
+      <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-ink-3">
+        <ScrollText size={13} /> Briefing
+        <span className="font-normal normal-case tracking-normal">
+          · {briefing.by === 'ai' ? 'written by the AI from the facts Semaphore computed; every number checked' : 'from the facts Semaphore computed'}
+        </span>
+      </h3>
+      <ul className="space-y-1">
+        {briefing.sentences.map((s, i) => (
+          <li key={i} className="text-sm">
+            {s.text}{' '}
+            <button type="button" onClick={() => onFlag(s.flagId)} className="text-[11px] text-accent hover:underline">
+              {flags.find((f) => f.id === s.flagId)?.title || 'see the flag'}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The analyst's "Brief me": the page's briefing as leadership would read it. */
+export function BriefingPanel({ briefing, flags, onFlag, onClose }: { briefing: Briefing | 'loading'; flags: ReadonlyArray<{ id: string; title: string }>; onFlag: (id: string) => void; onClose: () => void }) {
+  return (
+    <div className="fixed right-4 top-14 z-40 w-[420px] max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel shadow-xl" role="dialog" aria-label="Briefing">
+      <div className="flex items-center justify-end px-2 pt-1">
+        <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="px-2 pb-2">{briefing === 'loading' ? <p className="px-2 pb-2 text-sm text-ink-2">Reading the page…</p> : <BriefingList briefing={briefing} flags={flags} onFlag={onFlag} />}</div>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -31,8 +31,9 @@ import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
-import { dueSchedules, produceDueEditions } from './lib/reports.ts';
-import { ReportChip } from './components/Reports.tsx';
+import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
+import type { Briefing } from '../../src/core/briefing.ts';
+import { BriefingPanel, ReportChip } from './components/Reports.tsx';
 import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
@@ -668,13 +669,26 @@ export function App() {
     if (!playbook.loaded || producing.current || currentView === 'refresh') return;
     if (!dueSchedules(playbook, new Date()).length) return;
     producing.current = true;
-    produceDueEditions(playbook, ctx, index, user, hoist)
+    produceDueEditions(playbook, ctx, index, user, hoist, draftingProvider(index, ai, useAi))
       .catch(() => [])
       .finally(() => {
         producing.current = false;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.schedules, playbook.away, ctx]);
+
+  // "Brief me": the open page's briefing, written by the AI when it is on, checked against the facts.
+  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
+  const briefMe = useCallback(async () => {
+    setBriefing('loading');
+    try {
+      const frozen = await freezeHoist(hoist, ctx, index);
+      setBriefing(await briefFrozen(frozen, hoist.title, index, draftingProvider(index, ai, useAi)));
+    } catch (e) {
+      setBriefing(null);
+      notify(`Could not read the page: ${(e as Error).message}`);
+    }
+  }, [hoist, ctx, index, ai, useAi, notify]);
 
   // The refresher (Launch-Semaphore.bat --refresh, in a headless browser): refresh every snapshot
   // this computer can reach, report to the server, and end the session.
@@ -706,7 +720,7 @@ export function App() {
       }
       say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
       // Regular reports due while their analyst is away.
-      for (const line of await produceDueEditions(playbook, ctx, index, user, null).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
+      for (const line of await produceDueEditions(playbook, ctx, index, user, null, draftingProvider(index, ai, useAi)).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
         await api('/api/refresh-report', { json: { refreshed, skipped, failed } }).catch(() => undefined);
         await endSession().catch(() => undefined);
@@ -881,6 +895,9 @@ export function App() {
           </label>
           <IconButton label="Download this hoist" onClick={exportHoist}>
             <Download size={16} />
+          </IconButton>
+          <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
+            <ScrollText size={16} />
           </IconButton>
           <button type="button" onClick={() => setPlaybookOpen(true)} className="relative ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="What leadership can ask for, their questions, and what needs review">
             <BookOpen size={14} className="text-brass" /> Playbook
@@ -1102,6 +1119,18 @@ export function App() {
             setDataOpen(false);
             setQlikOpen(true);
           }}
+        />
+      )}
+
+      {briefing && (
+        <BriefingPanel
+          briefing={briefing}
+          flags={hoist.flags}
+          onFlag={(id) => {
+            setSelectedId(id);
+            document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }}
+          onClose={() => setBriefing(null)}
         />
       )}
 

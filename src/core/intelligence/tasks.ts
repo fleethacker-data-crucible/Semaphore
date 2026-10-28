@@ -3,6 +3,7 @@
 // model, or the answer does not hold up, the caller keeps what the local rules found.
 
 import type { Aggregate, Catalog, Metric } from '../catalog.ts';
+import { type Briefing, BRIEFING_PROMPT, type BriefingFact, localBriefing, validateBriefing } from '../briefing.ts';
 import type { CleaningStep } from '../cleaning.ts';
 import type { ValueCount } from '../quality.ts';
 import { IntelligenceError, type IntelligenceProvider, summarizeCatalog } from './contract.ts';
@@ -148,4 +149,26 @@ export function validateQlikReading(raw: unknown, label: string, expression: str
     if (said.length) out.filterNotes.push(`"${name}" applies only where ${said.join('; ')}: add that as a filter on the flags that use it.`);
   }
   return out;
+}
+
+// ---------- Briefings ----------
+
+/**
+ * Ask the model to write the briefing. Sends the page title and the facts (flag ids, chart titles,
+ * and the sentences Semaphore computed), not rows. Falls back to the local briefing when the answer
+ * does not hold up.
+ */
+export async function writeBriefingWithAi(provider: IntelligenceProvider, title: string, facts: readonly BriefingFact[]): Promise<Briefing> {
+  const local = localBriefing(facts);
+  if (!provider.runTask || !facts.length) return local;
+  try {
+    const raw = await provider.runTask({
+      task: 'write-briefing',
+      system: BRIEFING_PROMPT,
+      payload: { page: title.slice(0, 120), facts: facts.slice(0, 40).map((f) => ({ flag: f.flagId, chart: f.flagTitle, fact: f.text })) },
+    });
+    return validateBriefing(raw, facts) ?? { ...local, dropped: 1 };
+  } catch {
+    return local;
+  }
 }

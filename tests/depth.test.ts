@@ -287,3 +287,21 @@ test('drill: dates go year → quarter → month → day → rows; categories fo
   const p = plan(c, rows.flag.binding!);
   assert.deepEqual(totals(c, p), { Arleigh: 10 + 5 });
 });
+
+test('briefings: AI sentences are kept only when they cite a real flag and its own numbers', async () => {
+  const b = await import('../src/core/briefing.ts');
+  const facts = [
+    { flagId: 'cost', flagTitle: 'Labor cost by region', text: 'Gulf stands out: $3.24M against a typical $1.9M.', weight: 4 },
+    { flagId: 'kpi', flagTitle: 'Work orders', text: 'Work orders: 3,267.', weight: 1 },
+  ];
+  assert.deepEqual(b.numbersIn('Gulf: $3.24M vs 1,250 (12 %)'), ['3.24m', '1250', '12%']);
+  const ok = b.validateBriefing(
+    { sentences: [{ text: 'Gulf labor cost is $3.24M, well above the typical $1.9M.', flag: 'cost' }, { text: 'Work orders reached 3,400.', flag: 'kpi' }, { text: 'Costs rose.', flag: 'nope' }, { text: 'There were 3,267 work orders.', flag: 'kpi' }] },
+    facts,
+  );
+  assert.equal(ok?.by, 'ai');
+  assert.deepEqual(ok?.sentences.map((s) => s.flagId), ['cost', 'kpi']);
+  assert.equal(ok?.dropped, 2, 'an invented number and an unknown flag are dropped');
+  assert.equal(b.validateBriefing({ sentences: [{ text: 'All is 5% worse.', flag: 'cost' }] }, facts), null);
+  assert.deepEqual(b.localBriefing(facts).sentences.map((s) => s.flagId), ['cost', 'kpi']);
+});
