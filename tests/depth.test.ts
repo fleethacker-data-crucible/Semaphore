@@ -199,3 +199,64 @@ test('profile: hours of work add up, so the bare name is the total and "average"
   assert.deepEqual(draftFlagLocally('Which ship class had the most labor hours', 'bar', index).binding?.metrics, [total!.key]);
   assert.deepEqual(draftFlagLocally('Average labor hours by ship class', 'bar', index).binding?.metrics, [mean!.key]);
 });
+
+test('quality: findings read as sentences, and each fix does what it says', async () => {
+  const { findIssues, findDuplicates, countValues, labelKey, valuesPlan, toValueCounts } = await import('../src/core/quality.ts');
+  const c = yard();
+  const index = indexCatalog(c);
+  assert.equal(labelKey('N.E.'), labelKey('north east'));
+  assert.equal(labelKey('Northeast'), labelKey(' NORTH-EAST '));
+  assert.notEqual(labelKey('North'), labelKey('Northeast'));
+  const region = findIssues(index, 'jobs.region', countValues(ROWS.jobs!, 'region'));
+  assert.deepEqual(region.map((x) => x.kind).sort(), ['spaces', 'variants']);
+  const variants = region.find((x) => x.kind === 'variants')!;
+  assert.deepEqual(variants.step.map, { 'N.E.': 'Northeast', ' N.E. ': 'Northeast', south: 'South' });
+  assert.match(variants.step.sentence, /“N\.E\.” as “Northeast”/);
+  const parts = findIssues(index, 'jobs.parts', countValues(ROWS.jobs!, 'parts_cost'));
+  assert.equal(parts.find((x) => x.kind === 'number-text')?.step.kind, 'number');
+  assert.match(parts.find((x) => x.kind === 'number-text')!.problem, /“n\/a”/);
+  // Accepting the variants fix leaves nothing more to merge.
+  const fixed = indexCatalog({ ...c, cleaning: [variants.step] });
+  assert.equal(findIssues(fixed, 'jobs.region', countValues(ROWS.jobs!, 'region')).some((x) => x.kind === 'variants'), false);
+  assert.match(findDuplicates(index, 'y', 'jobs', ROWS.jobs!)!.problem, /1 row in jobs is an exact copy/);
+  // Mixed dates are offered for page data only.
+  const dates = [{ value: '03/04/2026', count: 3 }, { value: '2026-03-05', count: 2 }, { value: '17/03/2026', count: 1 }];
+  assert.equal(findIssues(index, 'jobs.region', dates).some((x) => x.kind === 'mixed-dates'), false);
+  assert.equal(findIssues(index, 'jobs.region', dates, { pageData: true }).find((x) => x.kind === 'mixed-dates')?.step.order, 'dmy');
+  // Values come from one small query, as stored, most common first.
+  const q = renderSql(valuesPlan(index, 'jobs.region'), index, TODAY);
+  assert.equal(q.sql, 'SELECT "region" AS "d0", COUNT(*) AS "a0" FROM "jobs" GROUP BY "region" ORDER BY COUNT(*) DESC LIMIT 1000');
+  assert.deepEqual(toValueCounts([{ d0: 'a', a0: 1 }, { d0: 'b', a0: 4 }]).map((v) => v.value), ['b', 'a']);
+});
+
+test('relationships: proposed from names, kept only when the data backs them', async () => {
+  const { relationshipCandidates, checkRelationship, proposeRelationship, countValues } = await import('../src/core/quality.ts');
+  const c = yard();
+  c.relationships = [];
+  c.fields.push({ key: 'ships.id', label: 'Ship id', source: 'y', table: 'ships', column: 'id', type: 'string' });
+  const cands = relationshipCandidates(indexCatalog(c));
+  const pair = cands.find((x) => x.from.key === 'jobs.ship' && x.to.key === 'ships.id');
+  assert.ok(pair, 'ship_id → ships.id');
+  const check = checkRelationship(countValues(ROWS.jobs!, 'ship_id'), countValues(ROWS.ships!, 'id'));
+  assert.equal(check.matched, 3);
+  assert.equal(check.distinct, 4);
+  assert.equal(check.toUnique, true);
+  assert.deepEqual(proposeRelationship(pair!, check)?.to, { table: 'ships', column: 'id' });
+  // Joining onto a column that repeats would count rows twice: not proposed.
+  assert.equal(proposeRelationship(pair!, { ...check, toUnique: false }), null);
+  assert.equal(proposeRelationship(pair!, { ...check, match: 0.2 }), null);
+});
+
+test('AI cleaning answers are checked: only real values, each in one group', async () => {
+  const { validateCleaning } = await import('../src/core/intelligence/tasks.ts');
+  const list = [{ value: 'Northeast', count: 9 }, { value: 'N.E.', count: 2 }, { value: 'Mgmt', count: 1 }, { value: 'Management', count: 5 }];
+  const r = validateCleaning(
+    { groups: [{ keep: 'Northeast', merge: ['N.E.', 'NE region'] }, { keep: 'Made up', merge: ['Mgmt'] }, { keep: 'Management', merge: ['Mgmt', 'N.E.'] }] },
+    { key: 'jobs.region', label: 'Region' },
+    list,
+  );
+  assert.deepEqual(r.step?.map, { 'N.E.': 'Northeast', Mgmt: 'Management' });
+  assert.equal(r.step?.origin, 'ai');
+  assert.equal(r.rejected.length, 3);
+  assert.throws(() => validateCleaning('nonsense', { key: 'k', label: 'K' }, list), /groups/);
+});

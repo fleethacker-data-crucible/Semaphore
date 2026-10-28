@@ -74,6 +74,20 @@ export interface IntelligenceProvider {
   draftFlag(request: DraftFlagRequest): Promise<unknown>;
   /** Raw output; always passed through validateHoistDraft() before use. */
   draftHoist(request: DraftHoistRequest): Promise<unknown>;
+  /** A smaller JSON task (tasks.ts), validated by its caller. Absent for local rules. */
+  runTask?(request: TaskRequest): Promise<unknown>;
+}
+
+/**
+ * The smaller tasks: cleaning proposals, reading a Qlik expression, writing a briefing. Each says
+ * what it sends. Cleaning is the one task that carries data: one field's distinct labels (never
+ * rows), sent only when the analyst presses the button that says so.
+ */
+export interface TaskRequest {
+  task: 'propose-cleaning' | 'read-qlik-expression' | 'write-briefing';
+  /** Instructions for an OpenAI-compatible model; contract endpoints know their tasks. */
+  system: string;
+  payload: Record<string, unknown>;
 }
 
 export class IntelligenceError extends Error {}

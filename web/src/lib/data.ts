@@ -89,7 +89,8 @@ function sourceSql(plan: QueryPlan, ctx: DataContext): RenderedSql | null {
 
 async function run(plan: QueryPlan, ctx: DataContext) {
   if (ctx.localSources.has(plan.source)) {
-    const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}`;
+    // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
+    const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
     return { origin: 'page' as const, result: await remember(key, async () => runPlan(plan, ctx.index, ctx.local, ctx.today)) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);

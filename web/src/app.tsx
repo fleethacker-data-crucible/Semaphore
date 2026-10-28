@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, indexCatalog, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
@@ -393,7 +393,7 @@ export function App() {
             metrics: cat.metrics.filter((m) => !(m.source === FILES_SOURCE && (m.table === t.name || cat.fields.find((f) => f.key === m.field)?.table === t.name))),
           };
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
-          cat = proposal.catalog;
+          cat = pruneCatalog(proposal.catalog);
           notes.push(`${file.name}: ${t.rows.length.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
         } catch (e) {
           notes.push(`${file.name}: ${e instanceof CsvError ? e.message : 'could not be read.'}`);
@@ -497,14 +497,22 @@ export function App() {
         setDataVersion((v) => v + 1);
       }
       const fieldKeys = new Set(catalog.fields.filter((f) => f.source === id).map((f) => f.key));
-      setCatalog({ ...catalog, sources: catalog.sources.filter((s) => s.id !== id), fields: catalog.fields.filter((f) => f.source !== id), metrics: catalog.metrics.filter((m) => m.source !== id && !(m.field && fieldKeys.has(m.field))) });
+      setCatalog({
+        ...catalog,
+        sources: catalog.sources.filter((s) => s.id !== id),
+        fields: catalog.fields.filter((f) => f.source !== id),
+        metrics: catalog.metrics.filter((m) => m.source !== id && !(m.field && fieldKeys.has(m.field))),
+        relationships: (catalog.relationships ?? []).filter((r) => r.source !== id),
+        cleaning: (catalog.cleaning ?? []).filter((c) => !fieldKeys.has(c.field)),
+        hierarchies: (catalog.hierarchies ?? []).filter((h) => !h.levels.some((l) => fieldKeys.has(l))),
+      });
     },
     [catalog, files, setCatalog],
   );
 
   const loadExample = useCallback(() => {
     const ex = exampleCatalog as Catalog;
-    setCatalog({ version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
+    setCatalog({ ...catalog, version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
     const h = parseHoist(exampleHoist, indexCatalog(ex)).hoist;
     if (h) history.replace(h);
     setSelections({});
@@ -986,6 +994,8 @@ export function App() {
           busy={busy}
           onClose={() => setDataOpen(false)}
           onCatalog={setCatalog}
+          ctx={ctx}
+          provider={draftingProvider(index, ai, useAi)}
           onAddCsv={addCsv}
           onRemoveSource={removeSource}
           onProfile={profile}

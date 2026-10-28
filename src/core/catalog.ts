@@ -160,6 +160,21 @@ export function checkCatalog(catalog: Catalog): string[] {
 }
 
 /**
+ * Drops cleaning steps, drill paths and relationships that point at fields, tables or sources no
+ * longer in the catalog (a CSV loaded again without a column, a source removed).
+ */
+export function pruneCatalog(catalog: Catalog): Catalog {
+  const fields = new Set(catalog.fields.map((f) => f.key));
+  const sources = new Set(catalog.sources.map((s) => s.id));
+  const tables = new Set(catalog.fields.map((f) => `${f.source}|${f.table}`));
+  const out: Catalog = { ...catalog };
+  if (catalog.cleaning) out.cleaning = catalog.cleaning.filter((c) => fields.has(c.field));
+  if (catalog.hierarchies) out.hierarchies = catalog.hierarchies.filter((h) => h.levels.every((l) => fields.has(l)));
+  if (catalog.relationships) out.relationships = catalog.relationships.filter((r) => sources.has(r.source) && tables.has(`${r.source}|${r.from.table}`) && tables.has(`${r.source}|${r.to.table}`));
+  return out;
+}
+
+/**
  * Table and column names come from profiling a source, not from users, but they are still
  * checked: only names that can be quoted without escaping reach generated SQL.
  * Letters, digits, underscore, space and a single dot for schema-qualified tables.

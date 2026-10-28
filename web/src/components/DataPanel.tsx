@@ -5,7 +5,10 @@
 import { useEffect, useState } from 'react';
 import { Database, FileSpreadsheet, Plus, Trash2, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
+import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { profileTables, type ServerInfo } from '../lib/api.ts';
+import type { DataContext } from '../lib/data.ts';
+import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -21,10 +24,14 @@ export interface DataPanelProps {
   onLoadExample: () => void;
   /** Opens the Import from Qlik screen. */
   onImportQlik: () => void;
+  /** For checking data quality and relationships against the data. */
+  ctx: DataContext;
+  /** The AI, when it is on, for cleaning suggestions. */
+  provider: IntelligenceProvider;
 }
 
 export function DataPanel(p: DataPanelProps) {
-  const [tab, setTab] = useState<'sources' | 'measures' | 'fields'>('sources');
+  const [tab, setTab] = useState<'sources' | 'measures' | 'fields' | 'clean' | 'relationships'>('sources');
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-ink/20" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
       <aside role="dialog" aria-label="Data and catalog" className="flex h-full w-[520px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
@@ -36,16 +43,16 @@ export function DataPanel(p: DataPanelProps) {
           </button>
         </header>
         <div className="flex gap-1 border-b border-line px-3" role="tablist">
-          {(['sources', 'measures', 'fields'] as const).map((t) => (
+          {(['sources', 'measures', 'fields', 'clean', 'relationships'] as const).map((t) => (
             <button
               key={t}
               type="button"
               role="tab"
               aria-selected={tab === t}
               onClick={() => setTab(t)}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm capitalize ${tab === t ? 'border-accent font-semibold text-ink' : 'border-transparent text-ink-3 hover:text-ink'}`}
+              className={`-mb-px border-b-2 px-2.5 py-2 text-sm capitalize ${tab === t ? 'border-accent font-semibold text-ink' : 'border-transparent text-ink-3 hover:text-ink'}`}
             >
-              {t} {t === 'measures' ? `(${p.catalog.metrics.length})` : t === 'fields' ? `(${p.catalog.fields.length})` : ''}
+              {t === 'relationships' ? 'links' : t} {t === 'measures' ? `(${p.catalog.metrics.length})` : t === 'fields' ? `(${p.catalog.fields.length})` : ''}
             </button>
           ))}
         </div>
@@ -53,6 +60,8 @@ export function DataPanel(p: DataPanelProps) {
           {tab === 'sources' && <Sources {...p} />}
           {tab === 'measures' && <Measures catalog={p.catalog} onCatalog={p.onCatalog} />}
           {tab === 'fields' && <Fields catalog={p.catalog} onCatalog={p.onCatalog} />}
+          {tab === 'clean' && <CleanTab catalog={p.catalog} ctx={p.ctx} provider={p.provider} onCatalog={p.onCatalog} />}
+          {tab === 'relationships' && <RelationshipsTab catalog={p.catalog} ctx={p.ctx} onCatalog={p.onCatalog} />}
         </div>
       </aside>
     </div>
