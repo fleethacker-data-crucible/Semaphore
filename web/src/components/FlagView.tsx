@@ -41,6 +41,10 @@ export function FlagView(props: FlagViewProps) {
   if (flag.kind === 'kpi') return <Kpi {...props} />;
   if (flag.kind === 'filter') return <Picker {...props} />;
   if (flag.kind === 'table' || (flag.binding?.metrics.length ?? 0) === 0) return <Table {...props} />;
+  // A chart needs a field of its own to draw along. When the plan has none (the only field was
+  // dropped, say, as unrelated to the metric's table) show the number rather than fail the page.
+  const { plan } = props.result;
+  if (!plan.dimensions.some((d) => plan.own.includes(d.key))) return <Kpi {...props} />;
   return <ChartFlag {...props} />;
 }
 

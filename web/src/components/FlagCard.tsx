@@ -1,7 +1,7 @@
 // One flag on the hoist: a header with its title and state, its face (the data), and its back
 // (what it shows in plain English, why Semaphore drafted it that way, and the SQL it runs).
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { Component, type ReactNode, memo, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
@@ -202,7 +202,9 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
               </nav>
             )}
             <div className="min-h-0 flex-1">
-              <FlagView flag={flag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} />
+              <FlagBoundary resetKey={`${flag.kind}:${JSON.stringify(flag.binding)}`}>
+                <FlagView flag={flag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} />
+              </FlagBoundary>
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}
           </div>
@@ -278,4 +280,24 @@ function Back({ flag, hoist, index, result, insights }: { flag: Flag; hoist: Hoi
 
 function prettySql(sql: string): string {
   return sql.replace(/ (FROM|WHERE|GROUP BY|ORDER BY|LIMIT|FETCH FIRST) /g, '\n$1 ');
+}
+
+/** One flag that fails to draw says so in its own card; the rest of the page carries on. */
+class FlagBoundary extends Component<{ resetKey: string; children: ReactNode }, { error: string | null; key: string }> {
+  override state = { error: null as string | null, key: this.props.resetKey };
+  static getDerivedStateFromError(e: Error) {
+    return { error: e.message || 'unknown error' };
+  }
+  static getDerivedStateFromProps(p: { resetKey: string }, s: { error: string | null; key: string }) {
+    // A changed flag (new kind or binding) gets another try.
+    return p.resetKey === s.key ? null : { error: null, key: p.resetKey };
+  }
+  override render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <p role="alert" className="flex h-full items-center justify-center gap-1.5 px-2 text-center text-xs text-ink-2">
+        <AlertTriangle size={14} className="shrink-0 text-warn" /> This flag could not be drawn ({this.state.error}). Change its kind or redraft it.
+      </p>
+    );
+  }
 }

@@ -285,3 +285,18 @@ test("a model's own confidence is capped; local rules are not", () => {
   assert.equal(validateFlagDraft(raw, index, 'bar', { remote: true }).confidence, MODEL_CONFIDENCE_CAP);
   assert.equal(validateFlagDraft(raw, index, 'bar').confidence, 0.99);
 });
+
+test('a model that refuses temperature 0 is asked again with its default, and from then on', async () => {
+  const bodies: any[] = [];
+  const { fetch } = fakeFetch((_url, body) => {
+    bodies.push(body);
+    if (body.temperature === 0) return { status: 400, body: { error: { message: "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported." } } };
+    return { body: { choices: [{ message: { content: '{"kind":"kpi","binding":{"metrics":["work_orders"]},"confidence":0.8}' } }] } };
+  });
+  const p = new OpenAICompatibleProvider({ id: 'oai', label: 'Fairlead', url: 'https://gw.example.mil/v1', model: 'openai/gpt-5-mini', fetch });
+  const first = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(first.providerId, 'oai', 'answered by the model, not local rules');
+  assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false]);
+  await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false, false], 'not asked with 0 again');
+});

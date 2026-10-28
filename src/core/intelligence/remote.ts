@@ -137,21 +137,29 @@ export class OpenAICompatibleProvider extends RemoteBase implements Intelligence
   runTask(request: TaskRequest): Promise<unknown> {
     return this.complete(request.system, { task: request.task, ...request.payload });
   }
+  /** Set once a model has refused temperature 0 (GPT-5 and o-series take only the default). */
+  private defaultTemperature = false;
   private async complete(system: string, request: unknown): Promise<unknown> {
-    const r = await this.call(
-      `${this.base}/chat/completions`,
-      'POST',
-      {
-        ...(this.s.model ? { model: this.s.model } : {}),
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: JSON.stringify(request) },
-        ],
-      },
-      this.s.timeoutMs ?? DEFAULT_TIMEOUT,
-    );
+    const body = (steady: boolean) => ({
+      ...(this.s.model ? { model: this.s.model } : {}),
+      ...(steady ? { temperature: 0 } : {}),
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: JSON.stringify(request) },
+      ],
+    });
+    const url = `${this.base}/chat/completions`;
+    const timeout = this.s.timeoutMs ?? DEFAULT_TIMEOUT;
+    let r: unknown;
+    try {
+      r = await this.call(url, 'POST', body(!this.defaultTemperature), timeout);
+    } catch (e) {
+      // A model that refuses temperature 0 is asked again with its default, and from then on.
+      if (this.defaultTemperature || !(e instanceof IntelligenceError) || !/HTTP 4\d\d.*temperature/is.test(e.message)) throw e;
+      this.defaultTemperature = true;
+      r = await this.call(url, 'POST', body(false), timeout);
+    }
     const content = isObject(r) && Array.isArray(r.choices) && isObject(r.choices[0]) && isObject(r.choices[0].message) ? r.choices[0].message.content : null;
     if (typeof content !== 'string') throw new IntelligenceError(`${this.label} returned no message.`);
     try {
@@ -162,9 +170,9 @@ export class OpenAICompatibleProvider extends RemoteBase implements Intelligence
   }
 }
 
-const SHARED_RULES = `Use only keys from "catalog". Metric keys go in "metrics"; field keys go in "dimensions", "filters", "ignore" and sorts. A date dimension may have "grain": day|week|month|quarter|year, and its sort key is "<field>@<grain>". Filter ops: in, eq, gte, lte, between (two values), last (one whole number plus "unit"). Kinds: kpi (no dimensions), bar, line, area, pie (one dimension), table, filter (one dimension, no metrics, onClick "filter-page"), text. onClick: filter-page | drill | none. Thresholds: {metric, op: lt|lte|gt|gte, value, tone: good|warn|bad}. Every metric and field has a "set": one flag uses keys from one set only. Use only the metrics the brief asks for, usually one or two. Add thresholds only when the brief asks for a colour rule. If something the analyst asked for is not in the catalog, say so in "notes" and leave it out. Never invent keys. If "teamStyle" is given, it says how this team builds flags: follow it wherever the brief does not say otherwise. Answer with JSON only.`;
+const SHARED_RULES = `Use only keys from "catalog". Metric keys go in "metrics"; field keys go in "dimensions", "filters", "ignore" and sorts. A date dimension may have "grain": day|week|month|quarter|year, and its sort key is "<field>@<grain>". Filter ops: in, eq, gte, lte, between (two values), last (one whole number plus "unit"). Kinds: kpi (no dimensions), bar, line, area, pie (one dimension), table, filter (one dimension, no metrics, onClick "filter-page"), text. onClick: filter-page | drill | none. Thresholds: {metric, op: lt|lte|gt|gte, value, tone: good|warn|bad}. Every metric and field has a "set": one flag uses keys from one set only: choose the set that has everything the brief names, even when another set has a metric with the same label. Use only the metrics the brief asks for, usually one or two. Add thresholds only when the brief asks for a colour rule. If something the analyst asked for is not in the catalog, say so in "notes" and leave it out. Never invent keys. If "teamStyle" is given, it says how this team builds flags: follow it wherever the brief does not say otherwise. Answer with JSON only.`;
 
-const FLAG_PROMPT = `You configure one dashboard block ("flag") in Semaphore, a BI tool. The request has the dashboard brief ("brief.hoist"), this block's brief ("brief.flag", which wins where they disagree), page filters, the block's current kind and a catalog of metrics and fields. Return {"kind","title","binding":{"metrics":[],"dimensions":[{"field","grain"?}],"filters":[],"sort"?:{"by","dir"},"limit"?},"behavior":{"onClick","ignore":[],"thresholds":[]},"confidence":0..1,"notes":[]}. ${SHARED_RULES}`;
+const FLAG_PROMPT = `You configure one dashboard block ("flag") in Semaphore, a BI tool. The request has the dashboard brief ("brief.hoist"), this block's brief ("brief.flag", which wins where they disagree), page filters, the block's current kind and a catalog of metrics and fields. If "brief.auto" is true the analyst left the kind to you: pick the kind that fits what the brief asks for (a breakdown by a field is a bar or table, a trend is a line). Otherwise keep the current kind unless the brief names another. Return {"kind","title","binding":{"metrics":[],"dimensions":[{"field","grain"?}],"filters":[],"sort"?:{"by","dir"},"limit"?},"behavior":{"onClick","ignore":[],"thresholds":[]},"confidence":0..1,"notes":[]}. ${SHARED_RULES}`;
 
 const HOIST_PROMPT = `You lay out a whole dashboard ("hoist") in Semaphore, a BI tool, from the analyst's brief and a catalog of metrics and fields. Return {"title","filters":[],"flags":[{"kind","title","brief","binding","behavior","confidence","notes"}],"notes":[]} with at most 12 flags: headline KPIs first, then charts, then any filter flags the brief asks for. Each flag's "brief" is one plain sentence the analyst can edit later. ${SHARED_RULES}`;
 
