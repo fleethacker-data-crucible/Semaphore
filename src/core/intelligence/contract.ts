@@ -36,12 +36,15 @@ export interface DraftFlagRequest {
   task: 'draft-flag';
   brief: EffectiveBrief;
   catalog: CatalogSummary;
+  /** The team style card in plain sentences (src/core/style.ts), when there is one. */
+  teamStyle?: string[];
 }
 
 export interface DraftHoistRequest {
   task: 'draft-hoist';
   brief: string;
   catalog: CatalogSummary;
+  teamStyle?: string[];
 }
 
 export interface FlagDraft {

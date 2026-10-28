@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Standing in for an absent analyst.** A **Team style** card learns how the team builds from accepted flags (chart for each kind of question, time grain, top N, page window, colour rules), shows the evidence for each rule, and lets analysts switch rules off or pin them. Drafts are finished in that style where the brief is silent, whether the AI or local rules drafted them, and the AI is given the style. **Away mode**: an analyst marks themselves out; leadership sees it in the Ask view, familiar questions are answered from reviewed work, new ones are queued, and on return a "while you were out" digest lists what happened and what needs sign-off. **Experiment pages** ("Try freely") are never learnt from.
+- Server: a `team` document kind (`/api/team`) for the style overrides and away notices.
+- Roadmap: the AI-first direction (stand-in, messy-data prep, data lake through Sounding Line, AI-assisted Qlik migration).
 - **AI drafting through Fairlead.** With a Fairlead client key stored (`Set-SemaphoreAiKey.bat`, DPAPI-protected for the Windows account), flag and page drafts go through Fairlead's `local` route with `X-Fairlead-Privacy: local`, by way of Semaphore's own server: the page never holds the key. An **AI** button in the header shows the state and switches it. Failures fall back to local rules and say why; Fairlead's drafts say so in their notes.
 - Port authority: the Fairlead key is sent only after the address answers `/__fleethacker/id` as `fairlead`, so a tool holding Fairlead's port never receives it.
 - Server: `GET /api/ai`, `POST /api/ai/check`, `POST /api/ai/v1/chat/completions` (on the worker pool, up to 180 s). `SEMAPHORE_AI_URL` (loopback only), `SEMAPHORE_AI_MODEL`, `SEMAPHORE_AI_PRIVACY`, `SEMAPHORE_AI_KEY`.

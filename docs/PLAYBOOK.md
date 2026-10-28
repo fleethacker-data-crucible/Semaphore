@@ -119,6 +119,10 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 3. Done: the leadership view with trust labels, data dates, follow-up chips, headline numbers and what changed.
 4. Done: question queue with "Build the answer", answers in use, needs review with reasons, retire and restore, coverage.
 5. Done: the `--refresh` mode. Scheduling it is IT's call (below).
+6. Done: the team style card (`src/core/style.ts`): how the team builds, learnt from accepted entries with their evidence, switched off or pinned by analysts (`team/style`, the **Team style** tab). Drafts for analysts and for leadership are finished in that style where the brief is silent, and the AI gets it as context.
+7. Done: away mode (`src/core/away.ts`, the **Away** tab): "I'm out until Friday" shows in the leadership view; on return, the "while you were out" digest (what was asked, which reviewed answers were used, what was drafted, what is waiting, what was flagged for review).
+8. Done: experiment pages ("Try freely" in the header): the playbook and the team style never learn from them.
+9. Next: recurring reports while an analyst is out, and AI-written briefings from what changed. See [ROADMAP.md](ROADMAP.md), "AI-first".
 
 ## Setting up the refresher (IT)
 

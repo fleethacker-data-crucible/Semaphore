@@ -19,9 +19,9 @@ Done:
 Still to do from the original v0.2 list:
 
 - Secrets from the Lazarette vault via the bridge Halyard uses (today: DSN or integrated authentication only).
-- AWS (Athena, Redshift), Azure SQL/Synapse and Palantir Foundry connectors beyond what ODBC reaches.
-- Remote intelligence providers from the UI: the browser's CSP allows only the loopback server, so gateway calls need a server-side relay.
-- Restyle to the unified Data Crucible UI rules once they are published.
+- AWS (Athena, Redshift), Azure SQL/Synapse and Palantir Foundry connectors beyond what ODBC reaches. For the S3 data lake, see Sounding Line under "AI-first" below.
+- ~~Remote intelligence providers from the UI~~: done, through Fairlead and the server-side relay (`/api/ai`, [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)).
+- ~~Restyle to the unified UI~~: done, Fleet UI v0.2 as the default skin, with skins for last-minute changes ([SKINS.md](SKINS.md)).
 
 ## v0.3: the playbook and the leadership view (this release)
 
@@ -33,6 +33,31 @@ Semaphore learns from analysts' reviewed work, so leadership can simply ask, and
 - Leadership view: one question box, answer cards labelled reviewed / drafted, not reviewed / can't answer yet, follow-up chips.
 - Analyst stand-in: headline numbers and what changed, question queue with "Build the answer", coverage report.
 - **To do (optional):** reviewed examples sent to an approved AI gateway, through the server-side relay.
+
+## AI-first: the AI does the heavy lifting, the rules engine is the safety net
+
+Semaphore is meant to be an AI tool that still works without AI: the model drafts, cleans and explains; Semaphore's own code writes the SQL and computes every number; and with no model (a disconnected ship, no approval yet) the local rules carry on. AI goes through Fairlead, on a local model by default or an approved cloud model.
+
+**Standing in for an absent analyst** (the point is cover and freedom to experiment, not replacing analysts):
+
+- **Done:** team style card (`src/core/style.ts`): chart per kind of question, time grain, top N, page window and colour rules, learnt from accepted flags with their evidence; analysts switch rules off or pin them (`team/style`). Every draft, by AI or local rules, is finished in the team's style where its brief is silent, and the AI receives the style as context.
+- **Done:** away mode and the "while you were out" digest (`src/core/away.ts`, `team/away-<user>`): leadership sees who is out; familiar questions are answered from reviewed work; new ones are queued; on return the analyst gets what was asked, what was used, what was drafted and what needs sign-off.
+- **Done:** experiment pages ("Try freely"): never learnt from by the playbook or the style.
+- **Next:** recurring reports: recognise a dashboard refreshed on a schedule (the Monday brief) and produce it while its analyst is out, same structure, new data.
+- **Next:** AI-written briefings for leadership from the "what changed" insights, each sentence linked to its flag.
+
+**Messy data, done with the analyst instead of by them** (the load-script work that takes much of an analyst's time in Qlik):
+
+- Profile data quality: inconsistent labels ("N.E." vs "Northeast"), stray spaces, mixed date formats, numbers stored as text, duplicates, blanks that mean zero.
+- AI proposes cleaning steps as readable sentences; the analyst accepts or undoes each; accepted steps live in the catalog and Semaphore applies them in its own SQL and in snapshots.
+- Relationship discovery: proposed joins between tables with how many rows actually match, feeding "joins through catalog relationships" below.
+
+**Where the data lives:**
+
+- Today: CSV in the page, Access through ACE, Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC.
+- The S3 data lake through Athena, by way of the **Sounding Line** proposal (comms repo, `proposals/sounding-line`): a query desk with a cost guard (scan size and price before a query runs, partition-filter warnings, per-user daily limits), a local result cache, and short AWS sessions brokered through Lazarette so analysts hold no AWS keys. Semaphore already writes Athena-ready SQL; one aggregate query per flag and leadership answering from snapshots keep scans small.
+
+**AI-assisted Qlik migration:** paste a load script or a set-analysis expression and get catalog entries and draft flags back for review (supersedes the "Qlik migration helper" under Later).
 
 ## v0.4: depth
 

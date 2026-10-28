@@ -3,7 +3,8 @@
 // the exact binding that answers it, its colour rules and its window, and who accepted it when.
 //
 // It learns only from accepted work (a flag marked ready), never from drafts nobody accepted, and
-// never from flags marked "do not learn". Nothing about how people work is recorded.
+// never from flags marked "do not learn" or pages marked as experiments. Nothing about how people
+// work is recorded.
 //
 // Answering is deterministic: a question is read by local rules into a binding, and that binding's
 // signature is compared with every entry's. The answer says which entry it used and why, and how
@@ -104,6 +105,7 @@ function tableOf(binding: Binding, index: CatalogIndex): { source: string; table
 export function learnFromHoist(entries: readonly PlaybookEntry[], hoist: Hoist, index: CatalogIndex, by: string, now: Date = new Date()): PlaybookEntry[] {
   const out: PlaybookEntry[] = [];
   const at = now.toISOString();
+  if (hoist.experiment) return out; // an experiment page: tried out, never learnt from
   for (const flag of hoist.flags) {
     if (!learnable(flag)) continue;
     const where = tableOf(flag.binding!, index);

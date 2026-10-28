@@ -100,6 +100,8 @@ export interface Hoist {
   /** Fixed filters every flag inherits, e.g. "fiscal year 2026". */
   filters: Filter[];
   flags: Flag[];
+  /** An experiment page: the analyst is trying things out, so the playbook and the team style never learn from it. */
+  experiment?: boolean;
   updated: string;
 }
 
@@ -187,6 +189,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
       grid: { cols },
       filters,
       flags,
+      ...(raw.experiment === true ? { experiment: true } : {}),
       updated: str(raw.updated).slice(0, 40) || new Date(0).toISOString(),
     },
     warnings: capWarnings(warnings),

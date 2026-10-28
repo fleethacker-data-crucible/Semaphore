@@ -4,7 +4,8 @@
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, BadgeCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, Wand2 } from 'lucide-react';
+import { ArrowRight, BadgeCheck, CalendarOff, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, Wand2 } from 'lucide-react';
+import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { describeFlag, formatNumber } from '../../../src/core/describe.ts';
 import { type Hoist, toneFor } from '../../../src/core/hoist.ts';
@@ -199,6 +200,15 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
 
       <main className="scroll-thin flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8">
+          {playbook.away.filter((n) => isAway(n)).map((n) => (
+            <p key={n.id} role="status" className="flex items-start gap-2 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm">
+              <CalendarOff size={16} className="mt-0.5 shrink-0 text-brass" />
+              <span>
+                <b>{n.analyst}</b> is out until {n.until}. Questions they have already reviewed are answered as usual; new ones wait for their return.
+                {n.note ? <span className="text-ink-2"> {n.note}</span> : null}
+              </span>
+            </p>
+          ))}
           <form
             onSubmit={(e) => {
               e.preventDefault();

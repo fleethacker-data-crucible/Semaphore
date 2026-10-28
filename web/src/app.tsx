@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
@@ -15,6 +15,8 @@ import { emptyBehavior, type Flag, type FlagKind, GRID_COLS, type Hoist, type La
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
 import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
+import { awayId, isReturned } from '../../src/core/away.ts';
+import { learnStyle } from '../../src/core/style.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
@@ -108,6 +110,14 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => readLocal<'light' | 'dark'>(K.theme) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   const askRef = useRef<HTMLInputElement>(null);
   const today = useMemo(() => new Date(), []);
+
+  // The playbook, and the team style card learnt from it: drafts are finished the way the team builds.
+  const playbook = usePlaybook(server, serverChecked);
+  const user = server?.user || 'analyst';
+  const teamStyle = useMemo(() => learnStyle(playbook.entries, index, playbook.styleOverrides), [playbook.entries, index, playbook.styleOverrides]);
+  const [playbookTab, setPlaybookTab] = useState<'away' | undefined>(undefined);
+  const myAway = playbook.away.find((n) => n.id === awayId(user));
+  const digestWaiting = !!myAway && isReturned(myAway);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -267,7 +277,7 @@ export function App() {
     const provider = draftingProvider(index, ai, useAi);
     setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
     try {
-      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty' });
+      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle });
       const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [`Drafted by ${provider.label}.`, ...outcome.draft.notes] };
       if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`);
       const next = applyFlagDraft(selected, draft);
@@ -285,7 +295,7 @@ export function App() {
     } finally {
       setBusy(null);
     }
-  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi]);
+  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle]);
 
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
@@ -293,7 +303,7 @@ export function App() {
       setBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`);
       try {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
-        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index);
+        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle });
         const draft = outcome ? outcome.draft : starterHoistLocally(index);
         const next = applyHoistDraft({ ...base, title: base.title }, draft, () => newId());
         change(next);
@@ -305,7 +315,7 @@ export function App() {
         setBusy(null);
       }
     },
-    [hoist, index, change, notify, ai, useAi],
+    [hoist, index, change, notify, ai, useAi, teamStyle],
   );
 
   // The header's AI switch. Turning Fairlead on checks it, so a missing Fairlead or a refused key
@@ -476,8 +486,7 @@ export function App() {
   };
 
   // ---- The playbook: learn from accepted flags, keep it healthy, keep snapshots fresh --------
-  const playbook = usePlaybook(server, serverChecked);
-  const user = server?.user || 'analyst';
+  // (usePlaybook, user and the team style are set up near the top: the draft handlers use them.)
   const currentView: View = view ?? 'builder';
   const setView = useCallback((v: 'builder' | 'ask') => {
     setViewState(v);
@@ -676,6 +685,27 @@ export function App() {
             className="-ml-1 min-w-0 rounded border border-transparent bg-transparent px-1 text-[15px] font-semibold leading-tight hover:border-line focus:border-accent focus:outline-none"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => change((h) => ({ ...h, experiment: !h.experiment }))}
+          aria-pressed={!!hoist.experiment}
+          title={hoist.experiment ? 'Experiment page: never learnt from. Click to make it a normal page.' : 'Mark this page as an experiment: try anything, and the playbook and team style never learn from it.'}
+          className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${hoist.experiment ? 'border-warn bg-warn-soft font-semibold text-warn' : 'border-line text-ink-3 hover:border-warn hover:text-warn'}`}
+        >
+          <FlaskConical size={12} /> {hoist.experiment ? 'Experiment' : 'Try freely'}
+        </button>
+        {digestWaiting && (
+          <button
+            type="button"
+            onClick={() => {
+              setPlaybookTab('away');
+              setPlaybookOpen(true);
+            }}
+            className="flex items-center gap-1 rounded-full border border-accent bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent"
+          >
+            While you were out
+          </button>
+        )}
         <div className="ml-4 flex items-center gap-0.5">
           <IconButton label="Undo (Ctrl+Z)" onClick={history.undo} disabled={!history.canUndo}>
             <Undo2 size={16} />
@@ -871,7 +901,21 @@ export function App() {
         )}
       </div>
 
-      {playbookOpen && <PlaybookPanel playbook={playbook} index={index} user={user} reviewer={server?.reviewer ?? ''} onClose={() => setPlaybookOpen(false)} onAnswer={answerQuestionItem} />}
+      {playbookOpen && (
+        <PlaybookPanel
+          playbook={playbook}
+          index={index}
+          user={user}
+          reviewer={server?.reviewer ?? ''}
+          style={teamStyle}
+          initialTab={playbookTab}
+          onClose={() => {
+            setPlaybookOpen(false);
+            setPlaybookTab(undefined);
+          }}
+          onAnswer={answerQuestionItem}
+        />
+      )}
 
       {dataOpen && (
         <DataPanel

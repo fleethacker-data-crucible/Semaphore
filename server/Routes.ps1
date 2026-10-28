@@ -11,7 +11,7 @@
 #   GET    /api/hoists/<id>                         the file's JSON verbatim
 #   PUT    /api/hoists/<id>   hoist JSON            atomic write -> { ok: true }
 #   DELETE /api/hoists/<id>                         moved to .trash with a timestamp suffix
-#   The same four routes serve /api/playbook (accepted answers), /api/snapshots (their saved
+#   The same four routes serve /api/team (style overrides, away notices), /api/playbook (accepted answers), /api/snapshots (their saved
 #   results) and /api/questions (leadership's question queue). GET /api/<kind>?full=1 returns
 #   the documents themselves instead of { id, title, updated } (playbook and questions only).
 #   POST   /api/refresh-report { refreshed, skipped, failed: [{ id, title, error }] }
@@ -42,7 +42,7 @@ function Test-SemDocId {
 # Document store: <home>\hoists and <home>\catalogs, one <id>.json per document
 # ---------------------------------------------------------------------------
 function Get-SemDocDir {
-    param([ValidateSet('hoists', 'catalogs', 'playbook', 'snapshots', 'questions')][string]$Kind, [string]$HomeDir = $script:Sem.Home)
+    param([ValidateSet('hoists', 'catalogs', 'playbook', 'snapshots', 'questions', 'team')][string]$Kind, [string]$HomeDir = $script:Sem.Home)
     $d = Join-Path $HomeDir $Kind
     if (-not (Test-Path -LiteralPath $d)) { [void][IO.Directory]::CreateDirectory($d) }
     return $d
@@ -148,10 +148,10 @@ function Remove-SemDoc {
 function Invoke-SemDocRoute {
     param($Req, [string]$Kind, $Id)
     $dir = Get-SemDocDir -Kind $Kind
-    $noun = @{ hoists = 'hoist'; catalogs = 'catalog'; playbook = 'playbook entry'; snapshots = 'snapshot'; questions = 'question' }[$Kind]
+    $noun = @{ hoists = 'hoist'; catalogs = 'catalog'; playbook = 'playbook entry'; snapshots = 'snapshot'; questions = 'question'; team = 'team note' }[$Kind]
     if ($null -eq $Id) {
         if ($Req.Method -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
-        if (($Kind -eq 'playbook' -or $Kind -eq 'questions') -and [string]$Req.Query -match '(^|&)full=1(&|$)') {
+        if (($Kind -eq 'playbook' -or $Kind -eq 'questions' -or $Kind -eq 'team') -and [string]$Req.Query -match '(^|&)full=1(&|$)') {
             Send-SemJsonText 200 (Get-SemDocFullList -Dir $dir)
             return
         }
@@ -224,7 +224,7 @@ function Invoke-SemRoute {
         Request-SemStop 'end'
         return
     }
-    if ($p -match '^/api/(hoists|catalogs|playbook|snapshots|questions)(?:/([^/]*))?$') {
+    if ($p -match '^/api/(hoists|catalogs|playbook|snapshots|questions|team)(?:/([^/]*))?$') {
         $kind = $Matches[1]; $id = $null
         if ($p -ne "/api/$kind") { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
         Invoke-SemDocRoute -Req $Req -Kind $kind -Id $id

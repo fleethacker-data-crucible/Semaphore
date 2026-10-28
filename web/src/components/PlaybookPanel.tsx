@@ -6,7 +6,9 @@ import { useState } from 'react';
 import { BadgeCheck, BookOpen, CircleAlert, Inbox, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { coverage, flagForReview, type PlaybookEntry, type QuestionItem, restoreEntry, retireEntry } from '../../../src/core/playbook.ts';
+import type { TeamStyle } from '../../../src/core/style.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
+import { AwayTab, StyleTab } from './TeamPanels.tsx';
 
 export interface PlaybookPanelProps {
   playbook: PlaybookState;
@@ -15,12 +17,16 @@ export interface PlaybookPanelProps {
   reviewer: string;
   onClose: () => void;
   onAnswer: (q: QuestionItem) => void;
+  /** The team style card, learnt from the accepted entries plus the analysts' overrides. */
+  style: TeamStyle;
+  /** Open on this tab (the header's 'while you were out' chip opens 'away'). */
+  initialTab?: 'questions' | 'entries' | 'coverage' | 'style' | 'away';
 }
 
-export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnswer }: PlaybookPanelProps) {
+export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnswer, style, initialTab }: PlaybookPanelProps) {
   const open = playbook.questions.filter((q) => q.status === 'open').sort((a, b) => b.askedAt.localeCompare(a.askedAt));
   const review = playbook.entries.filter((e) => e.status === 'needs-review');
-  const [tab, setTab] = useState<'questions' | 'entries' | 'coverage'>(open.length ? 'questions' : review.length ? 'entries' : 'entries');
+  const [tab, setTab] = useState<'questions' | 'entries' | 'coverage' | 'style' | 'away'>(initialTab ?? (open.length ? 'questions' : 'entries'));
   const [filter, setFilter] = useState<'all' | 'needs-review' | 'retired'>(review.length ? 'needs-review' : 'all');
   const entries = playbook.entries
     .filter((e) => (filter === 'all' ? e.status !== 'retired' : e.status === filter))
@@ -48,6 +54,8 @@ export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnsw
               ['questions', `Questions (${open.length})`],
               ['entries', `Answers (${playbook.entries.filter((e) => e.status !== 'retired').length})`],
               ['coverage', 'Coverage'],
+              ['style', 'Team style'],
+              ['away', 'Away'],
             ] as const
           ).map(([t, label]) => (
             <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === t ? 'border-accent font-semibold' : 'border-transparent text-ink-3 hover:text-ink'}`}>
@@ -119,6 +127,9 @@ export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnsw
               </ul>
             </div>
           )}
+          {tab === 'style' && <StyleTab style={style} overrides={playbook.styleOverrides} index={index} user={user} onSave={(o) => void playbook.saveStyleOverrides(o)} />}
+
+          {tab === 'away' && <AwayTab playbook={playbook} user={user} onAnswer={onAnswer} />}
         </div>
       </aside>
     </div>
