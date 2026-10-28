@@ -43,12 +43,13 @@ export async function draftFlag(
   // The team style finishes whatever came back (the AI was also told it), filling only what the brief left open.
   const styled = (draft: FlagDraft): FlagDraft =>
     options.style ? applyTeamStyle(draft, options.style, index, { auto: !!options.auto, brief: `${brief.hoist} ${brief.flag}` }).draft : draft;
+  const words = `${brief.hoist} ${brief.flag}`;
   try {
-    return { draft: styled(validateFlagDraft(await provider.draftFlag(request), index, flag.kind)), providerId: provider.id };
+    return { draft: styled(validateFlagDraft(await provider.draftFlag(request), index, flag.kind, { brief: words, remote: !provider.local })), providerId: provider.id };
   } catch (e) {
     if (provider.local) throw e;
     const local = new LocalRulesProvider(index);
-    return { draft: styled(validateFlagDraft(await local.draftFlag(request), index, flag.kind)), providerId: local.id, fallbackReason: (e as Error).message };
+    return { draft: styled(validateFlagDraft(await local.draftFlag(request), index, flag.kind, { brief: words })), providerId: local.id, fallbackReason: (e as Error).message };
   }
 }
 
@@ -60,11 +61,11 @@ export async function draftHoist(provider: IntelligenceProvider, brief: string, 
       ? { ...draft, flags: draft.flags.map((f) => ({ ...applyTeamStyle(f, options.style!, index, { auto: true, brief: `${brief} ${f.brief}` }).draft, brief: f.brief })) }
       : draft;
   try {
-    return { draft: styled(validateHoistDraft(await provider.draftHoist(request), index)), providerId: provider.id };
+    return { draft: styled(validateHoistDraft(await provider.draftHoist(request), index, { brief: request.brief, remote: !provider.local })), providerId: provider.id };
   } catch (e) {
     if (provider.local) throw e;
     const local = new LocalRulesProvider(index);
-    return { draft: styled(validateHoistDraft(await local.draftHoist(request), index)), providerId: local.id, fallbackReason: (e as Error).message };
+    return { draft: styled(validateHoistDraft(await local.draftHoist(request), index, { brief: request.brief })), providerId: local.id, fallbackReason: (e as Error).message };
   }
 }
 

@@ -16,7 +16,7 @@ Semaphore works with no model at all. **Local rules** is the default provider an
 | --- | --- |
 | The hoist brief and the flag brief | Any data row or cached result |
 | The page's fixed filters (field keys and values the analyst typed) | Table or column names, source names, connection strings |
-| Metric and field **keys, labels, types and synonyms** (`summarizeCatalog`) | Credentials or vault item names |
+| Metric and field **keys, labels, types and synonyms** (`summarizeCatalog`), with a **set number** per source (1, 2, ...) so a model keeps a flag to one source | Credentials or vault item names |
 | The flag's current kind | Anything about other people |
 
 SQL is generated locally from the validated draft, never by the provider.
@@ -25,9 +25,12 @@ SQL is generated locally from the validated draft, never by the provider.
 
 1. Output is a **suggestion**. Applying it marks the flag `drafted`; the analyst accepts it.
 2. Unknown metric or field keys are removed and listed in the flag's notes; confidence is capped at 0.4.
-3. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
-4. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
-5. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the Lazarette vault.
+3. A flag reads from one source. A draft that mixes sources keeps the source most of its fields and filters come from; a metric or field from another source is swapped for the same-named one in the kept source (confidence capped at 0.7) or left out with a note (capped at 0.4).
+4. A colour rule is kept only when the brief asks for one ("red", "amber", "highlight", ...). Rules the team style card adds afterwards are labelled "Team style".
+5. A model's own confidence is capped at 0.8 (`MODEL_CONFIDENCE_CAP`): it has not seen the data.
+6. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
+7. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
+8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the Lazarette vault.
 
 ## Fairlead
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { indexCatalog } from '../src/core/catalog.ts';
 import type { Flag, Hoist } from '../src/core/hoist.ts';
 import {
   applyFlagDraft,
@@ -8,14 +9,16 @@ import {
   draftFlag,
   draftHoist,
   LocalRulesProvider,
+  MODEL_CONFIDENCE_CAP,
   OpenAICompatibleProvider,
   summarizeCatalog,
+  validateFlagDraft,
 } from '../src/core/intelligence/index.ts';
 import { draftFlagLocally } from '../src/core/intelligence/local-rules.ts';
 import type { FetchLike } from '../src/core/intelligence/remote.ts';
 import { isValidLayout } from '../src/core/layout.ts';
 import { planFlag } from '../src/core/planner.ts';
-import { flag, loadHoist, loadIndex } from './fixtures.ts';
+import { flag, loadCatalog, loadHoist, loadIndex } from './fixtures.ts';
 
 const index = loadIndex();
 const hoist = loadHoist();
@@ -217,4 +220,68 @@ test('provider URLs: HTTPS, or HTTP on loopback only; no credentials in the URL'
   assert.throws(() => mk('http://ai.example.mil/x'), /HTTPS/);
   assert.throws(() => mk('https://user:pw@ai.example.mil/x'), /vault/);
   assert.throws(() => mk('not a url'), /valid URL/);
+});
+
+// ---- model drafts that mix sources, invent colour rules or oversell themselves ---------------
+
+// The fleet example plus a second source that also has "Labor cost", and a "Homeport" only it has.
+function twoSourceIndex() {
+  const c = loadCatalog();
+  c.sources.push({ id: 'testdb', label: 'Test DB', kind: 'access', dialect: 'access' } as (typeof c.sources)[number]);
+  c.fields.push(
+    { key: 't.cost', label: 'Labor cost', source: 'testdb', table: 'work_orders', column: 'labor_cost', type: 'number' },
+    { key: 't.region', label: 'Region', source: 'testdb', table: 'work_orders', column: 'region', type: 'string' },
+    { key: 't.homeport', label: 'Homeport', source: 'testdb', table: 'work_orders', column: 'homeport', type: 'string' },
+  );
+  c.metrics.push({ key: 't_labor_cost', label: 'Labor cost', agg: 'sum', field: 't.cost', source: 'testdb' });
+  return indexCatalog(c);
+}
+
+test('the catalog summary numbers each source as a set, without naming it', () => {
+  const s = summarizeCatalog(twoSourceIndex().catalog);
+  assert.equal(s.metrics.find((m) => m.key === 'labor_cost')?.set, 1);
+  assert.equal(s.metrics.find((m) => m.key === 't_labor_cost')?.set, 3);
+  assert.ok(!JSON.stringify(s).includes('Test DB'));
+});
+
+test('a draft that mixes sources keeps one: same-named metrics are swapped in, the rest left out', () => {
+  const two = twoSourceIndex();
+  // What the local model did on 28 Oct: the sample's Labor cost, plus Parts on hand, by the test DB's Homeport.
+  const d = validateFlagDraft(
+    { kind: 'bar', binding: { metrics: ['labor_cost', 'parts_on_hand'], dimensions: [{ field: 't.homeport' }], sort: { by: 'labor_cost', dir: 'desc' } }, behavior: { thresholds: [{ metric: 'labor_cost', op: 'gt', value: 5e6, tone: 'bad' }] }, confidence: 0.9 },
+    two,
+    'bar',
+    { brief: 'Labor cost by homeport, red over $5M', remote: true },
+  );
+  assert.deepEqual(d.binding?.metrics, ['t_labor_cost']);
+  assert.deepEqual(d.binding?.dimensions, [{ field: 't.homeport' }]);
+  assert.deepEqual(d.binding?.sort, { by: 't_labor_cost', dir: 'desc' });
+  assert.deepEqual(d.behavior.thresholds.map((t) => t.metric), ['t_labor_cost']);
+  assert.match(d.notes.join(' '), /Used "Labor cost" from Test DB/);
+  assert.match(d.notes.join(' '), /"Parts on hand" is in another source and was left out/);
+  assert.ok(d.confidence <= 0.4, 'something was left out');
+  const f: Flag = applyFlagDraft({ ...flag(hoist, 'empty-1'), brief: 'x' }, d);
+  const plan = planFlag(hoist, f, two);
+  assert.ok(plan.ok, `the repaired draft plans: ${!plan.ok ? plan.error : ''}`);
+});
+
+test('a draft that stays in one source is left as it is', () => {
+  const d = validateFlagDraft({ kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, confidence: 0.7 }, twoSourceIndex(), 'bar', { remote: true });
+  assert.deepEqual(d.binding?.metrics, ['labor_cost']);
+  assert.equal(d.confidence, 0.7);
+});
+
+test('colour rules the brief did not ask for are dropped', () => {
+  const raw = { kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, behavior: { thresholds: [{ metric: 'labor_cost', op: 'gt', value: 5e6, tone: 'bad' }] } };
+  const quiet = validateFlagDraft(raw, index, 'bar', { brief: 'Labor cost by region' });
+  assert.deepEqual(quiet.behavior.thresholds, []);
+  assert.match(quiet.notes.join(' '), /Colour rules were left out/);
+  const asked = validateFlagDraft(raw, index, 'bar', { brief: 'Labor cost by region, turn red over $5M' });
+  assert.equal(asked.behavior.thresholds.length, 1);
+});
+
+test("a model's own confidence is capped; local rules are not", () => {
+  const raw = { kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, confidence: 0.99 };
+  assert.equal(validateFlagDraft(raw, index, 'bar', { remote: true }).confidence, MODEL_CONFIDENCE_CAP);
+  assert.equal(validateFlagDraft(raw, index, 'bar').confidence, 0.99);
 });
