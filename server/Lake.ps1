@@ -202,35 +202,46 @@ function Get-SemS3PrefixSize {
 # ---------------------------------------------------------------------------
 # Cost guard
 # ---------------------------------------------------------------------------
-function Get-SemLakeTableName {
-    # The table a planner query reads: FROM "name" (or "db"."name", or name).
+function Get-SemLakeTableNames {
+    # Every table a query reads: after FROM or JOIN, "name", "db"."name" or name; subqueries are looked into.
     param([string]$Sql)
-    $m = [regex]::Match($Sql, '(?is)\bFROM\s+(?:"[^"]+"\.)?"([^"]+)"|\bFROM\s+(?:[A-Za-z_][\w]*\.)?([A-Za-z_][\w]*)')
-    if (-not $m.Success) { return $null }
-    if ($m.Groups[1].Success) { return $m.Groups[1].Value } else { return $m.Groups[2].Value }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($Sql, '(?is)\b(?:FROM|JOIN)\s+(?:"[^"]+"\.)?"([^"]+)"|\b(?:FROM|JOIN)\s+(?:[A-Za-z_][\w]*\.)?([A-Za-z_][\w]*)')) {
+        $n = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+        if ($n -and -not $names.Contains($n)) { $names.Add($n) }
+    }
+    return $names.ToArray()
 }
 function Get-SemLakeEstimate {
     # @{ Bytes; Usd; Partitioned; PartitionFiltered; Warnings[]; Table } for a query, before it runs.
     param([hashtable]$Lake, [string]$Sql)
-    $table = Get-SemLakeTableName $Sql
-    if (-not $table) { throw 'Could not tell which lake table the query reads.' }
-    $t = Invoke-SemAwsJson -Lake $Lake -Service 'glue' -Target 'AWSGlue.GetTable' -Payload @{ DatabaseName = $Lake.Database; Name = $table }
-    $tbl = Get-SemJsonProp $t 'Table'
-    $loc = [string](Get-SemJsonProp (Get-SemJsonProp $tbl 'StorageDescriptor') 'Location')
-    $m = [regex]::Match($loc, '\As3a?://([^/]+)/?(.*)\z')
-    if (-not $m.Success) { throw "The lake table '$table' has no S3 location in Glue." }
-    $size = Get-SemS3PrefixSize -Lake $Lake -Bucket $m.Groups[1].Value -Prefix $m.Groups[2].Value
-    $keys = @(@(Get-SemJsonProp $tbl 'PartitionKeys') | ForEach-Object { [string](Get-SemJsonProp $_ 'Name') } | Where-Object { $_ })
+    # Joined tables and hand-written queries read several tables: each is sized and the sizes added.
+    $tables = @(Get-SemLakeTableNames $Sql)
+    if (-not $tables.Count) { throw 'Could not tell which lake table the query reads.' }
+    if ($tables.Count -gt 10) { throw 'The query reads more than 10 lake tables; Semaphore estimates at most 10.' }
     $where = ''
-    $w = [regex]::Match($Sql, '(?is)\bWHERE\b(.*?)(\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|\z)')
-    if ($w.Success) { $where = $w.Groups[1].Value }
-    $filtered = $false
-    foreach ($k in $keys) { if ($where -match ('(?i)"?' + [regex]::Escape($k) + '"?\s*(=|>|<|IN\b|BETWEEN\b)')) { $filtered = $true } }
+    foreach ($w in [regex]::Matches($Sql, '(?is)\bWHERE\b(.*?)(\bGROUP\s+BY\b|\bORDER\s+BY\b|\bLIMIT\b|\)|\z)')) { $where += ' ' + $w.Groups[1].Value }
+    $bytes = [long]0
+    $partitioned = $false
+    $filteredAll = $true
     $warnings = New-Object System.Collections.Generic.List[string]
-    if ($keys.Count -and -not $filtered) { $warnings.Add(("'{0}' is partitioned by {1} and this query does not filter on it, so Athena reads all of it." -f $table, ($keys -join ', '))) }
-    if ($size.Capped) { $warnings.Add('The table has more files than were counted; the estimate is low.') }
-    $usd = [Math]::Round(($size.Bytes / 1099511627776.0) * $Lake.PricePerTB, 4)
-    return @{ Table = $table; Bytes = $size.Bytes; Usd = $usd; Partitioned = [bool]$keys.Count; PartitionFiltered = $filtered; Warnings = $warnings.ToArray() }
+    foreach ($table in $tables) {
+        $t = Invoke-SemAwsJson -Lake $Lake -Service 'glue' -Target 'AWSGlue.GetTable' -Payload @{ DatabaseName = $Lake.Database; Name = $table }
+        $tbl = Get-SemJsonProp $t 'Table'
+        $loc = [string](Get-SemJsonProp (Get-SemJsonProp $tbl 'StorageDescriptor') 'Location')
+        $m = [regex]::Match($loc, '\As3a?://([^/]+)/?(.*)\z')
+        if (-not $m.Success) { throw "The lake table '$table' has no S3 location in Glue." }
+        $size = Get-SemS3PrefixSize -Lake $Lake -Bucket $m.Groups[1].Value -Prefix $m.Groups[2].Value
+        $bytes += $size.Bytes
+        $keys = @(@(Get-SemJsonProp $tbl 'PartitionKeys') | ForEach-Object { [string](Get-SemJsonProp $_ 'Name') } | Where-Object { $_ })
+        $filtered = $false
+        foreach ($k in $keys) { if ($where -match ('(?i)"?' + [regex]::Escape($k) + '"?\s*(=|>|<|IN\b|BETWEEN\b)')) { $filtered = $true } }
+        if ($keys.Count) { $partitioned = $true; if (-not $filtered) { $filteredAll = $false } }
+        if ($keys.Count -and -not $filtered) { $warnings.Add(("'{0}' is partitioned by {1} and this query does not filter on it, so Athena reads all of it." -f $table, ($keys -join ', '))) }
+        if ($size.Capped) { $warnings.Add(("'{0}' has more files than were counted; the estimate is low." -f $table)) }
+    }
+    $usd = [Math]::Round(($bytes / 1099511627776.0) * $Lake.PricePerTB, 4)
+    return @{ Table = ($tables -join ', '); Bytes = $bytes; Usd = $usd; Partitioned = $partitioned; PartitionFiltered = ($partitioned -and $filteredAll); Warnings = $warnings.ToArray() }
 }
 function Get-SemLakeUsagePath {
     param([string]$HomeDir, [datetime]$Now = (Get-Date))

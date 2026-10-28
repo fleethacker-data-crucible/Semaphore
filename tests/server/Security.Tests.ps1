@@ -247,7 +247,8 @@ Describe 'SQL guard and parameters' {
         @{ Why = 'empty'; Sql = '   ' }, @{ Why = 'not a SELECT'; Sql = 'DELETE FROM t' }, @{ Why = 'WITH'; Sql = 'WITH x AS (SELECT 1) SELECT * FROM x' },
         @{ Why = 'a semicolon'; Sql = 'SELECT 1; DROP TABLE t' }, @{ Why = 'a line comment'; Sql = 'SELECT 1 -- x' },
         @{ Why = 'a block comment'; Sql = 'SELECT /* x */ 1' }, @{ Why = 'SELECTINTO-like prefix'; Sql = 'SELECTX 1' },
-        @{ Why = 'over 100 KB'; Sql = ('SELECT ' + ('a' * 102400)) }
+        @{ Why = 'over 100 KB'; Sql = ('SELECT ' + ('a' * 102400)) },
+        @{ Why = 'SELECT INTO (makes a table)'; Sql = 'SELECT * INTO copy_of_jobs FROM jobs' }
     ) {
         Test-SemSqlGuard $Sql | Should -Not -BeNullOrEmpty
     }

@@ -78,6 +78,8 @@ function Test-SemSqlGuard {
     if ($t.Contains(';')) { return 'The SQL may not contain ";".' }
     if ($t.Contains('--')) { return 'The SQL may not contain "--".' }
     if ($t.Contains('/*')) { return 'The SQL may not contain "/*".' }
+    # SELECT ... INTO creates a table in SQL Server and Access; the SQL desk takes typed SQL, so refuse it.
+    if ($t -match '(?i)\bINTO\b') { return 'The SQL may not contain INTO: Semaphore only reads.' }
     return $null
 }
 

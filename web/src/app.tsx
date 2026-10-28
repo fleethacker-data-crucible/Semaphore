@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -37,6 +37,7 @@ import { PlaybookPanel } from './components/PlaybookPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
+import { SqlDesk } from './components/SqlDesk.tsx';
 import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
@@ -108,6 +109,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
+  const [sqlOpen, setSqlOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -843,6 +845,11 @@ export function App() {
           <button type="button" onClick={() => setDataOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent">
             <Database size={14} className="text-brass" /> Data
           </button>
+          {server && server.sources.length > 0 && (
+            <button type="button" onClick={() => setSqlOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="Write your own SELECT against a source on this computer">
+              <TerminalSquare size={14} className="text-brass" /> SQL
+            </button>
+          )}
           {server && ai && (
             <button
               type="button"
@@ -1037,6 +1044,8 @@ export function App() {
           }}
         />
       )}
+
+      {sqlOpen && server && <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />}
 
       {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} ai={ai?.configured && useAi ? aiLabel(ai) : null} onReadWithAi={readQlikWithAi} onAddMeasures={addMeasures} onClose={() => setQlikOpen(false)} />}
 
