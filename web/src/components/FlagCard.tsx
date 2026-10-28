@@ -2,11 +2,12 @@
 // (what it shows in plain English, why Semaphore drafted it that way, and the SQL it runs).
 
 import { memo, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, FlipHorizontal2, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles } from 'lucide-react';
+import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
-import type { Flag, Hoist } from '../../../src/core/hoist.ts';
+import { dimensionKey, type Flag, type Hoist } from '../../../src/core/hoist.ts';
+import { type DrillStep, drillLabel, drillView, nextLevel } from '../../../src/core/drill.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { ApprovalNeeded, approveQuery, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
@@ -71,8 +72,20 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
   return load;
 }
 
-function FlagCardInner({ hoist, flag, ctx, index, selections, selected, themeKey, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
+function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
   const [flipped, setFlipped] = useState(false);
+  // Drilling narrows this flag only, for as long as the page is open; the flag itself is unchanged.
+  const [drill, setDrill] = useState<DrillStep[]>([]);
+  const bindingKey = JSON.stringify(own.binding);
+  useEffect(() => setDrill([]), [bindingKey]);
+  const view = useMemo(() => drillView(own, drill, index), [own, drill, index]);
+  const flag = view.flag;
+  const drills = own.behavior.onClick === 'drill' && !view.detail && !!flag.binding?.dimensions[0] && nextLevel(index, flag.binding.dimensions[0]) !== null;
+  const onPick = (key: string, value: Cell, additive: boolean) => {
+    const d = flag.binding?.dimensions.find((x) => dimensionKey(x) === key);
+    if (drills && d && d === flag.binding?.dimensions[0]) setDrill((s) => [...s, { field: d.field, ...(d.grain ? { grain: d.grain } : {}), value }]);
+    else if (own.behavior.onClick !== 'drill') onSelectValue(key, value, additive);
+  };
   const load = useFlagResult(hoist, flag, selections, ctx);
   const result = load.state === 'ready' ? load.result : load.state === 'loading' ? load.last : undefined;
   const insights = useMemo(
@@ -177,8 +190,19 @@ function FlagCardInner({ hoist, flag, ctx, index, selections, selected, themeKey
           )
         ) : result ? (
           <div className="flex h-full flex-col gap-1">
+            {drill.length > 0 && (
+              <nav aria-label="Drill path" className="flex items-center gap-1 text-[11px] text-ink-3">
+                <button type="button" onClick={() => setDrill((s) => s.slice(0, -1))} className="flex items-center gap-0.5 rounded px-1 hover:bg-panel-2 hover:text-ink" title="Back up one level">
+                  <ArrowUpLeft size={12} /> Up
+                </button>
+                <button type="button" onClick={() => setDrill([])} className="rounded px-1 hover:bg-panel-2 hover:text-ink">
+                  All
+                </button>
+                <span className="truncate">› {drillLabel(drill)}{view.detail ? ' · rows' : ''}</span>
+              </nav>
+            )}
             <div className="min-h-0 flex-1">
-              <FlagView flag={flag} result={result} index={index} selections={selections} onSelect={onSelectValue} themeKey={themeKey} />
+              <FlagView flag={flag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} />
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}
           </div>

@@ -260,3 +260,30 @@ test('AI cleaning answers are checked: only real values, each in one group', asy
   assert.equal(r.rejected.length, 3);
   assert.throws(() => validateCleaning('nonsense', { key: 'k', label: 'K' }, list), /groups/);
 });
+
+test('drill: dates go year → quarter → month → day → rows; categories follow a drill path', async () => {
+  const { drillView, drillLabel, nextLevel } = await import('../src/core/drill.ts');
+  const c = yard();
+  c.fields.push({ key: 'jobs.opened', label: 'Opened', source: 'y', table: 'jobs', column: 'opened_on', type: 'date' });
+  c.hierarchies = [{ id: 'p', label: 'Class → ship', levels: ['classes.label', 'ships.name'] }];
+  const index = indexCatalog(c);
+  const { flag } = page({ metrics: ['hours'], dimensions: [{ field: 'jobs.opened', grain: 'year' }], limit: 5, sort: { by: 'hours', dir: 'desc' } });
+  flag.behavior.onClick = 'drill';
+  const q3 = drillView(flag, [{ field: 'jobs.opened', grain: 'year', value: '2026-01-01' }, { field: 'jobs.opened', grain: 'quarter', value: '2026-07-01' }], index);
+  assert.deepEqual(q3.flag.binding?.dimensions, [{ field: 'jobs.opened', grain: 'month' }]);
+  assert.deepEqual(q3.flag.binding?.filters.map((f) => f.values), [['2026-01-01', '2026-12-31'], ['2026-07-01', '2026-09-30']]);
+  assert.equal(q3.flag.binding?.limit, undefined, 'the top 5 does not carry down');
+  assert.equal(drillLabel([{ field: 'x', grain: 'year', value: '2026-01-01' }, { field: 'x', grain: 'quarter', value: '2026-07-01' }]), '2026 › 2026 Q3');
+  assert.equal(nextLevel(index, { field: 'jobs.opened', grain: 'day' }), 'detail');
+  assert.equal(nextLevel(index, { field: 'jobs.region' }), null, 'no path: no drill');
+  // Categories: class → ship → the rows behind one ship, as a capped table; planned through the joins.
+  const cls = page({ metrics: ['hours'], dimensions: [{ field: 'classes.label' }] }).flag;
+  const ship = drillView(cls, [{ field: 'classes.label', value: 'Destroyer' }], index);
+  assert.deepEqual(ship.flag.binding?.dimensions, [{ field: 'ships.name' }]);
+  const rows = drillView(cls, [{ field: 'classes.label', value: 'Destroyer' }, { field: 'ships.name', value: 'Arleigh' }], index);
+  assert.equal(rows.detail, true);
+  assert.equal(rows.flag.kind, 'table');
+  assert.equal(rows.flag.binding?.limit, 500);
+  const p = plan(c, rows.flag.binding!);
+  assert.deepEqual(totals(c, p), { Arleigh: 10 + 5 });
+});

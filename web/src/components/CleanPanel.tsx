@@ -291,6 +291,8 @@ export function RelationshipsTab({ catalog, ctx, onCatalog }: Omit<Props, 'provi
         </ul>
       </section>
 
+      <DrillPaths catalog={catalog} onCatalog={onCatalog} />
+
       <section className="space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">Find relationships</h3>
         <button type="button" onClick={discover} className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs font-semibold text-panel">
@@ -335,5 +337,55 @@ export function RelationshipsTab({ catalog, ctx, onCatalog }: Omit<Props, 'provi
         </div>
       </section>
     </div>
+  );
+}
+
+/** Drill paths for categories: a click on a ship class shows its hulls, then the rows behind one. */
+function DrillPaths({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Catalog) => void }) {
+  const [levels, setLevels] = useState<string[]>(['', '']);
+  const paths = catalog.hierarchies ?? [];
+  const label = (k: string) => catalog.fields.find((f) => f.key === k)?.label ?? k;
+  const choices = catalog.fields.filter((f) => f.type === 'string');
+  const picked = levels.filter(Boolean);
+  const add = () => {
+    const id = `path-${picked.join('-')}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+    onCatalog({ ...catalog, hierarchies: [...paths.filter((h) => h.id !== id), { id, label: picked.map(label).join(' → '), levels: picked }] });
+    setLevels(['', '']);
+  };
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">Drill paths ({paths.length})</h3>
+      <p className="text-xs text-ink-2">For flags set to drill: clicking a value shows the next level down, and the last level shows the rows. Dates drill year → quarter → month → day on their own.</p>
+      <ul className="space-y-1.5">
+        {paths.map((h) => (
+          <li key={h.id} className="flex items-center gap-2 rounded-lg border border-line px-3 py-1.5 text-sm">
+            <span className="min-w-0 flex-1">{h.levels.map(label).join(' → ')}</span>
+            <button type="button" onClick={() => onCatalog({ ...catalog, hierarchies: paths.filter((x) => x.id !== h.id) })} aria-label={`Remove drill path ${h.label}`} className="rounded p-1 text-ink-3 hover:text-bad">
+              <Trash2 size={14} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        {levels.map((v, i) => (
+          <select key={i} value={v} onChange={(e) => setLevels((l) => l.map((x, j) => (j === i ? e.target.value : x)))} aria-label={`Level ${i + 1}`} className="min-w-0 flex-1 rounded border border-line bg-panel px-1 py-0.5">
+            <option value="">{i === 0 ? 'Broadest…' : 'then…'}</option>
+            {choices.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label} ({f.table})
+              </option>
+            ))}
+          </select>
+        ))}
+        {levels.length < 5 && (
+          <button type="button" onClick={() => setLevels((l) => [...l, ''])} className="rounded border border-line px-1.5 py-0.5">
+            + level
+          </button>
+        )}
+        <button type="button" disabled={picked.length < 2 || new Set(picked).size !== picked.length} onClick={add} className="rounded-md bg-accent px-2 py-0.5 font-semibold text-panel disabled:opacity-40">
+          Add path
+        </button>
+      </div>
+    </section>
   );
 }
