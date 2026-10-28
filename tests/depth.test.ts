@@ -305,3 +305,10 @@ test('briefings: AI sentences are kept only when they cite a real flag and its o
   assert.equal(b.validateBriefing({ sentences: [{ text: 'All is 5% worse.', flag: 'cost' }] }, facts), null);
   assert.deepEqual(b.localBriefing(facts).sentences.map((s) => s.flagId), ['cost', 'kpi']);
 });
+
+test('quality: on a tie the merged label is the one written like a name', async () => {
+  const { findIssues } = await import('../src/core/quality.ts');
+  const index = indexCatalog(yard());
+  const f = findIssues(index, 'jobs.region', [{ value: 'northeast', count: 5 }, { value: 'N.E.', count: 5 }, { value: 'Northeast', count: 5 }]).find((x) => x.kind === 'variants');
+  assert.deepEqual(f?.step.map, { northeast: 'Northeast', 'N.E.': 'Northeast' });
+});

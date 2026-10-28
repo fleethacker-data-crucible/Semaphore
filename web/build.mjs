@@ -75,6 +75,24 @@ async function run() {
   await mkdir(path.join(outDir, 'assets'), { recursive: true });
   const files = await listFiles(srcDir);
 
+  // The CSV worker is its own bundle (same-origin, so the page's CSP allows it); the app learns its
+  // hashed name through a define.
+  const workerOut = await build({
+    entryPoints: [path.join(srcDir, 'worker.ts')],
+    bundle: true,
+    minify: !watch,
+    sourcemap: watch ? 'inline' : false,
+    format: 'iife',
+    target: ['es2020', 'edge120', 'chrome120'],
+    write: false,
+    outfile: 'worker.js',
+    legalComments: 'none',
+    logLevel: 'warning',
+  });
+  const workerJs = workerOut.outputFiles[0].text;
+  const workerName = `worker.${createHash('sha256').update(workerJs).digest('hex').slice(0, 10)}.js`;
+  await writeFile(path.join(outDir, 'assets', workerName), workerJs);
+
   const result = await build({
     entryPoints: [path.join(srcDir, 'main.tsx')],
     bundle: true,
@@ -83,7 +101,7 @@ async function run() {
     format: 'iife',
     target: ['es2020', 'edge120', 'chrome120'],
     jsx: 'automatic',
-    define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production') },
+    define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production'), __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`) },
     write: false,
     outfile: 'app.js',
     legalComments: 'none',

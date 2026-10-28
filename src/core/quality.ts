@@ -145,7 +145,9 @@ export function findIssues(index: CatalogIndex, fieldKey: string, values: readon
       const forms = new Map<string, number>();
       for (const v of g) forms.set(tidy(v.value), (forms.get(tidy(v.value)) ?? 0) + v.count);
       if (forms.size < 2) continue;
-      const canon = [...forms.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]))[0]![0];
+      // Most rows wins; on a tie, the form written like a name ("Northeast", not "northeast" or "NE").
+      const named = (s: string) => (/^[A-Z]/.test(s) && /[a-z]/.test(s) ? 1 : 0);
+      const canon = [...forms.entries()].sort((a, b) => b[1] - a[1] || named(b[0]) - named(a[0]) || b[0].length - a[0].length || a[0].localeCompare(b[0]))[0]![0];
       for (const v of g) {
         const t = tidy(v.value);
         if (t === canon) continue;

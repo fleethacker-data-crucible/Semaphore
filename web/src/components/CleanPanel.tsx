@@ -38,6 +38,7 @@ const tableId = (f: Field) => `${f.source}|${f.table}`;
 
 async function valuesOf(ctx: DataContext, field: Field): Promise<{ values: ValueCount[]; partial: boolean }> {
   if (ctx.localSources.has(field.source)) {
+    if (ctx.worker && ctx.workerTables?.has(field.table)) return { values: await ctx.worker.values(field.table, field.column), partial: false };
     const rows = ctx.local[field.table] ?? [];
     return { values: countValues(rows, field.column), partial: false };
   }
@@ -74,7 +75,7 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
       }
       const first = fieldsIn[0];
       if (first && ctx.localSources.has(first.source)) {
-        const d = findDuplicates(ctx.index, first.source, first.table, ctx.local[first.table] ?? []);
+        const d = ctx.worker && ctx.workerTables?.has(first.table) ? await ctx.worker.duplicates(ctx.index.catalog, first.source, first.table) : findDuplicates(ctx.index, first.source, first.table, ctx.local[first.table] ?? []);
         if (d) out.push(d);
       }
       setValues(seen);

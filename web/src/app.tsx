@@ -21,7 +21,7 @@ import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, ql
 import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
 import { readQlikExpressionWithAi } from '../../src/core/intelligence/tasks.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
-import { proposeCatalog } from '../../src/core/profile.ts';
+import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
@@ -31,6 +31,7 @@ import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
+import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
@@ -106,6 +107,9 @@ export function App() {
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
   const [files, setFiles] = useState<TableRows>({});
+  // CSV files are kept in the CSV worker when there is one (lib/worker.ts); `files` is the fallback.
+  const worker = useMemo(() => csvWorker(), []);
+  const [workerTables, setWorkerTables] = useState<string[]>([]);
   const [dataVersion, setDataVersion] = useState(1);
   const [selections, setSelections] = useState<Selections>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -167,18 +171,23 @@ export function App() {
 
   // CSV files kept in this browser come back on reload.
   useEffect(() => {
-    allFiles().then((stored) => {
+    allFiles().then(async (stored) => {
       const tables: TableRows = {};
+      const held: string[] = [];
       for (const f of stored) {
         try {
-          const t = readCsv(f.name, f.text);
-          tables[t.name] = t.rows;
+          if (worker) held.push((await worker.load(f.name, f.text)).name);
+          else {
+            const t = readCsv(f.name, f.text);
+            tables[t.name] = t.rows;
+          }
         } catch {
           /* a file that no longer parses is skipped; it can be removed from the data panel */
         }
       }
-      if (Object.keys(tables).length) {
+      if (Object.keys(tables).length || held.length) {
         setFiles(tables);
+        setWorkerTables(held);
         setDataVersion((v) => v + 1);
       }
     });
@@ -194,8 +203,8 @@ export function App() {
     }
     Object.assign(local, files);
     localSources.add(FILES_SOURCE);
-    return { index, local, localSources, server, today, version: dataVersion };
-  }, [index, sample, files, server, today, dataVersion, catalog.sources]);
+    return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
+  }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
   // Save: always to this browser; to the server's folder too when there is one.
   const saveTimer = useRef<number | null>(null);
@@ -388,11 +397,20 @@ export function App() {
       let cat = catalog;
       const notes: string[] = [];
       const tables: TableRows = { ...files };
+      const held = new Set(workerTables);
       for (const file of Array.from(list)) {
         try {
           const text = await file.text();
-          const t = readCsv(file.name, text);
-          tables[t.name] = t.rows;
+          // Parsed in the CSV worker when there is one: a large file never freezes the page.
+          let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
+          if (worker) {
+            t = await worker.load(file.name, text);
+            held.add(t.name);
+          } else {
+            const parsed = readCsv(file.name, text);
+            tables[parsed.name] = parsed.rows;
+            t = { ...parsed, rows: parsed.rows.length };
+          }
           await putFile({ name: file.name, text, added: new Date().toISOString() });
           // Replace the measures and fields of a file loaded before under the same name.
           const without: Catalog = {
@@ -402,12 +420,13 @@ export function App() {
           };
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
           cat = pruneCatalog(proposal.catalog);
-          notes.push(`${file.name}: ${t.rows.length.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
+          notes.push(`${file.name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
         } catch (e) {
-          notes.push(`${file.name}: ${e instanceof CsvError ? e.message : 'could not be read.'}`);
+          notes.push(`${file.name}: ${e instanceof CsvError || e instanceof WorkerError ? e.message : 'could not be read.'}`);
         }
       }
       setFiles(tables);
+      setWorkerTables([...held]);
       setDataVersion((v) => v + 1);
       clearResultCache();
       setCatalog(cat);
@@ -415,7 +434,7 @@ export function App() {
       setBusy(null);
       notify('Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.');
     },
-    [catalog, files, setCatalog, notify],
+    [catalog, files, workerTables, worker, setCatalog, notify],
   );
 
   const profile = useCallback(
@@ -531,6 +550,8 @@ export function App() {
         for (const name of Object.keys(files)) void deleteFile(name);
         allFiles().then((all) => all.forEach((f) => deleteFile(f.name)));
         setFiles({});
+        void worker?.clear();
+        setWorkerTables([]);
         setDataVersion((v) => v + 1);
       }
       const fieldKeys = new Set(catalog.fields.filter((f) => f.source === id).map((f) => f.key));
