@@ -265,10 +265,12 @@ export function parseLoadScript(text: string): QlikScript {
         matched = true;
         if (what === 'mapping') mapping = true;
         else if (what !== 'skip') {
+          type How = NonNullable<QlikTable['into']>['how'];
           const side = /^(left|right|inner|outer)/i.exec(m[0])?.[1]?.toLowerCase();
-          const how = what!.how === 'join' && side ? (`${side} join` as const) : what!.how;
-          into = { how, ...(m[2] ?? m[1] ? { table: unquote((m[2] ?? (/^(left|right|inner|outer)$/i.test(m[1] ?? '') ? '' : m[1]) ?? '').trim()) || undefined } : {}) };
-          if (!into.table) delete into.table;
+          const how = (what!.how === 'join' && side ? `${side} join` : what!.how) as How;
+          // The target table is the last group; group 1 is the join side when there is one.
+          const target = unquote((m[2] ?? (/^(left|right|inner|outer)$/i.test(m[1] ?? '') ? '' : m[1]) ?? '').trim());
+          into = target ? { how, table: target } : { how };
         }
         s = s.slice(m[0].length).trim();
         break;
