@@ -296,6 +296,22 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
   </div>
 </section>
 
+<section id="port">
+  <span class="eyebrow">Porting from Qlik · reader built, import screen next</span>
+  <h2>Bring your Qlik app with you</h2>
+  <p class="muted">Your Qlik app already knows what the data means. Paste its load script and chart expressions, and Semaphore reads them, with no model needed for the common cases. Everything comes back as a proposal you review before it reaches the catalog.</p>
+  <div class="map-head"><span>In your Qlik app</span><span></span><span>In Semaphore</span><span>How</span></div>
+  <div class="map">
+    <div class="fl-card pair"><span class="q">LIB CONNECT TO 'Warehouse'</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Source</span><span class="n">Map each Qlik connection to a Semaphore source once.</span></div>
+    <div class="fl-card pair"><span class="q">SQL SELECT … FROM ops.work_orders</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Table, profiled</span><span class="n">Semaphore profiles the real table for types and sizes, including QVD and file loads it can reach.</span></div>
+    <div class="fl-card pair"><span class="q">labor_cost AS [Labor Cost]</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Field labels</span><span class="n">Your renames become the labels and synonyms, so briefs use the words your team already uses.</span></div>
+    <div class="fl-card pair"><span class="q">HullNo in two tables</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Proposed join</span><span class="n">Qlik's associations are the joins it was making; Semaphore proposes them with the matching keys.</span></div>
+    <div class="fl-card pair"><span class="q">MAPPING LOAD + ApplyMap</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Cleaning steps</span><span class="n">"N.E." and "NE" become Northeast, as readable steps you accept.</span></div>
+    <div class="fl-card pair"><span class="q">Sum({&lt;Year={2025}&gt;} [Labor Cost])</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Measure + filter</span><span class="n">Sum, Avg, Min, Max, Count and Count(DISTINCT), with literal set analysis (in, excluded, ranges).</span></div>
+    <div class="fl-card pair"><span class="q">Sum(Cost)/Sum(Hours), Aggr(…), $(vYear)</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">AI, then you</span><span class="n">The reader says exactly why it stopped; the AI proposes the rest, labelled as a draft for review.</span></div>
+  </div>
+</section>
+
 <section id="thin">
   <span class="eyebrow">Made for thin clients</span>
   <h2>The database does the work, the browser stays light</h2>
@@ -397,7 +413,7 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
     <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-sparkles"/></svg><h3>Understands how people ask</h3></div><p>"Where are we bleeding hours on the older hulls?" becomes a flag, not a keyword hunt.</p></div>
     <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Builds the catalog</h3></div><p>Names measures, writes descriptions and synonyms for a whole database, ready for you to check.</p></div>
     <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-search"/></svg><h3>Explains what changed</h3></div><p>Turns the numbers into a plain-language brief for leadership, linked to the flags behind it.</p></div>
-    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-arrow"/></svg><h3>Bridges from Qlik</h3></div><p>Planned: paste a load script or a set-analysis expression and get catalog entries and draft flags back.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-arrow"/></svg><h3>Bridges from Qlik</h3></div><p>Reads what the script reader can't: ratios, nested aggregates and calculated fields. See "Bring your Qlik app with you" below.</p></div>
   </div>
   <div class="fl-card" style="display:grid;gap:8px">
     <h3>Local or cloud, your call</h3>
@@ -430,7 +446,7 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
     <li>What should the team style card capture about how you build?</li>
     <li>Which databases and file types should come first?</li>
   </ol>
-  <div class="status-line"><svg class="icon"><use href="#i-alert"/></svg><span>Semaphore is a v0.3 preview and a prototype, not accredited for operational data. Try it with synthetic or sample data only. Ready-made Qlik migration (reading a load script into the catalog) is on the roadmap, not built yet.</span></div>
+  <div class="status-line"><svg class="icon"><use href="#i-alert"/></svg><span>Semaphore is a v0.3 preview and a prototype, not accredited for operational data. Try it with synthetic or sample data only. The Qlik script and expression reader is built and tested; the import screen that uses it is next.</span></div>
 </section>
 
 </main>
