@@ -5,6 +5,7 @@ Semaphore works with no model at all. **Local rules** is the default provider an
 | Provider | What it is | Leaves the workstation? |
 | --- | --- | --- |
 | Local rules (default) | Deterministic reading of the brief against catalog labels and synonyms | No |
+| Fairlead (the UI's AI switch) | The Fleet model router on `127.0.0.1:8776`, reached through Semaphore's own server. Route `local` with `X-Fairlead-Privacy: local` by default. | No, by default (Fairlead's `local` route) |
 | OpenAI-compatible gateway | Any `/v1/chat/completions` API: enterprise gateways, Azure OpenAI, Ollama, LM Studio. Semaphore writes the prompts. | Yes, to that gateway |
 | Contract endpoint | A platform-side service implementing the contract below | Yes, to that endpoint |
 | Databricks serving endpoint | Planned, reusing Halyard's client | Yes |
@@ -27,6 +28,26 @@ SQL is generated locally from the validated draft, never by the provider.
 3. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
 4. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
 5. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the Lazarette vault.
+
+## Fairlead
+
+The browser UI drafts through [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), the Fleet's model router, whenever a Fairlead client key is stored. The page never holds the key:
+
+```
+page  --(session token)-->  Semaphore server /api/ai/v1  --(Fairlead key)-->  Fairlead 127.0.0.1:8776/v1  -->  local model
+```
+
+- **Key.** Create a client key in Fairlead > Clients and run `Set-SemaphoreAiKey.bat` (`-Check` tests it, `-Clear` removes it). It is stored DPAPI-protected for the current Windows account in `%LOCALAPPDATA%\Semaphore\fairlead-key.dat`. `SEMAPHORE_AI_KEY` (environment or `config\semaphore.env`) overrides it for CI and test machines. The key is never returned by `/api/ai`, logged, or put in an error message.
+- **Route.** Requests ask for model `local` and send `X-Fairlead-Privacy: local`, so Fairlead keeps them on this computer. `SEMAPHORE_AI_MODEL` picks another Fairlead route (`auto`, `smart`, `fast`); `SEMAPHORE_AI_PRIVACY=off` drops the privacy header and lets Fairlead route by its own rules. The server refuses a request for any other model, so a page cannot choose its own route.
+- **Address.** `SEMAPHORE_AI_URL` (default `http://127.0.0.1:8776/v1`) must be on this machine: Semaphore never calls a remote AI service itself; Fairlead decides.
+- **Timing.** A local model can take a while: the server waits up to 180 s and runs the call on its worker pool, so heartbeats and other requests carry on. The page shows "Drafting with Fairlead (local, on this computer)…" meanwhile.
+- **Failures.** Fairlead not running, a refused key, a timeout or an answer that is not a valid draft all fall back to local rules, and the page says why. Each draft Fairlead made says so in the flag's notes.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/ai` | `{ configured, url, model, privacyLocal, keySource, problem, setup }`, never the key |
+| `POST /api/ai/check` | Asks Fairlead for its models with the key: `{ ok, detail, models }` |
+| `POST /api/ai/v1/chat/completions` | The drafting request, forwarded to Fairlead; its JSON answer returned with `X-Fairlead-Target` |
 
 ## What local rules understand
 

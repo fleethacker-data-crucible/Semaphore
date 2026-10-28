@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **AI drafting through Fairlead.** With a Fairlead client key stored (`Set-SemaphoreAiKey.bat`, DPAPI-protected for the Windows account), flag and page drafts go through Fairlead's `local` route with `X-Fairlead-Privacy: local`, by way of Semaphore's own server: the page never holds the key. An **AI** button in the header shows the state and switches it. Failures fall back to local rules and say why; Fairlead's drafts say so in their notes.
+- Server: `GET /api/ai`, `POST /api/ai/check`, `POST /api/ai/v1/chat/completions` (on the worker pool, up to 180 s). `SEMAPHORE_AI_URL` (loopback only), `SEMAPHORE_AI_MODEL`, `SEMAPHORE_AI_PRIVACY`, `SEMAPHORE_AI_KEY`.
+- CI on the self-hosted Windows runners: typecheck, Node tests and build, PowerShell 5.1 parse check and the Pester suite.
+- Fix: the document-store test expected PowerShell 7's `ConvertFrom-Json` array behaviour and failed on Windows PowerShell 5.1.
+
 ## 0.3.0 (2026-10-26)
 
 Analysts build, leadership asks. See [docs/PLAYBOOK.md](docs/PLAYBOOK.md).

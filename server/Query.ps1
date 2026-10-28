@@ -706,6 +706,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.HttpPath
     . $Ctx.RoutesPath
     . $Ctx.QueryPath
+    . $Ctx.IntelligencePath
 }
 $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
@@ -716,6 +717,7 @@ try {
     $Client.SendTimeout = 30000
     $script:Sem.Stream = $Client.GetStream()
     if ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
+    elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
 } catch {
     Write-SemLog 'ERROR' ('{0}: {1}' -f $Req.Path, $_.Exception.Message)
@@ -737,6 +739,7 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
         Port = 0
     }

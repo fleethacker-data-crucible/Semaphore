@@ -119,7 +119,8 @@ Describe 'Document store' {
 
     It 'returns whole documents for ?full=1, skipping broken ones' {
         $text = Get-SemDocFullList -Dir $script:Dir
-        $docs = @($text | ConvertFrom-Json)
+        $parsed = $text | ConvertFrom-Json   # Windows PowerShell 5.1 emits a JSON array as one object
+        $docs = @($parsed)
         $docs.Count | Should -Be 2
         $docs[0].title | Should -Be 'Two'
         @($docs | Where-Object { $_.label -eq 'Catalog B' }).Count | Should -Be 1

@@ -49,6 +49,8 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 
 > **Intelligence router:** remote AI providers and, once Semaphore connects to them, its data sources will go through the Fleet intelligence router, [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), instead of tool-specific endpoints and connection details. See [TechStack](TechStack), "Intelligence router".
 
+**AI drafting (optional).** Local rules draft every flag with no model. To draft with a model instead, create a client key in **Fairlead > Clients**, then double-click **`Set-SemaphoreAiKey.bat`** and paste it. The key is stored encrypted for your Windows account and never reaches the page. Drafts then go through Fairlead's `local` route, so prompts stay on this computer; the **AI** button in the header shows the state and switches it off. If Fairlead is down or refuses the key, local rules draft instead and say why. See [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md).
+
 Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off.
 
 ## What it does

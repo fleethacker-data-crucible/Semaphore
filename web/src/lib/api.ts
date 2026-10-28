@@ -72,6 +72,11 @@ function token(): string | null {
   }
 }
 
+/** The session token, for clients that build their own requests (lib/ai.ts). */
+export function sessionToken(): string | null {
+  return token();
+}
+
 function tabId(): string {
   try {
     let id = sessionStorage.getItem(TAB_KEY);

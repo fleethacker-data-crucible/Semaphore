@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FilePlus2, FolderOpen, MessagesSquare, Moon, Power, Redo2, Sparkles, Sun, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog } from '../../src/core/catalog.ts';
@@ -13,7 +13,7 @@ import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { emptyBehavior, type Flag, type FlagKind, GRID_COLS, type Hoist, type Layout, parseHoist } from '../../src/core/hoist.ts';
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
-import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist, LocalRulesProvider } from '../../src/core/intelligence/index.ts';
+import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog } from '../../src/core/profile.ts';
@@ -21,6 +21,7 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
+import { type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
@@ -86,6 +87,8 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [serverLost, setServerLost] = useState(false);
+  const [ai, setAi] = useState<AiStatus | null>(null);
+  const [useAi, setUseAi] = useState(aiWanted);
   const [files, setFiles] = useState<TableRows>({});
   const [dataVersion, setDataVersion] = useState(1);
   const [selections, setSelections] = useState<Selections>({});
@@ -119,7 +122,10 @@ export function App() {
       setServer(info);
       setServerChecked(true);
       if (info?.view === 'ask' || info?.view === 'builder') setViewState((v) => v ?? (info.view as 'ask' | 'builder'));
-      if (info) stop = startHeartbeat(() => setServerLost(true));
+      if (info) {
+        stop = startHeartbeat(() => setServerLost(true));
+        loadAiStatus().then(setAi);
+      }
     });
     return () => stop?.();
   }, []);
@@ -244,10 +250,12 @@ export function App() {
 
   const draftSelected = useCallback(async () => {
     if (!selected) return;
-    setBusy('Drafting…');
+    const provider = draftingProvider(index, ai, useAi);
+    setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
     try {
-      const provider = new LocalRulesProvider(index);
-      const { draft } = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty' });
+      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty' });
+      const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [`Drafted by ${provider.label}.`, ...outcome.draft.notes] };
+      if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`);
       const next = applyFlagDraft(selected, draft);
       // A fresh draft takes the drafted title; one the analyst typed is kept.
       if (!selected.binding || selected.title === '' || selected.title === titleOf(selected)) next.title = draft.title || selected.title;
@@ -259,29 +267,55 @@ export function App() {
         const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols).map((p) => [p.id, p.layout]));
         return { ...h, flags: flags.map((f) => ({ ...f, layout: placed.get(f.id) ?? f.layout })) };
       });
-      if (!draft.binding) notify(draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.');
+      if (!draft.binding && !outcome.fallbackReason) notify(draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.');
     } finally {
       setBusy(null);
     }
-  }, [selected, index, hoist, autoKinds, change, notify]);
+  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi]);
 
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
-      setBusy('Drafting the page…');
+      const provider = draftingProvider(index, ai, useAi);
+      setBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`);
       try {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
-        const draft = mode === 'starter' ? starterHoistLocally(index) : (await draftHoist(new LocalRulesProvider(index), hoist.brief, index)).draft;
+        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index);
+        const draft = outcome ? outcome.draft : starterHoistLocally(index);
         const next = applyHoistDraft({ ...base, title: base.title }, draft, () => newId());
         change(next);
         setSelections({});
         setSelectedId(null);
-        if (draft.notes.length) notify(draft.notes[0]!);
+        if (outcome?.fallbackReason) notify(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`);
+        else if (draft.notes.length) notify(draft.notes[0]!);
       } finally {
         setBusy(null);
       }
     },
-    [hoist, index, change, notify],
+    [hoist, index, change, notify, ai, useAi],
   );
+
+  // The header's AI switch. Turning Fairlead on checks it, so a missing Fairlead or a refused key
+  // shows up now rather than on the next draft.
+  const toggleAi = useCallback(() => {
+    if (!ai?.configured) {
+      loadAiStatus().then((s) => {
+        if (s) setAi(s);
+        notify((s ?? ai)?.configured ? 'Fairlead key found: AI drafting is on.' : ((s ?? ai)?.problem ?? (s ?? ai)?.setup ?? 'AI drafting needs the Semaphore server.'));
+      });
+      return;
+    }
+    const on = !useAi;
+    setUseAi(on);
+    setAiWanted(on);
+    if (!on) {
+      notify('AI is off: local rules draft every flag.');
+      return;
+    }
+    checkAi().then(
+      (r) => notify(r.ok ? r.detail : `${r.detail} Drafts fall back to local rules until this is fixed.`),
+      (e: Error) => notify(`Could not check Fairlead: ${e.message}`),
+    );
+  }, [ai, useAi, notify]);
 
   const onLearn = useCallback(
     (word: string, s: Suggestion) => {
@@ -666,6 +700,17 @@ export function App() {
           <button type="button" onClick={() => setDataOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent">
             <Database size={14} className="text-brass" /> Data
           </button>
+          {server && ai && (
+            <button
+              type="button"
+              onClick={toggleAi}
+              aria-pressed={ai.configured && useAi}
+              className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:border-accent ${ai.configured && useAi ? 'border-accent text-accent' : 'border-line text-ink-2'}`}
+              title={ai.configured ? (useAi ? 'Drafts go through Fairlead. Click to draft with local rules only.' : 'Drafting with local rules only. Click to use Fairlead.') : (ai.problem ?? ai.setup)}
+            >
+              <Bot size={14} /> {ai.configured ? (useAi ? 'AI: Fairlead' : 'AI: off') : 'AI: local rules'}
+            </button>
+          )}
           <IconButton label={theme === 'dark' ? 'Light theme' : 'Dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </IconButton>

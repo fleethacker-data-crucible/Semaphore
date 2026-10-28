@@ -18,6 +18,9 @@
 #          logged and kept as <home>\snapshots\.last-refresh.json; GET returns it (404 before the first)
 #   POST   /api/query    { source, sql, params, rowCap, timeoutSec }   (Query.ps1, worker pool)
 #   POST   /api/profile  { source, table? }                           (Query.ps1, worker pool)
+#   GET    /api/ai                        AI status, never the key            (Intelligence.ps1)
+#   POST   /api/ai/check                  is Fairlead reachable with the key  (Intelligence.ps1, worker pool)
+#   POST   /api/ai/v1/chat/completions    drafting request passed to Fairlead (Intelligence.ps1, worker pool)
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
@@ -252,6 +255,16 @@ function Invoke-SemRoute {
     if ($p -eq '/api/query' -or $p -eq '/api/profile') {
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
+        Start-SemWorkerRequest -Req $Req
+        return
+    }
+    if ($p -eq '/api/ai') {
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Send-SemJson 200 (Get-SemAiStatus); return
+    }
+    if ($p -eq '/api/ai/check' -or $p -eq '/api/ai/v1/chat/completions') {
+        # Intelligence.ps1, on the worker pool: a model can take a minute and must not block heartbeats.
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Start-SemWorkerRequest -Req $Req
         return
     }
