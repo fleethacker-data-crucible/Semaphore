@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { type AwayNotice, isAwayNotice } from '../../../src/core/away.ts';
+import { type Edition, isEdition, isReportSchedule, isUsageLog, type ReportSchedule, type UsageLog } from '../../../src/core/reports.ts';
 import { isEntry, isQuestion, type PlaybookEntry, type QuestionItem } from '../../../src/core/playbook.ts';
 import { emptyOverrides, isStyleOverrides, type StyleOverrides } from '../../../src/core/style.ts';
 import { isSnapshot, type Snapshot } from '../../../src/core/snapshot.ts';
@@ -62,6 +63,12 @@ export interface PlaybookState {
   away: AwayNotice[];
   saveAway: (n: AwayNotice) => Promise<void>;
   removeAway: (id: string) => Promise<void>;
+  /** Recurring reports (src/core/reports.ts): usage logs, accepted schedules and editions. */
+  usage: UsageLog[];
+  schedules: ReportSchedule[];
+  editions: Edition[];
+  saveReportDoc: (doc: UsageLog | ReportSchedule | Edition) => Promise<void>;
+  removeReportDoc: (id: string) => Promise<void>;
   reload: () => void;
 }
 
@@ -71,6 +78,9 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [styleOverrides, setStyleOverrides] = useState<StyleOverrides>(emptyOverrides);
   const [away, setAway] = useState<AwayNotice[]>([]);
+  const [usage, setUsage] = useState<UsageLog[]>([]);
+  const [schedules, setSchedules] = useState<ReportSchedule[]>([]);
+  const [editions, setEditions] = useState<Edition[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [tick, setTick] = useState(0);
 
@@ -82,6 +92,9 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
       if (!live) return;
       setStyleOverrides(t.find((x): x is StyleOverrides => isStyleOverrides(x)) ?? emptyOverrides());
       setAway(t.filter((x): x is AwayNotice => isAwayNotice(x)));
+      setUsage(t.filter((x): x is UsageLog => isUsageLog(x)));
+      setSchedules(t.filter((x): x is ReportSchedule => isReportSchedule(x)));
+      setEditions(t.filter((x): x is Edition => isEdition(x)));
       setEntries(e.filter((x): x is PlaybookEntry => isEntry(x)));
       setQuestions(q.filter((x): x is QuestionItem => isQuestion(x)));
       setSnapshots(s.filter((x): x is Snapshot => isSnapshot(x)));
@@ -158,9 +171,32 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
     [server],
   );
 
+  const saveReportDoc = useCallback(
+    async (doc: UsageLog | ReportSchedule | Edition) => {
+      await put('team', doc);
+      const swap = <T extends { id: string }>(all: T[], d: T) => [...all.filter((x) => x.id !== d.id), d];
+      if (doc.kind === 'usage') setUsage((all) => swap(all, doc));
+      else if (doc.kind === 'report') setSchedules((all) => swap(all, doc));
+      else setEditions((all) => swap(all, doc));
+    },
+    [put],
+  );
+
+  const removeReportDoc = useCallback(
+    async (id: string) => {
+      if (server) await api(`/api/team/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => undefined);
+      else localRemove('team', id);
+      setSchedules((all) => all.filter((x) => x.id !== id));
+      setEditions((all) => all.filter((x) => x.id !== id));
+      setUsage((all) => all.filter((x) => x.id !== id));
+    },
+    [server],
+  );
+
   return {
     entries, questions, snapshots, loaded, where: server ? 'shared folder' : 'this browser',
     saveEntries, saveQuestion, saveSnapshot, styleOverrides, saveStyleOverrides, away, saveAway, removeAway,
+    usage, schedules, editions, saveReportDoc, removeReportDoc,
     reload: () => setTick((t) => t + 1),
   };
 }

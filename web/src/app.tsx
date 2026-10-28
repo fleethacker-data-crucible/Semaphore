@@ -31,6 +31,9 @@ import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
+import { dueSchedules, produceDueEditions } from './lib/reports.ts';
+import { ReportChip } from './components/Reports.tsx';
+import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
 import { PlaybookPanel } from './components/PlaybookPanel.tsx';
@@ -644,6 +647,35 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.entries, ctx]);
 
+  // Recurring reports: note the days this analyst opens the page (once a day), offer a schedule
+  // when there is a rhythm, and produce any edition that is due while its owner is away.
+  const [offerTick, setOfferTick] = useState(0);
+  useEffect(() => {
+    if (!playbook.loaded || currentView !== 'builder' || !hoist.flags.length || hoist.experiment) return;
+    const log = noteOpened(playbook.usage.find((u) => u.hoistId === hoist.id), hoist.id, hoist.title, user, today);
+    if (log) void playbook.saveReportDoc(log).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, hoist.id, currentView]);
+  const hoistSchedule = playbook.schedules.find((s) => s.hoistId === hoist.id);
+  const reportOffer = useMemo(() => {
+    if (hoistSchedule || readLocal<string>(`semaphore.reportOffer.${hoist.id}`) === 'no') return null;
+    const log = playbook.usage.find((u) => u.hoistId === hoist.id);
+    return log ? detectCadence(log.opened, today) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.usage, hoistSchedule, hoist.id, today, offerTick]);
+  const producing = useRef(false);
+  useEffect(() => {
+    if (!playbook.loaded || producing.current || currentView === 'refresh') return;
+    if (!dueSchedules(playbook, new Date()).length) return;
+    producing.current = true;
+    produceDueEditions(playbook, ctx, index, user, hoist)
+      .catch(() => [])
+      .finally(() => {
+        producing.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, playbook.schedules, playbook.away, ctx]);
+
   // The refresher (Launch-Semaphore.bat --refresh, in a headless browser): refresh every snapshot
   // this computer can reach, report to the server, and end the session.
   const refreshRun = useRef(false);
@@ -673,6 +705,8 @@ export function App() {
         }
       }
       say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
+      // Regular reports due while their analyst is away.
+      for (const line of await produceDueEditions(playbook, ctx, index, user, null).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
         await api('/api/refresh-report', { json: { refreshed, skipped, failed } }).catch(() => undefined);
         await endSession().catch(() => undefined);
@@ -807,6 +841,19 @@ export function App() {
             While you were out
           </button>
         )}
+        {!hoist.experiment && hoistSchedule && (
+          <ReportChip
+            title={hoist.title}
+            cadence={reportOffer}
+            schedule={hoistSchedule}
+            onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
+            onDismiss={() => {
+              writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
+              setOfferTick((t) => t + 1);
+            }}
+            onStop={() => hoistSchedule && void playbook.removeReportDoc(hoistSchedule.id)}
+          />
+        )}
         <div className="ml-4 flex items-center gap-0.5">
           <IconButton label="Undo (Ctrl+Z)" onClick={history.undo} disabled={!history.canUndo}>
             <Undo2 size={16} />
@@ -889,6 +936,19 @@ export function App() {
           )}
         </div>
       </header>
+      {!hoist.experiment && !hoistSchedule && reportOffer && (
+          <ReportChip
+            title={hoist.title}
+            cadence={reportOffer}
+            schedule={hoistSchedule}
+            onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
+            onDismiss={() => {
+              writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
+              setOfferTick((t) => t + 1);
+            }}
+            onStop={() => undefined}
+          />
+      )}
 
       <section aria-label="Page brief" className="border-b border-line bg-panel-2 px-4 py-3">
         <div className="mx-auto flex max-w-[1400px] items-start gap-3">

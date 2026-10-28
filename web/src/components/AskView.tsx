@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, BadgeCheck, CalendarOff, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, Wand2 } from 'lucide-react';
+import { ReportsShelf } from './Reports.tsx';
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { describeFlag, formatNumber } from '../../../src/core/describe.ts';
@@ -209,6 +210,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               </span>
             </p>
           ))}
+          <ReportsShelf editions={playbook.editions} index={index} themeKey={themeKey} />
           <form
             onSubmit={(e) => {
               e.preventDefault();
