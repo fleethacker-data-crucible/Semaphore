@@ -306,8 +306,12 @@ export function App() {
     setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
     try {
       const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle });
-      const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [`Drafted by ${provider.label}.`, ...outcome.draft.notes] };
+      // When Fairlead fell back to a local model, the draft names the model that really answered.
+      const by = outcome.draft.answeredBy;
+      const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
+      const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [credit, ...outcome.draft.notes] };
       if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`);
+      else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
       // A fresh draft takes the drafted title; one the analyst typed is kept.
       if (!selected.binding || selected.title === '' || selected.title === titleOf(selected)) next.title = draft.title || selected.title;

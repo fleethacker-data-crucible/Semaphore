@@ -94,7 +94,15 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
         const step = r.step;
         setFindings((all) => [
           ...(all ?? []),
-          { id: step.id, field: f.key, kind: 'variants', problem: `${provider.label} suggests these mean the same thing.`, examples: [], rows: 0, step },
+          {
+            id: step.id,
+            field: f.key,
+            kind: 'variants',
+            problem: `${r.answeredBy ? `${r.answeredBy} (Fairlead's local fallback; the model asked for did not answer)` : provider.label} suggests these mean the same thing.`,
+            examples: [],
+            rows: 0,
+            step,
+          },
         ]);
       }
       setAiNote((n) => ({ ...n, [f.key]: r.step ? `Suggestion added below.${r.rejected.length ? ` ${r.rejected.length} part${r.rejected.length === 1 ? ' was' : 's were'} left out: ${r.rejected[0]}` : ''}` : 'Nothing found to merge.' }));

@@ -6,7 +6,7 @@ import type { Aggregate, Catalog, Metric } from '../catalog.ts';
 import { type Briefing, BRIEFING_PROMPT, type BriefingFact, localBriefing, validateBriefing } from '../briefing.ts';
 import type { CleaningStep } from '../cleaning.ts';
 import type { ValueCount } from '../quality.ts';
-import { IntelligenceError, type IntelligenceProvider, summarizeCatalog } from './contract.ts';
+import { answeredBy, IntelligenceError, type IntelligenceProvider, summarizeCatalog } from './contract.ts';
 
 export const CLEANING_VALUES_MAX = 300;
 
@@ -16,6 +16,8 @@ export interface AiCleaningResult {
   step: CleaningStep | null;
   /** Groups the answer proposed that were dropped, and why. */
   rejected: string[];
+  /** The model that actually answered, when Fairlead fell back from the one asked for. */
+  answeredBy?: string;
 }
 
 /**
@@ -32,7 +34,8 @@ export async function proposeCleaningWithAi(provider: IntelligenceProvider, fiel
     system: CLEANING_PROMPT,
     payload: { column: field.label, values: list.map((v) => ({ value: v.value, rows: v.count })) },
   });
-  return validateCleaning(raw, field, list);
+  const by = answeredBy(raw);
+  return { ...validateCleaning(raw, field, list), ...(by ? { answeredBy: by } : {}) };
 }
 
 export function validateCleaning(raw: unknown, field: { key: string; label: string }, list: ReadonlyArray<{ value: string; count: number }>): AiCleaningResult {

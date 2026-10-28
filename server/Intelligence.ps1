@@ -166,7 +166,7 @@ function Invoke-SemAiForward {
                 $ms.Write($buf, 0, $n)
             }
         } finally { $stream.Dispose() }
-        return @{ Status = [int]$resp.StatusCode; Bytes = $ms.ToArray(); Target = [string]$resp.Headers['X-Fairlead-Target'] }
+        return @{ Status = [int]$resp.StatusCode; Bytes = $ms.ToArray(); Target = [string]$resp.Headers['X-Fairlead-Target']; Fallback = [string]$resp.Headers['X-Fairlead-Fallback'] }
     } catch [Net.WebException] {
         $s = $_.Exception.Status
         if ($s -eq [Net.WebExceptionStatus]::Timeout) { return @{ Status = 0; Code = 'ai-timeout'; Error = "Fairlead did not answer within $TimeoutSec s." } }
@@ -301,7 +301,11 @@ function Invoke-SemAiRequest {
     }
     $target = ''
     if ($r.Target -and $r.Target -cmatch '\A[A-Za-z0-9._:/@-]{1,200}\z') { $target = $r.Target }
-    Write-SemLog 'INFO' ('AI draft answered in {0} s by {1}' -f $secs, $(if ($target) { $target } else { 'Fairlead' }))
-    $extra = @(); if ($target) { $extra = @('X-Fairlead-Target: ' + $target) }
+    # Fairlead says when a local fallback answered instead of the model asked for ("local" or "discovered").
+    $fallback = ''
+    if ($r.Fallback -and $r.Fallback -cmatch '\A[a-z-]{1,20}\z') { $fallback = $r.Fallback }
+    Write-SemLog 'INFO' ('AI draft answered in {0} s by {1}{2}' -f $secs, $(if ($target) { $target } else { 'Fairlead' }), $(if ($fallback) { ' (fallback: ' + $fallback + ', not ' + $s.Model + ')' } else { '' }))
+    $extra = @(); if ($target) { $extra += 'X-Fairlead-Target: ' + $target }
+    if ($fallback) { $extra += 'X-Fairlead-Fallback: ' + $fallback }
     Send-SemBytes -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes $r.Bytes -ExtraHeaders $extra
 }

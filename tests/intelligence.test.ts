@@ -124,7 +124,7 @@ test('providers receive keys, labels and types only: no tables, columns, sources
 // ---- remote providers -----------------------------------------------------------------------
 
 type Call = { url: string; init: Parameters<FetchLike>[1] };
-function fakeFetch(handler: (url: string, body: any) => { status?: number; body: unknown } | 'hang'): { fetch: FetchLike; calls: Call[] } {
+function fakeFetch(handler: (url: string, body: any) => { status?: number; body: unknown; headers?: Record<string, string> } | 'hang'): { fetch: FetchLike; calls: Call[] } {
   const calls: Call[] = [];
   const fetch: FetchLike = (url, init) => {
     calls.push({ url, init });
@@ -132,7 +132,12 @@ function fakeFetch(handler: (url: string, body: any) => { status?: number; body:
     if (out === 'hang') {
       return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
     }
-    return Promise.resolve({ ok: (out.status ?? 200) < 400, status: out.status ?? 200, text: async () => (typeof out.body === 'string' ? out.body : JSON.stringify(out.body)) });
+    return Promise.resolve({
+      ok: (out.status ?? 200) < 400,
+      status: out.status ?? 200,
+      text: async () => (typeof out.body === 'string' ? out.body : JSON.stringify(out.body)),
+      headers: { get: (name: string) => out.headers?.[name] ?? null },
+    });
   };
   return { fetch, calls };
 }
@@ -299,4 +304,16 @@ test('a model that refuses temperature 0 is asked again with its default, and fr
   assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false]);
   await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
   assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false, false], 'not asked with 0 again');
+});
+
+test("when Fairlead's local fallback answers, the draft names the model that really did", async () => {
+  const answer = { choices: [{ message: { content: '{"kind":"kpi","binding":{"metrics":["work_orders"]},"confidence":0.8}' } }] };
+  let fallback = true;
+  const { fetch } = fakeFetch(() => ({ body: answer, headers: fallback ? { 'X-Fairlead-Target': 'ollama/qwen2.5:14b', 'X-Fairlead-Fallback': 'local' } : ({ 'X-Fairlead-Target': 'openrouter/nvidia/nemotron' } as Record<string, string>) }));
+  const p = new OpenAICompatibleProvider({ id: 'fairlead', label: 'Fairlead (openrouter/nvidia/nemotron)', url: 'https://gw.example.mil/v1', model: 'openrouter/nvidia/nemotron', fetch });
+  const fell = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(fell.draft.answeredBy, 'ollama/qwen2.5:14b');
+  fallback = false;
+  const direct = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(direct.draft.answeredBy, undefined, 'the model asked for answered: nothing to say');
 });

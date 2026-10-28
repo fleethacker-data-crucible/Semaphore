@@ -57,6 +57,8 @@ export interface FlagDraft {
   behavior: Behavior;
   confidence: number;
   notes: string[];
+  /** The model that actually answered, when Fairlead fell back from the one asked for. */
+  answeredBy?: string;
 }
 
 export interface HoistDraft {
@@ -64,6 +66,12 @@ export interface HoistDraft {
   filters: Filter[];
   flags: Array<FlagDraft & { brief: string }>;
   notes: string[];
+  answeredBy?: string;
+}
+
+/** The model a provider says actually answered (remote.ts sets it on a fallback), if any. */
+export function answeredBy(raw: unknown): string | undefined {
+  return isObject(raw) && typeof raw.answeredBy === 'string' ? raw.answeredBy.slice(0, 200) : undefined;
 }
 
 export interface IntelligenceProvider {
@@ -128,11 +136,13 @@ export function validateFlagDraft(raw: unknown, index: CatalogIndex, fallbackKin
   }
   if (warnings.length) confidence = Math.min(confidence, 0.4);
   const shaped = fitShape(kind, binding, behavior);
+  const by = answeredBy(raw);
   return {
     ...shaped,
     title: typeof raw.title === 'string' ? raw.title.slice(0, 120) : '',
     confidence,
     notes: capWarnings([...notes, ...warnings, ...shaped.notes]),
+    ...(by ? { answeredBy: by } : {}),
   };
 }
 
@@ -260,11 +270,13 @@ export function validateHoistDraft(raw: unknown, index: CatalogIndex, options: V
       warnings.push((e as Error).message);
     }
   }
+  const by = answeredBy(raw);
   return {
     title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : '',
     filters: parseFilters(raw.filters, index, warnings, 'Draft'),
-    flags,
+    flags: by ? flags.map((f) => ({ ...f, answeredBy: by })) : flags,
     notes: capWarnings([...strings(raw.notes, 10, 400), ...warnings]),
+    ...(by ? { answeredBy: by } : {}),
   };
 }
 

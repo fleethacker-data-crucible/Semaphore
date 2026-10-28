@@ -19,7 +19,11 @@ export type FetchLike = (url: string, init: { method: string; headers: Record<st
   ok: boolean;
   status: number;
   text(): Promise<string>;
+  headers?: { get(name: string): string | null };
 }>;
+
+/** A provider's JSON answer and its headers. */
+type Answer = { json: unknown; header: (name: string) => string | null };
 
 export interface RemoteSettings {
   id: string;
@@ -55,6 +59,11 @@ abstract class RemoteBase {
   }
 
   protected async call(url: string, method: 'GET' | 'POST', body: unknown, timeoutMs: number): Promise<unknown> {
+    return (await this.request(url, method, body, timeoutMs)).json;
+  }
+
+  /** As call(), with the answer's headers (Fairlead names the model that answered). */
+  protected async request(url: string, method: 'GET' | 'POST', body: unknown, timeoutMs: number): Promise<Answer> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const headers: Record<string, string> = { Accept: 'application/json' };
@@ -72,8 +81,9 @@ abstract class RemoteBase {
       const text = await res.text();
       if (text.length > MAX_RESPONSE_CHARS) throw new IntelligenceError(`${this.label} sent an answer larger than Semaphore accepts.`);
       if (!res.ok) throw new IntelligenceError(`${this.label} answered HTTP ${res.status}${detail(text)}`);
+      const header = (name: string) => res.headers?.get(name) ?? null;
       try {
-        return JSON.parse(text);
+        return { json: JSON.parse(text), header };
       } catch {
         throw new IntelligenceError(`${this.label} did not return JSON.`);
       }
@@ -151,22 +161,28 @@ export class OpenAICompatibleProvider extends RemoteBase implements Intelligence
     });
     const url = `${this.base}/chat/completions`;
     const timeout = this.s.timeoutMs ?? DEFAULT_TIMEOUT;
-    let r: unknown;
+    let answer: Answer;
     try {
-      r = await this.call(url, 'POST', body(!this.defaultTemperature), timeout);
+      answer = await this.request(url, 'POST', body(!this.defaultTemperature), timeout);
     } catch (e) {
       // A model that refuses temperature 0 is asked again with its default, and from then on.
       if (this.defaultTemperature || !(e instanceof IntelligenceError) || !/HTTP 4\d\d.*temperature/is.test(e.message)) throw e;
       this.defaultTemperature = true;
-      r = await this.call(url, 'POST', body(false), timeout);
+      answer = await this.request(url, 'POST', body(false), timeout);
     }
+    const r = answer.json;
     const content = isObject(r) && Array.isArray(r.choices) && isObject(r.choices[0]) && isObject(r.choices[0].message) ? r.choices[0].message.content : null;
     if (typeof content !== 'string') throw new IntelligenceError(`${this.label} returned no message.`);
+    let out: unknown;
     try {
-      return JSON.parse(stripFence(content));
+      out = JSON.parse(stripFence(content));
     } catch {
       throw new IntelligenceError(`${this.label} did not answer in JSON.`);
     }
+    // Fairlead answered from a local fallback, not the model asked for: the answer says which model it was.
+    const target = answer.header('X-Fairlead-Target');
+    if (isObject(out) && answer.header('X-Fairlead-Fallback') && target && /^[\w.:/@-]{1,200}$/.test(target)) out.answeredBy = target;
+    return out;
   }
 }
 
