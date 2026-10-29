@@ -99,7 +99,7 @@ sequenceDiagram
   participant Model as Local model (default)
   Analyst->>UI: Request AI assistance
   UI->>API: Session token + feature payload
-  Note over API: Read Fairlead key from environment or Credential Manager; legacy file fallback
+  Note over API: Read Fairlead key from environment or Credential Manager, with legacy file fallback
   API->>Router: Check service identity before sending key
   Router-->>API: Fairlead identity
   API->>Router: Client key + local route + privacy header + payload
@@ -107,7 +107,7 @@ sequenceDiagram
   Model-->>Router: Candidate answer
   Router-->>API: Answer and target metadata
   API-->>UI: Answer without the Fairlead key
-  UI->>UI: Validate output; fall back where supported
+  UI->>UI: Validate output and fall back where supported
   UI-->>Analyst: Draft for review
 ```
 
