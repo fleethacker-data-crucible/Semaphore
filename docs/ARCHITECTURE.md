@@ -1,14 +1,23 @@
 # Semaphore architecture
 
+**Scope:** this is the v0.3 application preview in PR #13, stacked on PR #10. The default main branch still contains only the v0.1 core.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/diagrams/application-overview-dark.svg">
+  <img src="diagrams/diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
+</picture>
+
+See [Architecture, visually](ARCHITECTURE-DIAGRAMS.md) for the component, data-flow and AI-boundary diagrams, including explicit current-versus-preview labels.
+
 **The stack is defined by [`TechStack`](../TechStack).** This document describes how Semaphore uses it.
 
 ## Two users, one body of knowledge
 
-Semaphore is built for **analysts**, who build and review hoists, and **leadership**, who ask questions and need answers they can trust. Everything in 0.2 serves the analyst. The design points toward the second user:
+Semaphore is built for **analysts**, who build and review hoists, and **leadership**, who ask questions and need answers they can trust. The preview includes both the analyst workflow and the leadership view:
 
 - Every accepted flag is a reviewed pair of a plain-English question and an exact binding. Bindings are catalog keys only, so they can be replayed on today's data by anyone with access to the source.
-- All "intelligence" goes through one validated path (`validateFlagDraft`, `parseBinding`), whether it comes from local rules, an AI provider or, next, the playbook. Nothing reaches a flag that is not checked against the catalog.
-- Reading a brief (`annotateBrief`) gives a deterministic signature of a question: its measures, fields, window, ranking and behaviour. The playbook will match leadership's questions to analysts' accepted flags with that signature, so every answer can say which reviewed flag it reused.
+- All "intelligence" goes through one validated path (`validateFlagDraft`, `parseBinding`), whether it comes from local rules, a supported AI provider or the playbook. Nothing reaches a flag that is not checked against the catalog.
+- Reading a brief (`annotateBrief`) gives a deterministic signature of a question: its measures, fields, window, ranking and behaviour. The playbook matches leadership's questions to analysts' accepted flags with that signature, so every answer can say which reviewed flag it reused.
 
 The playbook, snapshots and the leadership view are built (0.3); [PLAYBOOK.md](PLAYBOOK.md) has how they work, the decisions behind them, and what is still to do.
 
@@ -50,11 +59,11 @@ Server (same document store as hoists)
   /api/playbook, /api/snapshots, /api/questions   one JSON file per document in the shared Semaphore folder
 ```
 
-The UI never sends rows anywhere. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
+Sample and CSV calculations run in the browser. Shared snapshots and exported reports can contain result data; optional AI payloads are described in the visual guide and the intelligence-provider document. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
 
 ## Thin clients: the database does the work
 
-Users are on thin clients, so Semaphore never copies whole tables into the browser.
+For database-backed flags, the planner pushes aggregation to the source to limit result sizes. CSV imports and explicit row views are separate paths; this is not a blanket promise that the browser never holds rows.
 
 1. **Aggregate at the source.** Every flag becomes one `GROUP BY` query. Millions of rows in Oracle come back as a few hundred.
 2. **Pre-slice for the page.** A flag's query is also split by the fields *other* flags on the page can select (filter flags, and charts whose click filters the page). Clicking "Northeast" on one flag then filters every other flag from its cached result, with no round trip. Example: work orders split by 6 regions × 12 ship classes is 72 rows.
@@ -86,14 +95,14 @@ A flag's brief can opt out of page selections ("ignore the region filter"). The 
 
 Hoist files, imports and AI output are capped before use: briefs at 4,000 characters, 200 flags, 50 metrics, 20 fields, 50 filters of at most 500 values, 20 thresholds, 2 MB provider responses, 200 warnings. Overlapping layouts are repaired on load. Regexes that read briefs are bounded, and provider text is unwrapped without regexes.
 
-## v1 limits
+## Current preview limits
 
-- One source and one table per flag. Joins arrive with catalog relationships.
-- Selections only reach flags on the same table.
+- A flag uses one source and a base table for its measures. Grouping and filter fields can follow configured many-to-one relationships within that source.
+- Cross-table filtering depends on valid catalog relationships; unrelated tables are refused. Live database and lake deployments still need target-service validation.
 
 ## Storage
 
-- **The playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a shared Semaphore folder, never through the network: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
+- **The playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a Semaphore folder, which may be a Windows network share: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
 
 - **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
 - **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
@@ -115,6 +124,6 @@ A report is exported as one self-contained HTML file (the same technique as Shel
 | ECharts, React Flow, Motion | Flag rendering (ECharts, SVG renderer); lineage view (Flow) | ECharts done; Flow planned |
 | Rust → WebAssembly | Optional: cross-filter kernel if results grow; today's results are small enough for TypeScript | Not needed yet |
 | IndexedDB / localStorage | CSV files / theme, working copy | Done |
-| Service workers, Web Workers | Queries and cross-filtering off the main thread | Planned |
-| Web Crypto, DPAPI | Report encryption; secrets via Lazarette | Planned |
-| C# via `Add-Type` | Not needed: ODBC and OLE DB are in the .NET Framework BCL (`System.Data.Odbc`, `System.Data.OleDb`) | — |
+| Service workers, Web Workers | CSV parsing and queries use a worker; app-shell service-worker caching is not implemented | CSV worker done |
+| Web Crypto, Windows Credential Manager | AES-GCM report encryption and server-side Fairlead key storage; legacy DPAPI file compatibility | Implemented in this preview |
+| C# via `Add-Type` | In-memory native Windows credential bridge; database access uses the framework ODBC/OLE DB APIs | Implemented; no custom DLL shipped |
