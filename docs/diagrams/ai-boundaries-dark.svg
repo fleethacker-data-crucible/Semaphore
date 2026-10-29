@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title description"><title id="title">AI payloads and trust boundaries</title><desc id="description">Drafting sends briefs and summarized catalog metadata; cleaning sends up to 300 distinct values with counts; Qlik assistance sends an expression and field metadata; briefings send computed facts. A local proxy keeps the Fairlead key out of the browser. Fairlead uses a local model by default; explicitly configured routes may permit remote processing.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#8fc4da"/></marker></defs>
+<style>text{font-family:"Segoe UI",Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
+<rect x="0" y="0" width="1280" height="760" rx="0" fill="#071a26" stroke="#071a26" stroke-width="1.5"/>
+<text x="40" y="44" font-size="14" fill="#c9a66b" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
+<text x="40" y="88" font-size="32" fill="#f4ead6" font-weight="700" text-anchor="start" class="">AI payloads and trust boundaries</text>
+<text x="40" y="119" font-size="17" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">The payload depends on the feature. Local routing is the default; it is not a blanket “no data leaves” promise.</text>
+<text x="1240" y="44" font-size="13" fill="#c9a66b" font-weight="700" text-anchor="end" class="">PREVIEW / PR #13</text>
+<g data-card="Flag / page drafting">
+<rect x="40" y="169" width="370" height="103" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="60" y="200" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Flag / page drafting</text>
+<text x="60" y="232" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Brief + summarized catalog metadata</text>
+</g>
+<g data-card="Cleaning assistance">
+<rect x="40" y="292" width="370" height="103" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="60" y="323" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Cleaning assistance</text>
+<text x="60" y="355" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Up to 300 distinct values + counts</text>
+</g>
+<g data-card="Qlik assistance">
+<rect x="40" y="415" width="370" height="103" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="60" y="446" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Qlik assistance</text>
+<text x="60" y="478" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Selected expression + field metadata</text>
+</g>
+<g data-card="Briefing assistance">
+<rect x="40" y="538" width="370" height="103" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="60" y="569" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Briefing assistance</text>
+<text x="60" y="601" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Computed facts + chart titles</text>
+</g>
+<g data-card="Semaphore proxy">
+<rect x="500" y="315" width="300" height="198" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="520" y="346" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">LOCAL WINDOWS PROCESS</text>
+<text x="520" y="376" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Semaphore proxy</text>
+<text x="520" y="408" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Loopback API + session checks</text>
+<text x="520" y="431" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Fairlead key added server-side</text>
+<text x="520" y="454" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Key never sent to the browser</text>
+</g>
+<g data-card="Fairlead router">
+<rect x="880" y="315" width="360" height="198" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="900" y="346" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">LOCAL SERVICE</text>
+<text x="900" y="376" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Fairlead router</text>
+<text x="900" y="408" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Receives the feature payload</text>
+<text x="900" y="431" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Local route + local privacy header</text>
+<text x="900" y="454" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Selects the configured model</text>
+</g>
+<polyline points="410,220 450,220 450,413 500,413" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="410,343 450,343 450,413 500,413" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="410,466 450,466 450,413 500,413" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="410,589 450,589 450,413 500,413" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="800,413 880,413" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<g data-card="Local model">
+<rect x="880" y="169" width="360" height="105" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
+<text x="900" y="200" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Local model</text>
+<text x="900" y="232" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Default route: stays on this computer</text>
+</g>
+<polyline points="1060,315 1060,274" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<g data-card="Remote model">
+<rect x="880" y="552" width="360" height="105" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="900" y="583" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Remote model</text>
+<text x="900" y="615" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Only through explicit route / privacy</text>
+<text x="900" y="638" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">settings</text>
+</g>
+<polyline points="1060,513 1060,552" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<rect x="40" y="685" width="1200" height="51" rx="10" fill="#0a2130" stroke="#5f8199" stroke-width="1.5"/>
+<text x="58" y="707" font-size="14" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Payload excerpts may contain business data. Built-in UI flows do not upload complete source tables to the model.</text>
+<text x="58" y="725" font-size="14" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Shared snapshots and exported reports can contain results. The proxy is not a sensitive-content classifier.</text>
+</svg>
