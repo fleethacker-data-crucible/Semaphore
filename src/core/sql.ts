@@ -4,7 +4,7 @@
 // always quoted; every value is a bound parameter, never text spliced into the SQL. The local
 // server binds the parameters with the driver's own API.
 
-import { type CatalogIndex, type Dialect, type FieldType, isIdentifier } from './catalog.ts';
+import { type CatalogIndex, type Dialect, type FieldType, isIdentifier, isSqlDialect } from './catalog.ts';
 import { cleanSql, cleanType, dedupes, stepsFor } from './cleaning.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
@@ -36,6 +36,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   const source = index.source(plan.source);
   if (!source) throw new SqlError(`Unknown source "${plan.source}".`);
   const dialect = source.dialect;
+  if (!isSqlDialect(dialect)) throw new SqlError('This source uses an unsupported SQL dialect. Configure a supported SQL profile before generating a query.');
   const params: SqlParam[] = [];
   const bind = (p: SqlParam): string => {
     params.push(p);

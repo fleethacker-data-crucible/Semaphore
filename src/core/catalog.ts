@@ -5,7 +5,12 @@ import type { CleaningStep } from './cleaning.ts';
 import type { Relationship } from './joins.ts';
 
 /** ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server. */
-export type Dialect = 'postgres' | 'oracle' | 'access' | 'tsql' | 'ansi';
+export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'ansi'] as const;
+export type Dialect = typeof SQL_DIALECTS[number];
+
+export function isSqlDialect(value: unknown): value is Dialect {
+  return typeof value === 'string' && (SQL_DIALECTS as readonly string[]).includes(value);
+}
 
 export type SourceKind =
   | 'postgres'
@@ -109,6 +114,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
   const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql' };
   for (const s of catalog.sources) {
+    if (!isSqlDialect(s.dialect)) problems.push(`Source "${s.id}" uses an unsupported SQL dialect; supported profiles: ${SQL_DIALECTS.join(', ')}.`);
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);
     seen.add(`source:${s.id}`);
     const want = expected[s.kind];

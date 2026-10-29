@@ -11,6 +11,7 @@ import { type DrillStep, drillLabel, drillView, nextLevel } from '../../../src/c
 import { findInsights } from '../../../src/core/insights.ts';
 import { ApprovalNeeded, approveQuery, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
+import { sqlLanguage } from '../lib/sql-language.ts';
 
 export interface FlagCardProps {
   hoist: Hoist;
@@ -210,6 +211,12 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
           </div>
         ) : null}
       </div>
+      {flipped && result?.sql && (
+        <footer aria-label="SQL language" className="shrink-0 border-t border-line bg-panel-2 px-3 py-1.5 text-[11px] text-ink">
+          <span className="font-semibold">SQL language: </span>{sqlLanguage(result.sql).name}
+          {result.origin === 'page' && <span className="block text-ink-2">Reference SQL; results calculated in this browser.</span>}
+        </footer>
+      )}
       <button
         type="button"
         aria-label="Resize flag"
@@ -264,9 +271,11 @@ function Back({ flag, hoist, index, result, insights }: { flag: Flag; hoist: Hoi
       {result?.sql && (
         <section>
           <h4 className="mb-0.5 font-semibold text-ink-2">
-            SQL <span className="font-normal text-ink-3">({result.sql.dialect}{result.origin === 'page' ? ', answered in this page' : ''})</span>
+            SQL
           </h4>
           <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px] text-ink">{prettySql(result.sql.sql)}</pre>
+          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).syntax}</p>
+          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).parameters}</p>
           {result.sql.params.length > 0 && (
             <p className="mt-1 font-mono text-[11px] text-ink-3">
               Parameters: {result.sql.params.map((p, i) => `${i + 1}=${JSON.stringify(p.value)} (${p.type})`).join(', ')}
