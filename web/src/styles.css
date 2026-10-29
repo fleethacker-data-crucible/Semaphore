@@ -62,6 +62,21 @@
 
 /* classic: Semaphore's palette from its brand mark: deep sea navy, brass, signal-flag cream and amber. */
 :root[data-skin='classic'] {
+  /* Keep shared Fleet components on the selected skin's palette as well. */
+  --fl-background: var(--bg);
+  --fl-surface: var(--panel);
+  --fl-card: var(--panel);
+  --fl-sidebar: var(--panel-2);
+  --fl-foreground: var(--ink);
+  --fl-muted-foreground: var(--ink-2);
+  --fl-accent: var(--accent);
+  --fl-accent-ink: var(--panel);
+  --fl-muted: var(--panel-2);
+  --fl-control-border: var(--ink-2);
+  --fl-danger: var(--bad);
+  --fl-success: var(--good);
+  --fl-warning: var(--warn);
+  --fl-brass: var(--brass);
   --sem-font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --sem-font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
   --sem-radius-card: 8px;
