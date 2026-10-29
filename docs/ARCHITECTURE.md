@@ -3,8 +3,8 @@
 **Scope:** this is the v0.3 application preview in PR #10. The default main branch still contains only the v0.1 core.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="diagrams/diagrams/application-overview-dark.svg">
-  <img src="diagrams/diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/application-overview-dark.svg">
+  <img src="diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
 </picture>
 
 See [Architecture, visually](ARCHITECTURE-DIAGRAMS.md) for the component, data-flow and AI-boundary diagrams, including explicit current-versus-preview labels.
