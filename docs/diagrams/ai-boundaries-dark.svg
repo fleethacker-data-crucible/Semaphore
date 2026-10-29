@@ -5,7 +5,7 @@
 <text x="40" y="44" font-size="14" fill="#c9a66b" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
 <text x="40" y="88" font-size="32" fill="#f4ead6" font-weight="700" text-anchor="start" class="">AI payloads and trust boundaries</text>
 <text x="40" y="119" font-size="17" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">The payload depends on the feature. Local routing is the default; it is not a blanket “no data leaves” promise.</text>
-<text x="1240" y="44" font-size="13" fill="#c9a66b" font-weight="700" text-anchor="end" class="">PREVIEW / PR #13</text>
+<text x="1240" y="44" font-size="13" fill="#c9a66b" font-weight="700" text-anchor="end" class="">ENGINEERING PREVIEW / v0.3</text>
 <g data-card="Flag / page drafting">
 <rect x="40" y="169" width="370" height="103" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
 <text x="60" y="200" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Flag / page drafting</text>

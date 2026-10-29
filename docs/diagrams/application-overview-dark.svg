@@ -5,10 +5,10 @@
 <text x="40" y="44" font-size="14" fill="#c9a66b" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
 <text x="40" y="88" font-size="32" fill="#f4ead6" font-weight="700" text-anchor="start" class="">How the application fits together</text>
 <text x="40" y="119" font-size="17" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Application preview: browser calculations, a local Windows API, explicit service connections and shared documents.</text>
-<text x="1240" y="44" font-size="13" fill="#c9a66b" font-weight="700" text-anchor="end" class="">PREVIEW / PRs #10 + #13</text>
+<text x="1240" y="44" font-size="13" fill="#c9a66b" font-weight="700" text-anchor="end" class="">ENGINEERING PREVIEW / v0.3</text>
 <g data-card="Analyst browser">
 <rect x="40" y="170" width="360" height="182" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
-<text x="60" y="201" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">PR #10 BASE + #13 EXTENSIONS</text>
+<text x="60" y="201" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">ANALYST WORKBENCH</text>
 <text x="60" y="231" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Analyst browser</text>
 <text x="60" y="263" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">React UI + shared TypeScript core</text>
 <text x="60" y="286" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Sample / CSV engine in the browser</text>
@@ -27,7 +27,7 @@
 <text x="900" y="201" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">NETWORK WHEN CONFIGURED</text>
 <text x="900" y="231" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Configured data services</text>
 <text x="900" y="263" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">ODBC / OLE DB databases (#10)</text>
-<text x="900" y="286" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Athena, Glue and S3 (#13)</text>
+<text x="900" y="286" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Athena, Glue and S3 (preview)</text>
 <text x="900" y="309" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Database drivers / access required</text>
 </g>
 <polyline points="400,230 460,230" fill="none" stroke="#8fc4da" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
@@ -56,7 +56,7 @@
 </g>
 <g data-card="Optional model path">
 <rect x="880" y="475" width="360" height="174" rx="14" fill="#112d40" stroke="#5f8199" stroke-width="1.5"/>
-<text x="900" y="506" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">PR #13</text>
+<text x="900" y="506" font-size="12" fill="#c9a66b" font-weight="700" text-anchor="start" class="">OPTIONAL AI</text>
 <text x="900" y="536" font-size="21" fill="#f4ead6" font-weight="700" text-anchor="start" class="">Optional model path</text>
 <text x="900" y="568" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Semaphore proxy to local Fairlead</text>
 <text x="900" y="591" font-size="16" fill="#a9b4ba" font-weight="400" text-anchor="start" class="">Local model route by default</text>
