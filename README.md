@@ -13,16 +13,28 @@ Semaphore is being built as a local-first analytics and dashboard tool: an analy
 
 The runnable application is in the open development PRs below. Their features are not part of a default-branch checkout until those PRs merge.
 
+**Reading offline?** Download the [standalone README](docs/README-standalone.html) or [illustrated analyst guide](docs/semaphore-for-analysts.html) with the file page's **Download raw file** button, then open the downloaded HTML in your browser. Both embed their images. Downloading `README.md` alone does not include the image folders; use the standalone HTML or download the whole repository ZIP instead.
+
 ## Repository and application status
 
 | Code line | What it contains | Status |
 | --- | --- | --- |
 | `main` | Catalog and dashboard models, layout, planning, SQL generation, cached-result filtering and draft-provider contracts | v0.1.0 core available here |
 | [PR #10](https://github.com/fleethacker-data-crucible/Semaphore/pull/10) · `armp/semaphore-0.3.0` | v0.3 dashboard UI, Windows PowerShell server and launchers, sample/CSV workflows, database adapter code, analyst playbooks and leadership snapshots | Open engineering preview |
-| [PR #13](https://github.com/fleethacker-data-crucible/Semaphore/pull/13) · `feature/fairlead-intelligence` | Builds on #10: Fairlead-assisted drafting, data cleaning and Qlik assistance, joins, drill-down, SQL desk, lake queries and report sharing | Open; stacked on #10 |
+| [PR #17](https://github.com/fleethacker-data-crucible/Semaphore/pull/17) · `feature/fairlead-intelligence` | Reconciles #10 with Fairlead-assisted drafting, data cleaning and Qlik assistance, joins, drill-down, SQL desk, lake queries and report sharing | Open; replaces duplicate #13 |
 | [PR #11](https://github.com/fleethacker-data-crucible/Semaphore/pull/11) | Shared Fleet Gate caller and MIT license file | Merged |
 
 Use the README on the branch you check out for that branch's build and launch instructions. The architecture and roadmap also describe planned application behavior; they do not mean those components already exist on `main`.
+
+## Application preview screens
+
+These are actual synthetic-data captures from the application preview in PR #17. The screenshots do not mean the application has merged into main.
+
+![Semaphore preview dashboard with KPIs, category charts, trend and a ranked comparison](docs/assets/analyst-guide/02-dashboard.png)
+
+![Semaphore preview leadership question with a chart explicitly marked drafted, not reviewed](docs/assets/analyst-guide/07-ask.png)
+
+The [illustrated analyst guide](docs/semaphore-for-analysts.html) contains all seven screens with workflow captions.
 
 ## Architecture at a glance
 
@@ -80,7 +92,8 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
 
 ## Documentation and examples
 
-- [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots of the application preview, with workflow captions and clear preview status. Download the HTML and its `docs/assets/analyst-guide` folder to view it locally.
+- [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots of the application preview, with workflow captions and clear preview status. Its images are embedded, so only the HTML file is needed.
+- [Standalone README](docs/README-standalone.html): this README as one HTML file with embedded images for offline reading.
 - [Semaphore, Qlik and Data Noodler comparison (PDF)](docs/Semaphore-Qlik-DataNoodler-Comparison.pdf): capability tables, architecture and the screenshot walkthrough.
 - [Architecture](docs/ARCHITECTURE.md): implemented core and target application design
 - [Flag specification](docs/FLAG_SPEC.md): catalog, hoist and flag formats
