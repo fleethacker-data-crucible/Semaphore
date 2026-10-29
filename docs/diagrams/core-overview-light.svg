@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title description"><title id="title">The core on main</title><desc id="description">The catalog and hoist feed validated draft bindings, query planning and parameterized SQL. An external caller executes the query, returns aggregates to cross-filtering and consumes the resulting model. No runnable UI or server exists on main.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#1f5f7b"/></marker></defs>
+<style>text{font-family:"Segoe UI",Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
+<rect x="0" y="0" width="1280" height="760" rx="0" fill="#fbfaf2" stroke="#fbfaf2" stroke-width="1.5"/>
+<text x="40" y="44" font-size="14" fill="#755735" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
+<text x="40" y="88" font-size="32" fill="#132633" font-weight="700" text-anchor="start" class="">The core on main</text>
+<text x="40" y="119" font-size="17" fill="#425c6c" font-weight="400" text-anchor="start" class="">A TypeScript library: it describes, plans and filters. An integrating application executes and displays.</text>
+<text x="1240" y="44" font-size="13" fill="#755735" font-weight="700" text-anchor="end" class="">CURRENT / v0.1 CORE</text>
+<g data-card="1  Catalog + hoist">
+<rect x="40" y="170" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
+<text x="60" y="201" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">INPUT MODELS</text>
+<text x="60" y="231" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">1  Catalog + hoist</text>
+<text x="60" y="263" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Sources, fields, metrics and synonyms</text>
+<text x="60" y="286" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Flags, layout and page selections</text>
+</g>
+<g data-card="2  Draft + validate">
+<rect x="460" y="170" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
+<text x="480" y="201" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">CORE</text>
+<text x="480" y="231" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">2  Draft + validate</text>
+<text x="480" y="263" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Local rules; optional provider adapter</text>
+<text x="480" y="286" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Unknown keys and invalid drafts checked</text>
+</g>
+<g data-card="3  Plan + render SQL">
+<rect x="880" y="170" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
+<text x="900" y="201" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">CORE</text>
+<text x="900" y="231" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">3  Plan + render SQL</text>
+<text x="900" y="263" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Aggregation, row caps and slices</text>
+<text x="900" y="286" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">SQL text plus typed parameters</text>
+</g>
+<polyline points="400,258 460,258" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="820,258 880,258" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<g data-card="4  Execute query">
+<rect x="880" y="464" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="900" y="495" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">OUTSIDE MAIN</text>
+<text x="900" y="525" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">4  Execute query</text>
+<text x="900" y="557" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Caller supplies database execution</text>
+<text x="900" y="580" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Core receives query results</text>
+</g>
+<g data-card="5  Cross-filter results">
+<rect x="460" y="464" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
+<text x="480" y="495" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">CORE</text>
+<text x="480" y="525" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">5  Cross-filter results</text>
+<text x="480" y="557" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Re-aggregate cached result slices</text>
+<text x="480" y="580" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Report when a fresh query is needed</text>
+</g>
+<g data-card="6  Consume the result">
+<rect x="40" y="464" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="60" y="495" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">INTEGRATING APPLICATION</text>
+<text x="60" y="525" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">6  Consume the result</text>
+<text x="60" y="557" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Validated dashboard model and values</text>
+<text x="60" y="580" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Caller supplies charts and interface</text>
+</g>
+<polyline points="1060,346 1060,464" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="1123" y="407" font-size="13" fill="#1f5f7b" font-weight="600" text-anchor="middle" class="">SQL + parameters</text>
+<polyline points="880,552 820,552" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="850" y="539" font-size="13" fill="#1f5f7b" font-weight="600" text-anchor="middle" class="">results</text>
+<polyline points="460,552 400,552" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="430" y="539" font-size="13" fill="#1f5f7b" font-weight="600" text-anchor="middle" class="">values</text>
+<polyline points="640,464 640,402 1000,402 1000,346" fill="none" stroke="#1f5f7b" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="793" y="391" font-size="13" fill="#1f5f7b" font-weight="600" text-anchor="middle" class="">Re-plan when cached data cannot answer</text>
+<rect x="40" y="685" width="1200" height="51" rx="10" fill="#f3efe2" stroke="#8c8370" stroke-width="1.5"/>
+<text x="58" y="707" font-size="14" fill="#425c6c" font-weight="400" text-anchor="start" class="">Solid cards marked CORE ship on main. Dashed cards are responsibilities of the integrating application.</text>
+<text x="58" y="725" font-size="14" fill="#425c6c" font-weight="400" text-anchor="start" class="">The browser, Windows server, database connectors and leadership view belong to the open preview PRs.</text>
+</svg>
