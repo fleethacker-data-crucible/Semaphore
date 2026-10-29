@@ -7,6 +7,8 @@
 
 # SEMAPHORE · Dashboard Intelligence
 
+**Reading offline?** The [standalone README for main](docs/README-standalone.html) and [illustrated analyst guide](docs/semaphore-for-analysts.html) embed their images. Use the file page's **Download raw file** button and open the HTML in your browser. Downloading `README.md` alone requires its image folders; the standalone README describes the default branch, while this page describes the application preview.
+
 Semaphore is an analyst workbench for building dashboards from plain-English briefs, CSV files and configured database sources. Analysts review each proposed chart and its SQL, accept useful work into a shared playbook, and publish summarized snapshots that leadership can question without opening a database. It targets Windows thin clients and Qlik-style analytical workflows.
 
 > **Engineering preview (0.3 development line).** This README describes the reconciled application in [PR #17](https://github.com/fleethacker-data-crucible/Semaphore/pull/17). It incorporates PR #10, the feature work formerly reviewed in PR #13, and the CI, license and documentation changes from PRs #11 and #18. The default `main` branch still contains the v0.1 TypeScript core. Sample and CSV workflows are available here; database adapters and the Athena integration need validation against the intended services and target workstations.
@@ -135,7 +137,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
-- [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots with workflow captions (download the HTML and its `docs/assets/analyst-guide` folder to view it locally).
+- [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots with workflow captions. Its images are embedded, so only the HTML file is needed.
 - [Semaphore, Qlik and Data Noodler comparison (PDF)](docs/Semaphore-Qlik-DataNoodler-Comparison.pdf): capability tables, architecture and the screenshot walkthrough.
 - [docs/PLAYBOOK.md](docs/PLAYBOOK.md): learning from analysts, the leadership view, snapshots, standing in for an absent analyst
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the thin-client data strategy, storage, and how the TechStack maps on
