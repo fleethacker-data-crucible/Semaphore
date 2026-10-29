@@ -62,6 +62,15 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 
 [Architecture diagrams](docs/ARCHITECTURE-DIAGRAMS.md): current core, preview application, and AI payload / credential boundaries, with editable SVGs and Mermaid flows.
 
+## Architecture at a glance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/application-overview-dark.svg">
+  <img src="docs/diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
+</picture>
+
+[Architecture diagrams](docs/ARCHITECTURE-DIAGRAMS.md): current core, preview application, and AI payload / credential boundaries, with editable SVGs and Mermaid flows.
+
 ## What it does
 
 | | |
