@@ -51,6 +51,15 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 
 Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install a background service or scheduled task. The current 8774–8776 port block also needs reconciliation with other Fleet assignments before shared deployment.
 
+## Architecture at a glance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/application-overview-dark.svg">
+  <img src="docs/diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
+</picture>
+
+[Architecture diagrams](docs/ARCHITECTURE-DIAGRAMS.md): current core, preview application, and AI payload / credential boundaries, with editable SVGs and Mermaid flows.
+
 ## What it does
 
 | | |
