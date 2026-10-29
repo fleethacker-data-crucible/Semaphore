@@ -1,6 +1,6 @@
 # Semaphore architecture
 
-**Scope:** this is the v0.3 application preview in PR #13, stacked on PR #10. The default main branch still contains only the v0.1 core.
+**Scope:** this is the reconciled v0.3 application preview in PR #17, incorporating PR #10 and the feature work from PR #13. The default main branch still contains only the v0.1 core.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="diagrams/application-overview-dark.svg">

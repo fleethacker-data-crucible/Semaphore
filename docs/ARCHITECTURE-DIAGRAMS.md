@@ -1,6 +1,6 @@
 # Semaphore architecture, visually
 
-These diagrams distinguish the **v0.1 core on `main`** from the **application previews in PR #10 and PR #13**. A component shown in a preview is not a claim that it exists in a default-branch checkout. Diagram assets are repository-local SVGs with light/dark variants and descriptive text.
+These diagrams distinguish the **v0.1 core on `main`** from the **application previews originating in PR #10 and PR #13**, now reconciled in **PR #17**. The PR numbers in the illustrations identify those original development lines. A component shown in a preview is not a claim that it exists in a default-branch checkout. Diagram assets are repository-local SVGs with light/dark variants and descriptive text.
 
 ## 1. Current core: available on main
 
