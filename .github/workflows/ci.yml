@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, "feature/**", "armp/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -14,8 +14,8 @@ jobs:
   windows:
     # Self-hosted Windows workstation runner: the server runs on the Windows PowerShell 5.1 the
     # workstation has (team directive 12), and the core and UI build with Node.
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 30
+    runs-on: [self-hosted, windows, powershell51, headless]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -48,14 +48,12 @@ jobs:
 
       - name: Server tests (Pester on Windows PowerShell 5.1)
         shell: powershell
+        env:
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
         run: |
           $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge '5.0')) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
-            Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
-          }
-          Import-Module Pester -MinimumVersion 5.0
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
           $c = New-PesterConfiguration
           $c.Run.Path = 'tests/server'
           $c.Run.PassThru = $true
