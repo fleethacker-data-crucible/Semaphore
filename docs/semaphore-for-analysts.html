@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Semaphore for Analysts - Illustrated Preview</title>
+<style>
+/* Fleet UI v0.2 (docs/UNIFIED-UI.md), vendored inline: tokens, type, focus, components.
+   Layout: Fleet header (emblem + wordmark, 56 px) · document column · Fleet status bar (28 px). */
+:root { --fl-accent-night: #c9a66b; --fl-accent-chart: #8a6b45; --fl-accent-ink-night: #071a26; --fl-accent-ink-chart: #fbfaf2; }
+[data-app='halyard']     { --fl-accent-night: #3fb6a8; --fl-accent-chart: #0f766e; }
+[data-app='lazarette']   { --fl-accent-night: #c9a66b; --fl-accent-chart: #8a6b45; }
+[data-app='shellback']   { --fl-accent-night: #5cf1cb; --fl-accent-chart: #0b7a62; }
+[data-app='scrimshaw']   { --fl-accent-night: #f1e4c8; --fl-accent-chart: #7d6a48; }
+[data-app='snapshackle'] { --fl-accent-night: #ef6a5a; --fl-accent-chart: #b8382b; }
+[data-app='gangplank']   { --fl-accent-night: #c99566; --fl-accent-chart: #8b5a2b; }
+[data-app='packetrat']   { --fl-accent-night: #6aa7e0; --fl-accent-chart: #1f5fa3; }
+[data-app='eight-bells'] { --fl-accent-night: #d6a258; --fl-accent-chart: #8f5e22; }
+[data-app='capstan']     { --fl-accent-night: #d9845a; --fl-accent-chart: #a14f28; }
+[data-app='bowerbird']   { --fl-accent-night: #9b98f3; --fl-accent-chart: #4b45b8; }
+[data-app='fairlead']    { --fl-accent-night: #a3d65c; --fl-accent-chart: #4d7a1a; }
+
+:root, :root[data-theme='dark'] {
+  --fl-background: #071a26; --fl-sidebar: #0a2130; --fl-surface: #0d2636; --fl-card: #112d40; --fl-popover: #14334a;
+  --fl-muted: #183a52; --fl-border: #24465e; --fl-border-strong: #34597a; --fl-control-border: #5f8199;
+  --fl-foreground: #f4ead6; --fl-muted-foreground: #a9b4ba; --fl-brass: #c9a66b;
+  --fl-success: #4fb386; --fl-warning: #e0a443; --fl-danger: #ef6a5a; --fl-info: #6aa7e0;
+  --fl-accent: var(--fl-accent-night); --fl-accent-ink: var(--fl-accent-ink-night);
+  --fl-shadow: 0 12px 40px -10px rgb(0 0 0 / 0.55);
+  color-scheme: dark;
+}
+[data-app] { --fl-accent: var(--fl-accent-night); }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --fl-background: #fbfaf2; --fl-sidebar: #f3efe2; --fl-surface: #ffffff; --fl-card: #ffffff; --fl-popover: #ffffff;
+    --fl-muted: #efe9d9; --fl-border: #dcd3bd; --fl-border-strong: #c4b79a; --fl-control-border: #8c8370;
+    --fl-foreground: #132633; --fl-muted-foreground: #4f5d66; --fl-brass: #8a6b45;
+    --fl-success: #2f7d57; --fl-warning: #9a6412; --fl-danger: #b8382b; --fl-info: #1f5fa3;
+    --fl-accent: var(--fl-accent-chart); --fl-accent-ink: var(--fl-accent-ink-chart);
+    --fl-shadow: 0 12px 40px -12px rgb(19 38 51 / 0.25);
+    color-scheme: light;
+  }
+  :root:not([data-theme='dark']) [data-app] { --fl-accent: var(--fl-accent-chart); }
+}
+:root[data-theme='light'] {
+  --fl-background: #fbfaf2; --fl-sidebar: #f3efe2; --fl-surface: #ffffff; --fl-card: #ffffff; --fl-popover: #ffffff;
+  --fl-muted: #efe9d9; --fl-border: #dcd3bd; --fl-border-strong: #c4b79a; --fl-control-border: #8c8370;
+  --fl-foreground: #132633; --fl-muted-foreground: #4f5d66; --fl-brass: #8a6b45;
+  --fl-success: #2f7d57; --fl-warning: #9a6412; --fl-danger: #b8382b; --fl-info: #1f5fa3;
+  --fl-accent: var(--fl-accent-chart); --fl-accent-ink: var(--fl-accent-ink-chart);
+  --fl-shadow: 0 12px 40px -12px rgb(19 38 51 / 0.25);
+  color-scheme: light;
+}
+:root[data-theme='light'] [data-app] { --fl-accent: var(--fl-accent-chart); }
+
+:root {
+  --fl-font-body: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --fl-font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  --fl-font-display: Cambria, 'Cambria Math', Georgia, 'Times New Roman', serif;
+  --fl-text-caption: 12px; --fl-text-secondary: 13px; --fl-text-body: 14px;
+  --fl-text-section: 16px; --fl-text-page: 20px; --fl-text-display: 28px;
+  --fl-radius-control: 6px; --fl-radius-card: 10px; --fl-radius-dialog: 14px;
+  --fl-header-height: 56px; --fl-statusbar-height: 28px;
+  --fl-duration: 160ms;
+}
+:focus-visible { outline: 2px solid var(--fl-brass); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+}
+
+.fl-btn { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: var(--fl-radius-control); border: 1px solid transparent; font: 500 var(--fl-text-secondary)/1 var(--fl-font-body); cursor: pointer; background: transparent; color: var(--fl-foreground); transition: background-color var(--fl-duration); }
+.fl-btn--secondary { border-color: var(--fl-control-border); }
+.fl-btn--ghost:hover, .fl-btn--secondary:hover { background: var(--fl-muted); }
+.fl-card { background: var(--fl-card); border: 1px solid var(--fl-border); border-radius: var(--fl-radius-card); padding: 16px; }
+.fl-table { width: 100%; border-collapse: collapse; font-size: var(--fl-text-body); }
+.fl-table th { position: sticky; top: 0; background: var(--fl-surface); text-align: left; font-weight: 600; color: var(--fl-muted-foreground); }
+.fl-table td, .fl-table th { height: 36px; padding: 0 12px; border-bottom: 1px solid var(--fl-border); }
+.fl-table tr:hover td { background: var(--fl-muted); }
+.fl-table .num { text-align: right; font-family: var(--fl-font-mono); }
+.fl-badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: 999px; font-size: var(--fl-text-caption); font-weight: 600; border: 1px solid currentColor; white-space: nowrap; }
+
+/* ---- page ---- */
+body { background: var(--fl-background); color: var(--fl-foreground); font: var(--fl-text-body)/1.5 var(--fl-font-body); padding-bottom: calc(var(--fl-statusbar-height) + env(safe-area-inset-bottom, 0px)); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--fl-sidebar); }
+h1, h2, h3 { margin: 0; line-height: 1.25; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+code { font: var(--fl-text-secondary) var(--fl-font-mono); background: var(--fl-muted); border-radius: 4px; padding: 0 4px; }
+.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.icon--nav { width: 20px; height: 20px; }
+.muted { color: var(--fl-muted-foreground); }
+.mono { font-family: var(--fl-font-mono); }
+.caption { font-size: var(--fl-text-caption); color: var(--fl-muted-foreground); }
+.gutter { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+.fl-header { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; height: var(--fl-header-height); background: var(--fl-sidebar); border-bottom: 1px solid var(--fl-border); }
+.fl-header .in { height: 100%; max-width: 1120px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand svg { width: 40px; height: 40px; flex: none; }
+.wordmark { display: grid; gap: 2px; min-width: 0; }
+.wordmark b { font: 700 var(--fl-text-section)/1 var(--fl-font-display); letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wordmark .rule { display: flex; align-items: center; gap: 6px; color: var(--fl-brass); }
+.wordmark .rule i { height: 1px; flex: 1; background: var(--fl-brass); }
+.wordmark .rule svg { width: 8px; height: 8px; }
+
+.fl-status { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; min-height: var(--fl-statusbar-height); padding-bottom: env(safe-area-inset-bottom, 0px); background: var(--fl-sidebar); border-top: 1px solid var(--fl-border); font: var(--fl-text-caption)/var(--fl-statusbar-height) var(--fl-font-mono); color: var(--fl-muted-foreground); }
+.fl-status .in { max-width: 1120px; margin: 0 auto; display: flex; gap: 16px; white-space: nowrap; overflow: hidden; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot--warn { background: var(--fl-warning); }
+
+main { max-width: 1120px; margin: 0 auto; padding-block: 32px 48px; display: grid; gap: 48px; }
+section { display: grid; gap: 16px; min-width: 0; }
+.eyebrow { font: 600 var(--fl-text-caption)/1 var(--fl-font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--fl-brass); }
+h1 { font: 700 var(--fl-text-display)/1.25 var(--fl-font-display); }
+h2 { font-size: var(--fl-text-page); font-weight: 600; }
+h3 { font-size: var(--fl-text-section); font-weight: 600; }
+.head { display: grid; gap: 8px; }
+.lede { font-size: var(--fl-text-section); max-width: 64ch; }
+.slate { display: flex; flex-wrap: wrap; gap: 8px 24px; font: var(--fl-text-caption) var(--fl-font-mono); color: var(--fl-muted-foreground); border-top: 1px solid var(--fl-brass); padding-top: 12px; }
+.slate b { color: var(--fl-foreground); font-weight: 600; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+.list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.list li { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fl-text-secondary); }
+.list li svg { margin-top: 2px; }
+.ok { color: var(--fl-success); } .info { color: var(--fl-info); } .warn { color: var(--fl-warning); } .bad { color: var(--fl-danger); }
+
+
+/* Semaphore's signature accent: its brand sea blue (7.4:1 Night watch, 5.4:1 Chart room). */
+:root { --fl-accent-night: #5fb3d0; --fl-accent-chart: #1f6f8b; }
+.accent { color: var(--fl-accent); }
+.hero-name { color: var(--fl-accent); }
+
+/* brief mock */
+.brief { display: grid; grid-template-columns: 1.2fr auto 1fr; gap: 16px; align-items: stretch; }
+@media (max-width: 860px) { .brief { grid-template-columns: 1fr; } .brief .arr { transform: rotate(90deg); justify-self: center; } }
+.brief .box { display: grid; gap: 12px; align-content: start; }
+.typed { font-size: var(--fl-text-section); line-height: 2; background: var(--fl-surface); border: 1px solid var(--fl-control-border); border-radius: var(--fl-radius-control); padding: 12px 14px; }
+.hl { border-radius: 4px; padding: 1px 3px; }
+.h-metric { background: color-mix(in srgb, var(--fl-info) 26%, transparent); }
+.h-field { background: color-mix(in srgb, var(--fl-brass) 28%, transparent); }
+.h-time { background: color-mix(in srgb, var(--fl-accent) 24%, transparent); }
+.h-rank, .h-rule { background: color-mix(in srgb, var(--fl-success) 24%, transparent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--fl-text-caption); color: var(--fl-muted-foreground); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.arr { display: grid; place-items: center; color: var(--fl-brass); }
+.arr svg { width: 28px; height: 28px; }
+.flag { display: grid; gap: 10px; align-content: start; }
+.flag .t { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.bars { display: grid; gap: 6px; }
+.bar { display: grid; grid-template-columns: 96px 1fr 52px; gap: 8px; align-items: center; font-size: var(--fl-text-caption); }
+.bar .track { height: 12px; background: var(--fl-muted); border-radius: 3px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--fl-accent); }
+.bar .fill.red { background: var(--fl-danger); }
+.bar .v { font-family: var(--fl-font-mono); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* qlik map */
+.map { display: grid; gap: 8px; }
+.pair { display: grid; grid-template-columns: 1fr 32px 1fr 1.4fr; gap: 12px; align-items: center; }
+.pair .q { font-weight: 600; color: var(--fl-muted-foreground); }
+.pair .s { font-weight: 700; color: var(--fl-accent); }
+.pair .n { font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); }
+.pair svg { color: var(--fl-brass); }
+@media (max-width: 760px) { .pair { grid-template-columns: 1fr 24px 1fr; } .pair .n { grid-column: 1 / 4; } }
+.map-head { display: grid; grid-template-columns: 1fr 32px 1fr 1.4fr; gap: 12px; font: 600 var(--fl-text-caption) var(--fl-font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--fl-muted-foreground); padding: 0 16px; }
+@media (max-width: 760px) { .map-head { display: none; } }
+
+/* thin client flow */
+.flow { display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr 24px 1fr; gap: 8px; align-items: stretch; }
+.flow .fl-card { display: grid; gap: 6px; align-content: start; }
+.flow .num { font: 700 var(--fl-text-display)/1 var(--fl-font-mono); color: var(--fl-accent); font-variant-numeric: tabular-nums; }
+.flow p { font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); }
+.flow .arr svg { width: 20px; height: 20px; }
+@media (max-width: 960px) { .flow { grid-template-columns: 1fr; } .flow .arr { transform: rotate(90deg); height: 24px; } }
+
+/* flip */
+.flip { display: grid; grid-template-columns: 1fr 1.3fr; gap: 16px; }
+@media (max-width: 860px) { .flip { grid-template-columns: 1fr; } }
+pre { margin: 0; font: var(--fl-text-secondary)/1.6 var(--fl-font-mono); overflow-x: auto; background: var(--fl-surface); border: 1px solid var(--fl-border); border-radius: var(--fl-radius-control); padding: 14px 16px; }
+pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-brass); } pre .c { color: var(--fl-muted-foreground); }
+.facts { display: grid; gap: 8px; align-content: start; }
+.facts li { font-size: var(--fl-text-secondary); }
+.facts ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+
+/* playbook */
+.loop { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 860px) { .loop { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 520px) { .loop { grid-template-columns: 1fr; } }
+.loop .fl-card { display: grid; gap: 6px; align-content: start; border-top: 3px solid var(--c); }
+.loop .who { font: 600 var(--fl-text-caption) var(--fl-font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+.loop p { font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); }
+.c-an { --c: var(--fl-accent); } .c-ld { --c: var(--fl-brass); }
+.labels { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.feat { display: grid; gap: 6px; align-content: start; }
+.feat .t-head { display: flex; gap: 8px; align-items: center; color: var(--fl-accent); }
+.feat .t-head h3 { color: var(--fl-foreground); }
+.feat p { font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); }
+.sources { display: flex; flex-wrap: wrap; gap: 8px; }
+.sources .fl-badge { color: var(--fl-foreground); font-weight: 500; }
+.asks { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+.status-line { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); border: 1px dashed var(--fl-border-strong); border-radius: var(--fl-radius-card); padding: 12px 16px; }
+.status-line svg { color: var(--fl-warning); margin-top: 2px; }
+</style>
+<style>.guide-shot{margin:24px 0;padding:20px;border:1px solid var(--fl-border);border-radius:10px;background:var(--fl-card)}.guide-shot img{display:block;width:100%;height:auto;margin:16px auto;border:1px solid var(--fl-border)}.guide-shot figcaption{color:var(--fl-muted-foreground);font-size:14px;line-height:1.6}.guide-shot h3{font-size:20px}#screenshot-walkthrough{scroll-margin-top:80px}@media print{.guide-shot{break-inside:avoid}.guide-shot img{max-height:75vh;object-fit:contain}}</style></head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Lucide icons (ISC) -->
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+  <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></symbol>
+</svg>
+
+<header class="fl-header gutter">
+  <div class="in">
+    <div class="brand">
+      <!-- Fleet emblem frame (8): ink field, brass ring, compass rays at 3 and 9; subject: a semaphore mast with two signal arms -->
+      <svg viewBox="0 0 48 48" role="img" aria-label="Semaphore emblem">
+        <path d="M1 24h6M41 24h6" stroke="var(--fl-brass)" stroke-width="1.5"/>
+        <circle cx="24" cy="24" r="17" fill="var(--fl-accent-ink-night)" stroke="var(--fl-brass)" stroke-width="1.5"/>
+        <path d="M24 14v20M19 34h10" stroke="var(--fl-accent-ink-chart)" stroke-width="1.6"/>
+        <path d="M24 18 15 13" stroke="var(--fl-accent-ink-chart)" stroke-width="1.4"/>
+        <path d="M24 18l9-5" stroke="var(--fl-accent-ink-chart)" stroke-width="1.4"/>
+        <rect x="11" y="10" width="6" height="5" fill="var(--fl-accent)"/>
+        <rect x="31" y="10" width="6" height="5" fill="var(--fl-brass)"/>
+      </svg>
+      <div class="wordmark">
+        <b>Semaphore</b>
+        <span class="rule" aria-hidden="true"><i></i><svg viewBox="0 0 10 10"><path d="M5 0 6 4 10 5 6 6 5 10 4 6 0 5 4 4Z" fill="currentColor"/></svg><i></i></span>
+      </div>
+    </div>
+    <button class="fl-btn fl-btn--secondary" id="theme-btn" type="button" aria-label="Theme: Follow Windows. Click to change."><svg class="icon"><use href="#i-contrast"/></svg><span id="theme-label">Follow Windows</span></button>
+  </div>
+</header>
+
+<main class="gutter">
+<section class="fl-card" style="margin-top:24px;margin-bottom:24px" aria-label="Preview status">
+<h2>Engineering preview - illustrated walkthrough</h2>
+<p>This guide shows <a href="https://github.com/fleethacker-data-crucible/Semaphore/pull/17">the application development preview in PR #17</a>, not the core-only application state on main. Screenshots were captured from <code>feature/fairlead-intelligence</code> at <code>093defc</code>, using built-in synthetic data. Publishing this guide does not merge or release the application.</p>
+<p><a href="#screenshot-walkthrough">Jump to seven actual screenshots</a> | <a href="Semaphore-Qlik-DataNoodler-Comparison.pdf">Download the comparison and visual walkthrough (PDF)</a></p>
+<p>Some original sections below describe development features. The screenshot captions identify which paths were demonstrated; this is not a claim of Qlik feature parity, operational approval or a validated live database deployment.</p>
+</section>
+
+<section class="head">
+  <span class="eyebrow">For data analysts · FleetHacker Edge-Ops · preview</span>
+  <h1>Build the dashboard by <span class="hero-name">describing it</span></h1>
+  <p class="lede">Semaphore is a Qlik-style dashboard builder for thin clients, with AI doing the heavy lifting. Drop a flag on the page, say in plain English what it should show, and Semaphore wires the data, picks the chart and writes the SQL. It learns how your team builds, so it can carry the routine work while you're out. Nothing to install, no admin rights.</p>
+  <div class="slate">
+    <span>RUNS ON <b>Windows + Edge or Chrome</b></span>
+    <span>INSTALLS <b>None</b></span>
+    <span>AI <b>Local or cloud, through Fairlead</b></span>
+    <span>WITHOUT AI <b>Still works</b></span>
+    <span>STATUS <b>v0.3 preview</b></span>
+  </div>
+</section>
+
+<section id="describe">
+  <span class="eyebrow">Type it, see it understood</span>
+  <h2>The brief box reads back as you type</h2>
+  <div class="brief">
+    <div class="fl-card box">
+      <span class="caption">A flag's brief</span>
+      <div class="typed"><span class="hl h-metric">Labor cost</span> by <span class="hl h-field">region</span> for the <span class="hl h-time">last 12 months</span>, <span class="hl h-rank">top 6</span>, <span class="hl h-rule">turn red over $3M</span></div>
+      <div class="legend"><span><i class="h-metric"></i>measure</span><span><i class="h-field"></i>field</span><span><i class="h-time"></i>time</span><span><i class="h-rank"></i>ranking and rules</span></div>
+      <p class="caption">Unknown words are underlined. Typos get "did you mean", and picking one teaches the catalog the word.</p>
+    </div>
+    <span class="arr"><svg class="icon"><use href="#i-arrow"/></svg></span>
+    <div class="fl-card flag">
+      <div class="t"><h3>Labor cost by region</h3><span class="fl-badge" style="color:var(--fl-success)">Drafted · 0.9</span></div>
+      <div class="bars" role="img" aria-label="Example bar chart, sample data">
+        <div class="bar"><span>Gulf</span><span class="track"><span class="fill red" style="display:block;width:100%"></span></span><span class="v">$3.24M</span></div>
+        <div class="bar"><span>Northeast</span><span class="track"><span class="fill" style="display:block;width:72%"></span></span><span class="v">$2.33M</span></div>
+        <div class="bar"><span>Southeast</span><span class="track"><span class="fill" style="display:block;width:61%"></span></span><span class="v">$1.98M</span></div>
+        <div class="bar"><span>Great Lakes</span><span class="track"><span class="fill" style="display:block;width:55%"></span></span><span class="v">$1.79M</span></div>
+        <div class="bar"><span>Pacific NW</span><span class="track"><span class="fill" style="display:block;width:51%"></span></span><span class="v">$1.66M</span></div>
+        <div class="bar"><span>Southwest</span><span class="track"><span class="fill" style="display:block;width:46%"></span></span><span class="v">$1.49M</span></div>
+      </div>
+      <p class="caption">"Gulf stands out: $3.24M against a typical $1.9M." Sample data from the built-in fleet-maintenance example.</p>
+    </div>
+  </div>
+</section>
+
+<section id="screenshot-walkthrough"><span class="eyebrow">Actual preview screens / 29 October 2026</span><h2>See the workflow on screen</h2><p>New captures from feature/fairlead-intelligence, using built-in synthetic data in a fresh browser-only session. Local rules drafted the chart. No remote model or real database was used. The source briefing below includes broader development features; these captures show exactly the paths exercised.</p><figure class="guide-shot"><h3>Start here</h3><img src="assets/analyst-guide/01-welcome.png" alt="Continue the example, create a new hoist, add data or switch to leadership questions."><figcaption>Continue the example, create a new hoist, add data or switch to leadership questions.</figcaption></figure><figure class="guide-shot"><h3>Build the dashboard</h3><img src="assets/analyst-guide/02-dashboard.png" alt="Synthetic maintenance data with KPIs, grouped bars, a trend and a newly drafted comparison."><figcaption>Synthetic maintenance data with KPIs, grouped bars, a trend and a newly drafted comparison.</figcaption></figure><figure class="guide-shot"><h3>Inspect a draft</h3><img style="max-width:560px" src="assets/analyst-guide/03-inspector.png" alt="Type a brief, inspect annotations and the readback, choose a chart and accept only after checking it."><figcaption>Type a brief, inspect annotations and the readback, choose a chart and accept only after checking it.</figcaption></figure><figure class="guide-shot"><h3>Filter the whole page</h3><img src="assets/analyst-guide/04-filtered.png" alt="Selecting Icebreaker changes the KPIs and charts; the chip records the active selection."><figcaption>Selecting Icebreaker changes the KPIs and charts; the chip records the active selection.</figcaption></figure><figure class="guide-shot"><h3>Inspect the catalog</h3><img style="max-width:560px" src="assets/analyst-guide/05-data.png" alt="Sample sources are explicitly labeled. Real databases require configured server connections."><figcaption>Sample sources are explicitly labeled. Real databases require configured server connections.</figcaption></figure><figure class="guide-shot"><h3>Read Qlik definitions</h3><img src="assets/analyst-guide/06-qlik.png" alt="Illustrative script and expression in the real dialog. This capture is not a completed database import."><figcaption>Illustrative script and expression in the real dialog. This capture is not a completed database import.</figcaption></figure><figure class="guide-shot"><h3>Ask as leadership</h3><img src="assets/analyst-guide/07-ask.png" alt="The answer is labeled drafted, not reviewed. This fresh session has zero reviewed answers."><figcaption>The answer is labeled drafted, not reviewed. This fresh session has zero reviewed answers.</figcaption></figure></section>
+<section id="qlik">
+  <span class="eyebrow">Coming from Qlik</span>
+  <h2>Everything you know has a home here</h2>
+  <div class="map-head"><span>Qlik</span><span></span><span>Semaphore</span><span>What changes</span></div>
+  <div class="map">
+    <div class="fl-card pair"><span class="q">Sheet</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Hoist</span><span class="n">A page of flags on a 12-column lego grid. A hoist is the set of signal flags run up together to send one message.</span></div>
+    <div class="fl-card pair"><span class="q">Chart object</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Flag</span><span class="n">Describe it and Semaphore picks the chart from the data's shape: KPI, bar, line, area, pie, table, picker.</span></div>
+    <div class="fl-card pair"><span class="q">Master measures and dimensions</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Catalog</span><span class="n">Measures and fields defined once, with labels and synonyms, so "spend" and "labor cost" mean the same thing.</span></div>
+    <div class="fl-card pair"><span class="q">Load script and data model</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Profile and add</span><span class="n">Point at a table or a CSV file; Semaphore proposes the measures and fields for you to check.</span></div>
+    <div class="fl-card pair"><span class="q">Associative selections</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Page selections</span><span class="n">Click a bar or a picker value and the whole page filters. Pickers narrow to related values, the way Qlik users expect.</span></div>
+    <div class="fl-card pair"><span class="q">Expression editor</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Flip a flag over</span><span class="n">The flag in plain English, why it was drafted that way, and the exact SQL with its parameters.</span></div>
+    <div class="fl-card pair"><span class="q">Published app and stream</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Playbook and Ask view</span><span class="n">Accepted flags become answers leadership can ask for in plain English.</span></div>
+    <div class="fl-card pair"><span class="q">Reload task</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Snapshots and refresher</span><span class="n">Whoever can reach a source refreshes the playbook's aggregated results; leaders never connect to a database.</span></div>
+  </div>
+</section>
+
+<section id="port">
+  <span class="eyebrow">Porting from Qlik · in review</span>
+  <h2>Bring your Qlik app with you</h2>
+  <p class="muted">Your Qlik app already knows what the data means. Open <b>Data → Import from Qlik</b>, paste its load script and chart expressions, map each connection to a source, and pick the tables. Semaphore reads it all with no model needed for the common cases, profiles the real tables, and shows you everything before it reaches the catalog. Expressions it can't read, the AI can read for you, checked against your catalog before anything is added.</p>
+  <div class="map-head"><span>In your Qlik app</span><span></span><span>In Semaphore</span><span>How</span></div>
+  <div class="map">
+    <div class="fl-card pair"><span class="q">LIB CONNECT TO 'Warehouse'</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Source</span><span class="n">Map each Qlik connection to a Semaphore source once.</span></div>
+    <div class="fl-card pair"><span class="q">SQL SELECT … FROM ops.work_orders</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Table, profiled</span><span class="n">Semaphore profiles the real table for types and sizes, including QVD and file loads it can reach.</span></div>
+    <div class="fl-card pair"><span class="q">labor_cost AS [Labor Cost]</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Field labels</span><span class="n">Your renames become the labels and synonyms, so briefs use the words your team already uses.</span></div>
+    <div class="fl-card pair"><span class="q">HullNo in two tables</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Checked join</span><span class="n">Qlik's associations are the joins it was making; they become relationships once the data shows which side identifies one row.</span></div>
+    <div class="fl-card pair"><span class="q">MAPPING LOAD + ApplyMap</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Cleaning steps</span><span class="n">"N.E." and "NE" become Northeast: the mapping comes across as a cleaning step you can read and undo.</span></div>
+    <div class="fl-card pair"><span class="q">Sum({&lt;Year={2025}&gt;} [Labor Cost])</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">Measure + filter</span><span class="n">Sum, Avg, Min, Max, Count and Count(DISTINCT), with literal set analysis (in, excluded, ranges).</span></div>
+    <div class="fl-card pair"><span class="q">Sum(Cost)/Sum(Hours), Aggr(…), $(vYear)</span><svg class="icon"><use href="#i-arrow"/></svg><span class="s">AI, then you</span><span class="n">The reader says exactly why it stopped; ask the AI and it proposes the measures, checked against the catalog and added only when you say so.</span></div>
+  </div>
+</section>
+
+<section id="thin">
+  <span class="eyebrow">Made for thin clients</span>
+  <h2>The database does the work, the browser stays light</h2>
+  <div class="flow">
+    <div class="fl-card"><span class="num">1</span><h3>One GROUP BY per flag</h3><p>Every flag is a single aggregate query. Millions of rows in the source come back as a few hundred.</p></div>
+    <span class="arr"><svg class="icon"><use href="#i-arrow"/></svg></span>
+    <div class="fl-card"><span class="num">72</span><h3>Pre-sliced for the page</h3><p>Results are also split by the fields other flags can select: 6 regions × 12 ship classes is 72 rows.</p></div>
+    <span class="arr"><svg class="icon"><use href="#i-arrow"/></svg></span>
+    <div class="fl-card"><span class="num">0</span><h3>Round trips per click</h3><p>Clicking "Northeast" filters every flag from cached results. Averages travel as sum and count, so re-adding stays exact.</p></div>
+    <span class="arr"><svg class="icon"><use href="#i-arrow"/></svg></span>
+    <div class="fl-card"><span class="num">50k</span><h3>Row cap, then live</h3><p>Past the cap a flag re-queries just itself on selection, shows its last result meanwhile, and says when totals may be incomplete.</p></div>
+  </div>
+</section>
+
+<section id="flip">
+  <span class="eyebrow">No black boxes</span>
+  <h2>Flip any flag over and read its SQL</h2>
+  <div class="flip">
+    <div class="fl-card facts">
+      <h3>What you can trust about it</h3>
+      <ul>
+        <li>Table and column names come only from the catalog, always quoted.</li>
+        <li>Every value is a bound, typed parameter: <code>$1</code> on Postgres, <code>:p1</code> on Oracle, <code>@p1</code> on SQL Server, <code>?</code> on Access.</li>
+        <li>Dates are bucketed in UTC; a date's upper bound covers the whole day.</li>
+        <li>Where a database can't do it right (Access has no <code>COUNT(DISTINCT)</code>), Semaphore refuses rather than guess.</li>
+        <li>Every draft carries a confidence score and notes on what it could not match.</li>
+      </ul>
+    </div>
+<pre><span class="c">-- Labor cost by region, last 12 months (Postgres; illustrative)</span>
+<span class="k">SELECT</span> "region",
+       "ship_class",
+       <span class="k">SUM</span>("labor_cost") <span class="k">AS</span> "labor_cost"
+<span class="k">FROM</span>   "jobs"
+<span class="k">WHERE</span>  "opened" &gt;= <span class="p">$1</span>
+  <span class="k">AND</span>  "opened" &lt;  <span class="p">$2</span>
+<span class="k">GROUP BY</span> "region", "ship_class"
+
+<span class="c">-- $1 = 2025-11-01 (date)   $2 = 2026-11-01 (date)
+-- ship_class is here so a click on the
+-- Ship class picker filters this flag locally</span></pre>
+  </div>
+</section>
+
+<section id="playbook">
+  <span class="eyebrow">Analysts build, leadership asks</span>
+  <h2>Your reviewed work answers leadership's questions</h2>
+  <div class="loop">
+    <div class="fl-card c-an"><span class="who">Analyst</span><h3>Describe and draft</h3><p>Write a brief; Semaphore drafts the flag with its data, chart and SQL.</p></div>
+    <div class="fl-card c-an"><span class="who">Analyst</span><h3>Check and accept</h3><p>Flip it, fix it, accept it. The question and its exact data join the playbook.</p></div>
+    <div class="fl-card c-ld"><span class="who">Leadership</span><h3>Ask in plain English</h3><p>A single question box, answered from the analysts' accepted work.</p></div>
+    <div class="fl-card c-ld"><span class="who">Leadership</span><h3>See how sure it is</h3><p>Every answer is labelled, with its data date and "Why this answer?"</p></div>
+  </div>
+  <div class="labels"><span class="fl-badge" style="color:var(--fl-success)">Reviewed</span><span class="fl-badge" style="color:var(--fl-info)">Worked out from a reviewed flag</span><span class="fl-badge" style="color:var(--fl-warning)">Drafted, not reviewed</span><span class="fl-badge" style="color:var(--fl-muted-foreground)">Can't answer yet</span></div>
+  <p class="muted">Questions Semaphore can't answer wait in a queue for the analysts. "Build the answer" turns one into a flag, and accepting it answers that question next time, in the asker's own words.</p>
+</section>
+
+<section id="more">
+  <span class="eyebrow">Also in the box</span>
+  <h2>Small things that save an afternoon</h2>
+  <div class="grid">
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-sparkles"/></svg><h3>Starter page</h3></div><p>An empty page offers one drafted from the catalog: headline numbers, pickers, a trend, a breakdown and a top 10.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-search"/></svg><h3>Worth a look</h3></div><p>Each flag points out the latest move in a trend, a dominant category, an outlier, the biggest change, and values breaking a red rule.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-chart"/></svg><h3>Comparisons</h3></div><p>"vs last year", "compared with the previous quarter", "as a % of total", like for like.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Lego grid</h3></div><p>Drag, resize, drop from the palette, arrow keys to nudge, undo and redo, light and dark themes.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-arrow"/></svg><h3>Where a number comes from</h3></div><p>A lineage view traces every flag back through its measures, fields and joins to the table and the database.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Share it as one file</h3></div><p>Save a page as a single HTML file that opens anywhere and keeps its filters working, optionally locked with a passphrase.</p></div>
+  </div>
+</section>
+
+<section id="prep">
+  <span class="eyebrow">Messy data · built, in review</span>
+  <h2>The load-script work, done with you instead of by you</h2>
+  <p class="muted">Cleaning data and wiring tables together is where a lot of Qlik time goes. Semaphore finds the mess (the AI adds the abbreviations and misspellings, when asked) and proposes each fix; you approve each one, and Semaphore applies it in its own code, so the AI never touches the numbers.</p>
+  <div class="grid">
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-search"/></svg><h3>Spots the mess</h3></div><p>"N.E." next to "Northeast", stray spaces, mixed date formats, numbers stored as text, duplicates, blanks that mean zero.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Readable cleaning steps</h3></div><p>Each fix is a plain sentence you can read, accept or undo: "Treat N.E. and NE as Northeast". No script to maintain.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Finds the joins</h3></div><p>Proposes which tables connect on which keys, with how many values actually match, so a flag can read across tables and drill from ship class to hull to the rows behind it.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-check"/></svg><h3>Checked, then shared</h3></div><p>Accepted steps live in the catalog, so every analyst and every snapshot gets the same clean data.</p></div>
+  </div>
+</section>
+
+<section id="sources">
+  <span class="eyebrow">Where the data lives</span>
+  <h2>From a CSV on the desktop to the data lake</h2>
+  <div class="grid">
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Files on your PC</h3></div><p>CSV files read in the page and never uploaded, large ones in the background so the page never freezes; Access databases through the engine already on Windows.</p><span class="fl-badge" style="color:var(--fl-success)">Works today</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Databases</h3></div><p>Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC, with SQL written in each one's own dialect and every value a bound parameter.</p><span class="fl-badge" style="color:var(--fl-success)">Works today</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-chart"/></svg><h3>The S3 data lake, built in</h3></div><p>Sounding Line's lake engine becomes Semaphore's Athena source: before a flag's query runs, Semaphore sizes the table and shows the most it could scan and cost. Big scans wait for a <b>Run it</b> click, a missing partition filter gets a warning, daily limits hold, and repeat queries come from the cache for free. Adding a lake table reads the catalog only and costs nothing.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>A SQL desk</h3></div><p>Write your own SELECT against any source on this computer, the lake included: the same guard, cost guard and cache, with a CSV download.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-check"/></svg><h3>No keys on your PC</h3></div><p>Analysts get short AWS sessions brokered through Lazarette instead of AWS accounts, and every query is attributed to them in CloudTrail.</p><span class="fl-badge" style="color:var(--fl-muted-foreground)">Next, with Lazarette</span></div>
+  </div>
+  <div class="fl-card" style="display:grid;gap:8px">
+    <h3>Why the lake and Semaphore fit</h3>
+    <p class="muted">Every flag is one aggregate query, so a scan returns a few hundred rows, not millions. Snapshots mean leadership's questions are answered from saved results and never start a scan of their own. Credentials stay in the DSN, Windows sign-in or the broker, never in the page.</p>
+  </div>
+</section>
+
+<section id="ai">
+  <span class="eyebrow">AI does the heavy lifting</span>
+  <h2>The model writes the drafts; your numbers never come from it</h2>
+  <div class="grid">
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-sparkles"/></svg><h3>Understands how people ask</h3></div><p>"Where are we bleeding hours on the older hulls?" becomes a flag, not a keyword hunt.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Builds the catalog</h3></div><p>Names measures, writes descriptions and synonyms for a whole database, ready for you to check.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-search"/></svg><h3>Explains what changed</h3></div><p>Turns the numbers into a plain-language brief for leadership, each sentence linked to its flag, and every number checked against Semaphore's own figures.</p></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-arrow"/></svg><h3>Bridges from Qlik</h3></div><p>Reads what the script reader can't: ratios, nested aggregates and calculated fields. See "Bring your Qlik app with you" below.</p></div>
+  </div>
+  <div class="fl-card" style="display:grid;gap:8px">
+    <h3>Local or cloud, your call</h3>
+    <p class="muted">Semaphore talks to AI through Fairlead, the Fleet's model router: a local model by default, so prompts stay on the computer, or an approved cloud model with one setting. Prompts carry briefs and catalog labels only, never data rows. SQL is written by Semaphore's own code from a checked draft, so a model can never invent a figure. With no model at all, the built-in rules still draft every flag.</p>
+  </div>
+</section>
+
+<section id="away">
+  <span class="eyebrow">When an analyst is out · built, in review</span>
+  <h2>Semaphore covers the routine, you keep the freedom</h2>
+  <p class="muted">The point is not to replace analysts. It is to cover sick days and leave, and to free analysts to experiment, without leadership waiting.</p>
+  <div class="grid">
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Team style card</h3></div><p>Learns how the team builds from accepted dashboards: which chart for which question, layout habits, standard time windows, what counts as red. Readable and editable by the analysts.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-sparkles"/></svg><h3>Drafts in the team's style</h3></div><p>New questions get answers built the way the team builds them, clearly labelled "drafted in your team's style, not reviewed".</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-file"/></svg><h3>Away mode</h3></div><p>"I'm out until Friday": Semaphore answers the familiar questions from reviewed work, briefs leadership on what changed, and holds anything new.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-search"/></svg><h3>While you were out</h3></div><p>Back at your desk: what leadership asked, what Semaphore drafted, and what needs your sign-off, in one digest.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-chart"/></svg><h3>Recurring reports</h3></div><p>Semaphore notices the page you open every Monday and offers to keep it coming: while you're away, a dated edition with its briefing arrives on schedule for leadership.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+    <div class="fl-card feat"><div class="t-head"><svg class="icon icon--nav"><use href="#i-grid"/></svg><h3>Room to experiment</h3></div><p>Mark a page as an experiment and try anything: it never changes the team's style or the answers leadership gets.</p><span class="fl-badge" style="color:var(--fl-info)">Built · in review</span></div>
+  </div>
+  <div class="status-line"><svg class="icon"><use href="#i-check"/></svg><span>It learns from finished, accepted work only. It never records keystrokes, clicks or time spent, and any flag can be marked "do not learn". Every answer shows whose reviewed work it came from.</span></div>
+</section>
+
+<section class="fl-card" id="help" style="gap:12px">
+  <span class="eyebrow">Where analysts come in</span>
+  <h2>Help shape it before it ships</h2>
+  <ol class="asks">
+    <li>Which Qlik habits does it miss? Set analysis, alternate states, a favourite chart type?</li>
+    <li>Try a brief you'd normally build by hand and see what Semaphore drafts.</li>
+    <li>Tell us where the plain-English reading gets a term wrong; the catalog learns it.</li>
+    <li>What should the team style card capture about how you build?</li>
+    <li>Which databases and file types should come first?</li>
+  </ol>
+  <div class="status-line"><svg class="icon"><use href="#i-alert"/></svg><span>Semaphore is a v0.3 preview and a prototype, not accredited for operational data. Try it with synthetic or sample data only. Everything marked built is in review; the lake has been tested against a simulated AWS only. Items marked Next are not built yet.</span></div>
+</section>
+
+</main>
+
+<footer class="fl-status gutter" aria-label="Status">
+  <div class="in"><span><span class="dot dot--warn"></span>Preview</span><span>Semaphore v0.3</span><span>Fleet UI v0.2</span><span>28 Oct 2026</span></div>
+</footer>
+
+<script>
+(function () {
+  // Theme override (Fleet UI 3.1): Follow Windows -> Night watch -> Chart room, persisted under <app>-theme.
+  var KEY = 'semaphore-intro-theme';
+  var root = document.documentElement;
+  var hostTheme = root.getAttribute('data-theme');
+  var modes = ['system', 'dark', 'light'];
+  var names = { system: 'Follow Windows', dark: 'Night watch', light: 'Chart room' };
+  var btn = document.getElementById('theme-btn');
+  var label = document.getElementById('theme-label');
+  function apply(mode) {
+    if (mode === 'system') { if (hostTheme) root.setAttribute('data-theme', hostTheme); else root.removeAttribute('data-theme'); }
+    else root.setAttribute('data-theme', mode);
+    label.textContent = names[mode];
+    btn.setAttribute('aria-label', 'Theme: ' + names[mode] + '. Click to change.');
+  }
+  var mode = 'system';
+  try { var saved = localStorage.getItem(KEY); if (modes.indexOf(saved) > -1) mode = saved; } catch (e) {}
+  apply(mode);
+  btn.addEventListener('click', function () {
+    mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+    apply(mode);
+    try { localStorage.setItem(KEY, mode); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
