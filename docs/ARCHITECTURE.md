@@ -3,8 +3,8 @@
 **Scope:** main currently contains the v0.1 TypeScript core. The server, browser and deployment layers described as planned below are target application design. The preview implementations are tracked in PR #10 and PR #13.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="diagrams/diagrams/core-overview-dark.svg">
-  <img src="diagrams/diagrams/core-overview-light.svg" alt="The current TypeScript core validates dashboard models, plans SQL and cross-filters results; query execution and rendering belong to the caller." width="1280">
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/core-overview-dark.svg">
+  <img src="diagrams/core-overview-light.svg" alt="The current TypeScript core validates dashboard models, plans SQL and cross-filters results; query execution and rendering belong to the caller." width="1280">
 </picture>
 
 See [Architecture, visually](ARCHITECTURE-DIAGRAMS.md) for the component, data-flow and AI-boundary diagrams, including explicit current-versus-preview labels.
