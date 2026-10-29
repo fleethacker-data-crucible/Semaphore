@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Semaphore">
+  <title>Semaphore</title>
+  <circle cx="32" cy="32" r="29.5" fill="#0d2233" stroke="#c9a66b" stroke-width="3"/>
+  <path d="M30.5 22 L16 10.5" stroke="#f1e4c8" stroke-width="5.6"/>
+  <path d="M21.6 15 L18.4 12.4" stroke="#071420" stroke-width="5.7"/>
+  <path d="M33.5 27.5 H51.5" stroke="#f1e4c8" stroke-width="5.6"/>
+  <path d="M44 27.5 H47.6" stroke="#071420" stroke-width="5.7"/>
+  <rect x="29.5" y="14" width="5" height="30" rx="1" fill="#c9a66b"/>
+  <circle cx="32" cy="12.6" r="2.6" fill="#c9a66b"/>
+  <circle cx="30.5" cy="22" r="2.1" fill="#9b7a52"/>
+  <circle cx="33.5" cy="27.5" r="2.1" fill="#9b7a52"/>
+  <rect x="17" y="42" width="30" height="11" rx="1.6" fill="#c9a66b"/>
+  <rect x="19.5" y="44" width="25" height="7" rx="0.8" fill="#071420"/>
+  <path d="M24 50 V48 M28.5 50 V46.8 M33 50 V47.6 M37.5 50 V45.6 M42 50 V45" stroke="#f0b429" stroke-width="2.2"/>
+</svg>

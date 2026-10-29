@@ -1,8 +1,16 @@
 // The catalog is Semaphore's semantic layer: every source, field and metric is defined once,
 // and flags refer to them by key. The AI and the planner only ever see the catalog, never rows.
 
+import type { CleaningStep } from './cleaning.ts';
+import type { Relationship } from './joins.ts';
+
 /** ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server. */
-export type Dialect = 'postgres' | 'oracle' | 'access' | 'tsql' | 'ansi';
+export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'ansi'] as const;
+export type Dialect = typeof SQL_DIALECTS[number];
+
+export function isSqlDialect(value: unknown): value is Dialect {
+  return typeof value === 'string' && (SQL_DIALECTS as readonly string[]).includes(value);
+}
 
 export type SourceKind =
   | 'postgres'
@@ -59,6 +67,19 @@ export interface Catalog {
   sources: Source[];
   fields: Field[];
   metrics: Metric[];
+  /** Many-to-one links between tables of one source (joins.ts). */
+  relationships?: Relationship[];
+  /** Accepted cleaning steps, applied wherever a field is read (cleaning.ts). */
+  cleaning?: CleaningStep[];
+  /** Drill paths for categories: ship class → hull (hoist flags drill along these). */
+  hierarchies?: Hierarchy[];
+}
+
+export interface Hierarchy {
+  id: string;
+  label: string;
+  /** Field keys, broadest first. */
+  levels: string[];
 }
 
 export interface CatalogIndex {
@@ -93,6 +114,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
   const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql' };
   for (const s of catalog.sources) {
+    if (!isSqlDialect(s.dialect)) problems.push(`Source "${s.id}" uses an unsupported SQL dialect; supported profiles: ${SQL_DIALECTS.join(', ')}.`);
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);
     seen.add(`source:${s.id}`);
     const want = expected[s.kind];
@@ -117,11 +139,45 @@ export function checkCatalog(catalog: Catalog): string[] {
       if (!m.table || !isIdentifier(m.table)) problems.push(`Metric "${m.key}" counts rows but names no valid table.`);
     } else if (!fieldKeys.has(m.field)) {
       problems.push(`Metric "${m.key}" names unknown field "${m.field}".`);
-    } else if (m.agg !== 'count' && m.agg !== 'count_distinct' && catalog.fields.find((f) => f.key === m.field)?.type !== 'number') {
+    } else if (
+      m.agg !== 'count' &&
+      m.agg !== 'count_distinct' &&
+      catalog.fields.find((f) => f.key === m.field)?.type !== 'number' &&
+      !(catalog.cleaning ?? []).some((c) => c.field === m.field && c.kind === 'number')
+    ) {
       problems.push(`Metric "${m.key}" uses ${m.agg} on a field that is not a number.`);
     }
   }
+  for (const r of catalog.relationships ?? []) {
+    if (!sourceIds.has(r.source)) problems.push(`Relationship "${r.id}" names unknown source "${r.source}".`);
+    for (const c of [r.from, r.to]) {
+      if (!isIdentifier(c.table) || !isIdentifier(c.column) || c.column.includes('.')) problems.push(`Relationship "${r.id}" has a table or column name Semaphore will not quote safely.`);
+    }
+    if (r.from.table === r.to.table) problems.push(`Relationship "${r.id}" joins "${r.from.table}" to itself.`);
+  }
+  for (const c of catalog.cleaning ?? []) {
+    if (!fieldKeys.has(c.field)) problems.push(`Cleaning step "${c.id}" names unknown field "${c.field}".`);
+  }
+  for (const h of catalog.hierarchies ?? []) {
+    if (h.levels.length < 2) problems.push(`Drill path "${h.label}" needs at least two levels.`);
+    for (const l of h.levels) if (!fieldKeys.has(l)) problems.push(`Drill path "${h.label}" names unknown field "${l}".`);
+  }
   return problems;
+}
+
+/**
+ * Drops cleaning steps, drill paths and relationships that point at fields, tables or sources no
+ * longer in the catalog (a CSV loaded again without a column, a source removed).
+ */
+export function pruneCatalog(catalog: Catalog): Catalog {
+  const fields = new Set(catalog.fields.map((f) => f.key));
+  const sources = new Set(catalog.sources.map((s) => s.id));
+  const tables = new Set(catalog.fields.map((f) => `${f.source}|${f.table}`));
+  const out: Catalog = { ...catalog };
+  if (catalog.cleaning) out.cleaning = catalog.cleaning.filter((c) => fields.has(c.field));
+  if (catalog.hierarchies) out.hierarchies = catalog.hierarchies.filter((h) => h.levels.every((l) => fields.has(l)));
+  if (catalog.relationships) out.relationships = catalog.relationships.filter((r) => sources.has(r.source) && tables.has(`${r.source}|${r.from.table}`) && tables.has(`${r.source}|${r.to.table}`));
+  return out;
 }
 
 /**

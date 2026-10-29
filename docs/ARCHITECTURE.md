@@ -1,41 +1,69 @@
 # Semaphore architecture
 
-**Scope:** main currently contains the v0.1 TypeScript core. The server, browser and deployment layers described as planned below are target application design. The preview implementations are tracked in PR #10 and PR #13.
+**Scope:** this is the reconciled v0.3 application preview in PR #17, incorporating PR #10 and the feature work from PR #13.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="diagrams/core-overview-dark.svg">
-  <img src="diagrams/core-overview-light.svg" alt="The current TypeScript core validates dashboard models, plans SQL and cross-filters results; query execution and rendering belong to the caller." width="1280">
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/application-overview-dark.svg">
+  <img src="diagrams/application-overview-light.svg" alt="The preview browser uses a local PowerShell API for queries and JSON documents; optional model requests go to Fairlead and leadership reads snapshots." width="1280">
 </picture>
 
 See [Architecture, visually](ARCHITECTURE-DIAGRAMS.md) for the component, data-flow and AI-boundary diagrams, including explicit current-versus-preview labels.
 
 **The stack is defined by [`TechStack`](../TechStack).** This document describes how Semaphore uses it.
 
+## Two users, one body of knowledge
+
+Semaphore is built for **analysts**, who build and review hoists, and **leadership**, who ask questions and need answers they can trust. The preview includes both the analyst workflow and the leadership view:
+
+- Every accepted flag is a reviewed pair of a plain-English question and an exact binding. Bindings are catalog keys only, so they can be replayed on today's data by anyone with access to the source.
+- All "intelligence" goes through one validated path (`validateFlagDraft`, `parseBinding`), whether it comes from local rules, a supported AI provider or the playbook. Nothing reaches a flag that is not checked against the catalog.
+- Reading a brief (`annotateBrief`) gives a deterministic signature of a question: its measures, fields, window, ranking and behaviour. The playbook matches leadership's questions to analysts' accepted flags with that signature, so every answer can say which reviewed flag it reused.
+
+The playbook, snapshots and the leadership view are built (0.3); [PLAYBOOK.md](PLAYBOOK.md) has how they work, the decisions behind them, and what is still to do.
+
 ## Layers
 
 ```
-Launch-Semaphore.bat ──► PowerShell 5.1 loopback server (planned)
-                           ├─ static UI (compiled JS/CSS/WASM)
-                           ├─ /api/heartbeat, lifecycle per TechStack
-                           ├─ /api/query   runs a rendered SQL query against a source, binds params
-                           ├─ connectors   bundled managed .NET drivers via Add-Type (no installs)
-                           └─ vault bridge  connection secrets and AI tokens come from the Lazarette vault
+Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpListener on 127.0.0.1:8774-8776
+                           ├─ static UI from web/dist (compiled JS/CSS only)
+                           ├─ session token, Host/Origin checks, /__fleethacker/id and /shutdown
+                           ├─ /api/heartbeat, /api/leaving, /api/end   lifecycle per TechStack
+                           ├─ /api/hoists, /api/catalogs               JSON files in the user's Semaphore folder
+                           ├─ /api/query                               rendered SQL + typed parameters → ODBC / OLE DB
+                           └─ /api/profile                             tables, columns, types, distinct counts
 
 Browser
-  src/app (planned)       canvas, flag palette, flag inspector, report export
-  src/core                framework-free TypeScript, unit-tested
+  web/src                 React 19 UI: canvas, palette, inspector, brief editor, ask box, data panel
+    lib/data.ts           runs a flag: plan → page engine or /api/query → cross-filter → comparison
+  src/core                framework-free TypeScript, unit-tested, shared by the UI and the tests
     catalog.ts            semantic layer: sources, fields, metrics, defined once
+    profile.ts, csv.ts    propose a catalog from a profiled table or a CSV file
     hoist.ts              hoist (dashboard) and flag (block) model + validation
     layout.ts             lego grid placement
-    planner.ts            flag → query plan, sized for a thin client
+    planner.ts            flag → query plan, sized for a thin client; comparison windows
     sql.ts                plan → SQL per dialect, typed bound parameters
-    crossfilter.ts        page selections applied to cached results locally
-    intelligence/         provider contract, local rules, remote providers, fallback
+    engine.ts             plan → rows, in memory (sample data and CSV files in the page)
+    crossfilter.ts        page selections applied to cached results locally; totals; line-up
+    shape.ts              the chart a binding's shape calls for
+    describe.ts           a flag in plain English
+    insights.ts           what is worth a glance in a flag's own result
+    intelligence/         provider contract, local rules, brief annotation, remote providers
+  src/sample              generated rows for the fleet-maintenance example
+
+  src/core/playbook.ts    learn on accept, provenance, needs review, question → entry, trust labels
+  src/core/snapshot.ts    accepted flags → aggregated, pre-split snapshots; answers by re-adding them
+  web/src/components/AskView.tsx        leadership view: question box, answers, headline numbers, what changed
+  web/src/components/PlaybookPanel.tsx  analysts: leadership's questions, answers in use, needs review, coverage
+
+Server (same document store as hoists)
+  /api/playbook, /api/snapshots, /api/questions   one JSON file per document in the shared Semaphore folder
 ```
+
+Sample and CSV calculations run in the browser. Shared snapshots and exported reports can contain result data; optional AI payloads are described in the visual guide and the intelligence-provider document. Sources held in the page (the example's sample rows and CSV files) are answered by `engine.ts`, which runs exactly what `renderSql()` would ask a database for, so a flag behaves the same on a CSV file and on Oracle. Every other source goes to `/api/query` as SQL with bound, typed parameters; ODBC and OLE DB bind positionally, so the UI renders `?` placeholders for them (`renderSql(..., { placeholders: 'question' })`).
 
 ## Thin clients: the database does the work
 
-Users are on thin clients, so Semaphore never copies whole tables into the browser.
+For database-backed flags, the planner pushes aggregation to the source to limit result sizes. CSV imports and explicit row views are separate paths; this is not a blanket promise that the browser never holds rows.
 
 1. **Aggregate at the source.** Every flag becomes one `GROUP BY` query. Millions of rows in Oracle come back as a few hundred.
 2. **Pre-slice for the page.** A flag's query is also split by the fields *other* flags on the page can select (filter flags, and charts whose click filters the page). Clicking "Northeast" on one flag then filters every other flag from its cached result, with no round trip. Example: work orders split by 6 regions × 12 ship classes is 72 rows.
@@ -67,15 +95,19 @@ A flag's brief can opt out of page selections ("ignore the region filter"). The 
 
 Hoist files, imports and AI output are capped before use: briefs at 4,000 characters, 200 flags, 50 metrics, 20 fields, 50 filters of at most 500 values, 20 thresholds, 2 MB provider responses, 200 warnings. Overlapping layouts are repaired on load. Regexes that read briefs are bounded, and provider text is unwrapped without regexes.
 
-## v1 limits
+## Current preview limits
 
-- One source and one table per flag. Joins arrive with catalog relationships.
-- Selections only reach flags on the same table.
+- A flag uses one source and a base table for its measures. Grouping and filter fields can follow configured many-to-one relationships within that source.
+- Cross-table filtering depends on valid catalog relationships; unrelated tables are refused. Live database and lake deployments still need target-service validation.
 
 ## Storage
 
-- **Hoists and the catalog are small JSON files.** On non-persistent VDI profiles, browser storage may be wiped at logoff, so these are saved by the server to the user's home or a network folder. IndexedDB holds only cached results, which are safe to lose.
-- Credentials never enter the browser or the hoist: a source names an Lazarette vault item.
+- **The playbook** (accepted question-and-binding pairs, learnt vocabulary, the question queue) is JSON in `<home>\playbook\`. Sharing it between analysts and leadership happens through a Semaphore folder, which may be a Windows network share: each person runs their own loopback copy. Leadership reads **snapshots** in `<home>\snapshots\` (aggregated, pre-split results of accepted flags, refreshed when an analyst runs Semaphore) and never connects to a source; the folder's Windows permissions decide who can see them.
+
+- **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
+- **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
+- **CSV files** are read in the page and kept in IndexedDB so they come back after a reload. They are never uploaded.
+- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may name a Lazarette vault item for when the vault bridge lands.
 
 ## Sharing
 
@@ -85,13 +117,13 @@ A report is exported as one self-contained HTML file (the same technique as Shel
 
 | TechStack item | Semaphore use | State |
 | --- | --- | --- |
-| `.bat` → `powershell.exe -File` | `Launch-Semaphore.bat` | Planned |
-| PowerShell 5.1 + `TcpListener` | Loopback server, query endpoint, lifecycle rules | Planned |
-| React 19 + TS, or Svelte 5 | UI | Waiting on the unified Data Crucible UI rules |
-| Tailwind 4 + shadcn-style | UI | Waiting, as above |
-| ECharts, React Flow, Motion | Flag rendering (ECharts); lineage view (Flow) | Planned |
+| `.bat` → `powershell.exe -File` | `Launch-Semaphore.bat` → `server\Start-Semaphore.ps1` | Done |
+| PowerShell 5.1 + `TcpListener` | Loopback server, query and profile endpoints, every lifecycle rule | Done |
+| React 19 + TS | UI (`web/src`) | Done |
+| Tailwind 4 + shadcn-style | Styling with theme tokens; Lucide icons | Done (CVA and Radix not needed yet) |
+| ECharts, React Flow, Motion | Flag rendering (ECharts, SVG renderer); lineage view (Flow) | ECharts done; Flow planned |
 | Rust → WebAssembly | Optional: cross-filter kernel if results grow; today's results are small enough for TypeScript | Not needed yet |
-| IndexedDB / localStorage | Cached results / settings | Planned |
-| Service workers, Web Workers | App-shell cache; queries and cross-filtering off the main thread | Planned |
-| Web Crypto, DPAPI | Report encryption; secrets via Lazarette | Planned |
-| C# via `Add-Type` | Managed DB drivers (Npgsql, Oracle.ManagedDataAccess), OLE DB for Access | Planned |
+| IndexedDB / localStorage | CSV files / theme, working copy | Done |
+| Service workers, Web Workers | CSV parsing and queries use a worker; app-shell service-worker caching is not implemented | CSV worker done |
+| Web Crypto, Windows Credential Manager | AES-GCM report encryption and server-side Fairlead key storage; legacy DPAPI file compatibility | Implemented in this preview |
+| C# via `Add-Type` | In-memory native Windows credential bridge; database access uses the framework ODBC/OLE DB APIs | Implemented; no custom DLL shipped |

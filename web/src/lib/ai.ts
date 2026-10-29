@@ -1,0 +1,86 @@
+// AI drafting through Fairlead, the Fleet's model router. The browser never holds the Fairlead key:
+// it talks to this Semaphore server's /api/ai/v1 with its session token, and the server adds the key
+// and forwards to Fairlead on loopback (server/Intelligence.ps1). With no server, no stored key, or
+// AI switched off, local rules draft every flag, and a failing Fairlead falls back to them too.
+
+import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import { type IntelligenceProvider, LocalRulesProvider, OpenAICompatibleProvider } from '../../../src/core/intelligence/index.ts';
+import type { FetchLike } from '../../../src/core/intelligence/remote.ts';
+import { api, sessionToken } from './api.ts';
+
+export interface AiStatus {
+  configured: boolean;
+  provider: 'fairlead';
+  url: string;
+  /** Fairlead route asked for: local (default), auto, smart, fast. */
+  model: string;
+  /** Requests carry X-Fairlead-Privacy: local, so prompts stay on this computer. */
+  privacyLocal: boolean;
+  keySource: 'environment' | 'credential-manager' | 'file' | 'none';
+  problem: string | null;
+  setup: string;
+}
+
+export interface AiCheck {
+  ok: boolean;
+  detail: string;
+  code?: string;
+  models?: string[];
+}
+
+const USE_KEY = 'semaphore.ai';
+/** The server gives Fairlead 180 s; the browser waits a little longer so the server's message wins. */
+const DRAFT_TIMEOUT_MS = 190_000;
+
+/** The server's AI status, or null with no server (or an older one without /api/ai). */
+export async function loadAiStatus(): Promise<AiStatus | null> {
+  try {
+    return await api<AiStatus>('/api/ai');
+  } catch {
+    return null;
+  }
+}
+
+export function checkAi(): Promise<AiCheck> {
+  return api<AiCheck>('/api/ai/check', { json: {} });
+}
+
+/** The analyst's switch, kept per browser. On unless they turned it off. */
+export function aiWanted(): boolean {
+  try {
+    return localStorage.getItem(USE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+export function setAiWanted(on: boolean): void {
+  try {
+    localStorage.setItem(USE_KEY, on ? 'on' : 'off');
+  } catch {
+    /* settings are a convenience */
+  }
+}
+
+export function aiLabel(status: AiStatus): string {
+  return status.privacyLocal ? `Fairlead (${status.model}, on this computer)` : `Fairlead (${status.model})`;
+}
+
+/** Fairlead through this server when it is configured and wanted; local rules otherwise. */
+export function draftingProvider(index: CatalogIndex, status: AiStatus | null, wanted: boolean): IntelligenceProvider {
+  if (!status?.configured || !wanted) return new LocalRulesProvider(index);
+  const withSession: FetchLike = (url, init) => {
+    const headers: Record<string, string> = { ...init.headers };
+    const token = sessionToken();
+    if (token) headers['X-Semaphore-Session'] = token;
+    return fetch(url, { ...init, headers, cache: 'no-store' });
+  };
+  return new OpenAICompatibleProvider({
+    id: 'fairlead',
+    label: aiLabel(status),
+    url: `${location.origin}/api/ai/v1`,
+    model: status.model,
+    timeoutMs: DRAFT_TIMEOUT_MS,
+    fetch: withSession,
+  });
+}

@@ -8,3 +8,9 @@ dist-*/
 !.env.example
 !.env.sample
 !.env.template
+
+# Local server (server/): run-time folders and this install's settings
+temp/
+web/dist/
+config/settings.local.json
+config/semaphore.env

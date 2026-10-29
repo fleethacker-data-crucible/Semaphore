@@ -58,7 +58,9 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
     "dimensions": [{ "field": "jobs.opened", "grain": "month" }],
     "filters": [],
     "sort": { "by": "jobs.opened@month", "dir": "asc" },
-    "limit": 10
+    "limit": 10,
+    "compare": "previous-year",
+    "share": false
   },
   "behavior": {
     "onClick": "none",
@@ -79,6 +81,8 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 | `binding` | `null` until drafted. Metric keys, dimension fields (dates may have a `grain`), filters, optional sort and limit. |
 | `dimension key` | A field key, or `field@grain` for dates (`jobs.opened@month`). Used in sorts and selections. |
 | `filters[].op` | `in`, `eq`, `gte`, `lte`, `between` (two values), `last` (a whole count plus `unit`; includes the current period) |
+| `binding.compare` | Optional. `previous-period` (the window just before) or `previous-year` (the same window a year earlier). Needs a `last` filter on the flag or the page; the earlier window is like for like (on 26 October, "last 3 months" compares 1 Aug–26 Oct with 1 May–26 Jul). Time values are moved forward so March lines up with March. |
+| `binding.share` | Optional. Show each value as a share of the total across all rows, taken before any top-N cut. |
 | `behavior.onClick` | `filter-page` (select that value everywhere), `drill`, or `none` |
 | `behavior.ignore` | Fields whose page selections this flag skips |
 | `behavior.thresholds` | Colour rules; the first match wins. Tones: `good`, `warn`, `bad` |
@@ -94,6 +98,7 @@ Everything is validated when it is loaded, imported, or returned by an AI provid
 - A malformed flag (bad id, unknown kind, bad layout, duplicate id) is dropped, with a warning.
 - An unknown metric or field inside a flag is removed, with a warning, and a `ready` flag drops back to `drafted` for review.
 - Provider output that needed fixing has its confidence capped at 0.4.
+- An unknown `compare` value is removed, with a warning.
 - A draft's kind and binding are made to agree: a KPI has no fields (or becomes a chart), a pie and a picker have one field, a picker has no metrics and filters the page.
 - Overlapping layouts are moved down to fit, with a warning.
 - Size limits are in `LIMITS` in `src/core/hoist.ts`; anything over a limit is cut or removed with a warning, never silently.

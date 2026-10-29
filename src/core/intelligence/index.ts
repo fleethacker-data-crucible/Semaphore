@@ -6,6 +6,7 @@
 import type { CatalogIndex } from '../catalog.ts';
 import { effectiveBrief, emptyBehavior, type Flag, type Hoist, LIMITS } from '../hoist.ts';
 import { DEFAULT_SIZE, findSlot } from '../layout.ts';
+import { applyTeamStyle, describeStyle, type TeamStyle } from '../style.ts';
 import {
   type FlagDraft,
   type HoistDraft,
@@ -28,25 +29,43 @@ export interface DraftOutcome<T> {
   fallbackReason?: string;
 }
 
-export async function draftFlag(provider: IntelligenceProvider, hoist: Hoist, flag: Flag, index: CatalogIndex): Promise<DraftOutcome<FlagDraft>> {
-  const request = { task: 'draft-flag' as const, brief: effectiveBrief(hoist, flag), catalog: summarizeCatalog(index.catalog) };
+export async function draftFlag(
+  provider: IntelligenceProvider,
+  hoist: Hoist,
+  flag: Flag,
+  index: CatalogIndex,
+  options: { auto?: boolean; style?: TeamStyle } = {},
+): Promise<DraftOutcome<FlagDraft>> {
+  const brief = effectiveBrief(hoist, flag);
+  if (options.auto) brief.auto = true;
+  const teamStyle = options.style ? describeStyle(options.style, index) : [];
+  const request = { task: 'draft-flag' as const, brief, catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}) };
+  // The team style finishes whatever came back (the AI was also told it), filling only what the brief left open.
+  const styled = (draft: FlagDraft): FlagDraft =>
+    options.style ? applyTeamStyle(draft, options.style, index, { auto: !!options.auto, brief: `${brief.hoist} ${brief.flag}` }).draft : draft;
+  const words = `${brief.hoist} ${brief.flag}`;
   try {
-    return { draft: validateFlagDraft(await provider.draftFlag(request), index, flag.kind), providerId: provider.id };
+    return { draft: styled(validateFlagDraft(await provider.draftFlag(request), index, flag.kind, { brief: words, remote: !provider.local })), providerId: provider.id };
   } catch (e) {
     if (provider.local) throw e;
     const local = new LocalRulesProvider(index);
-    return { draft: validateFlagDraft(await local.draftFlag(request), index, flag.kind), providerId: local.id, fallbackReason: (e as Error).message };
+    return { draft: styled(validateFlagDraft(await local.draftFlag(request), index, flag.kind, { brief: words })), providerId: local.id, fallbackReason: (e as Error).message };
   }
 }
 
-export async function draftHoist(provider: IntelligenceProvider, brief: string, index: CatalogIndex): Promise<DraftOutcome<HoistDraft>> {
-  const request = { task: 'draft-hoist' as const, brief: brief.slice(0, LIMITS.briefChars), catalog: summarizeCatalog(index.catalog) };
+export async function draftHoist(provider: IntelligenceProvider, brief: string, index: CatalogIndex, options: { style?: TeamStyle } = {}): Promise<DraftOutcome<HoistDraft>> {
+  const teamStyle = options.style ? describeStyle(options.style, index) : [];
+  const request = { task: 'draft-hoist' as const, brief: brief.slice(0, LIMITS.briefChars), catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}) };
+  const styled = (draft: HoistDraft): HoistDraft =>
+    options.style
+      ? { ...draft, flags: draft.flags.map((f) => ({ ...applyTeamStyle(f, options.style!, index, { auto: true, brief: `${brief} ${f.brief}` }).draft, brief: f.brief })) }
+      : draft;
   try {
-    return { draft: validateHoistDraft(await provider.draftHoist(request), index), providerId: provider.id };
+    return { draft: styled(validateHoistDraft(await provider.draftHoist(request), index, { brief: request.brief, remote: !provider.local })), providerId: provider.id };
   } catch (e) {
     if (provider.local) throw e;
     const local = new LocalRulesProvider(index);
-    return { draft: validateHoistDraft(await local.draftHoist(request), index), providerId: local.id, fallbackReason: (e as Error).message };
+    return { draft: styled(validateHoistDraft(await local.draftHoist(request), index, { brief: request.brief })), providerId: local.id, fallbackReason: (e as Error).message };
   }
 }
 

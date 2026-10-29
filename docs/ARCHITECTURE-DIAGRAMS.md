@@ -1,19 +1,19 @@
 # Semaphore architecture, visually
 
-These diagrams distinguish the **v0.1 core on `main`** from the **application previews in PR #10 and PR #13**. A component shown in a preview is not a claim that it exists in a default-branch checkout. Diagram assets are repository-local SVGs with light/dark variants and descriptive text.
+These diagrams distinguish the TypeScript analytical core from the browser, local server, data connectors and optional AI paths in the v0.3 engineering preview. The application work originated in PR #10 and PR #13 and is reconciled in PR #17. Preview status describes validation and release readiness, not a separate product. Diagram assets are repository-local SVGs with light/dark variants and descriptive text.
 
-## 1. Current core: available on main
+## 1. Analytical core
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="diagrams/core-overview-dark.svg">
-  <img src="diagrams/core-overview-light.svg" alt="The main-branch core turns catalog and hoist models into validated bindings and SQL. A caller executes queries, returns aggregate results to cross-filtering, and supplies the interface." width="1280">
+  <img src="diagrams/core-overview-light.svg" alt="The analytical core turns catalog and hoist models into validated bindings and SQL. A caller executes queries, returns aggregate results to cross-filtering, and supplies the interface." width="1280">
 </picture>
 
 The core supplies models, local-rule drafting, optional provider adapters, validation, layout, planning, parameterized SQL and cached-result filtering. The integrating application supplies query execution and presentation.
 
 ```mermaid
 flowchart LR
-  subgraph Core["Available on main: TypeScript core"]
+  subgraph Core["TypeScript analytical core"]
     Catalog["Catalog: fields, metrics and synonyms"]
     Hoist["Hoist: flags, layout and selections"]
     Draft["Local rules / optional provider adapter"]
@@ -27,7 +27,7 @@ flowchart LR
     Validate --> Plan
     Hoist --> Plan
   end
-  Caller["Caller executes query: outside main"]
+  Caller["Caller executes query: outside the core"]
   Output["Caller displays or consumes results"]
   Plan -->|"SQL + typed parameters"| Caller
   Caller -->|"Aggregate results"| Filter

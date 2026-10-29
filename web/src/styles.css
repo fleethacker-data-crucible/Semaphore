@@ -1,0 +1,292 @@
+@import 'tailwindcss';
+@import '../vendor/fleet/fleet.css';
+
+/* Skins (docs/SKINS.md). Every colour Semaphore draws comes from the tokens below (--bg, --ink,
+   --accent ...). A skin is one set of values for them; <html data-skin> picks the skin and
+   <html data-theme> light or dark. Components never name a colour, so a skin changes the whole app.
+     fleet    (default) Fleet Unified UI v0.2: the --fl-* tokens of vendor/fleet/fleet.css, which
+              already follow data-theme (Chart room light, Night watch dark).
+     classic  Semaphore's own palette before Fleet UI, from its brand mark.
+   A workstation can override any token without a rebuild: the server serves config\skin.css as
+   /skin.css after this file. */
+
+/* Semaphore's signature accent (proposed for UNIFIED-UI section 3.3): its brand sea blue.
+   4.5:1 or better on both Fleet backgrounds (7.4:1 Night watch, 5.4:1 Chart room). */
+:root {
+  --fl-accent-night: #5fb3d0;
+  --fl-accent-chart: #1f6f8b;
+}
+
+/* fleet: Semaphore tokens drawn from Fleet tokens. The soft tints are mixed from them. */
+:root {
+  --bg: var(--fl-background);
+  --panel: var(--fl-card);
+  --panel-2: var(--fl-sidebar);
+  --line: var(--fl-border);
+  --ink: var(--fl-foreground);
+  --ink-2: var(--fl-muted-foreground);
+  --ink-3: var(--fl-muted-foreground);
+  --brass: var(--fl-brass);
+  --brass-soft: color-mix(in srgb, var(--fl-brass) 18%, var(--fl-card));
+  --accent: var(--fl-accent);
+  --accent-soft: color-mix(in srgb, var(--fl-accent) 18%, var(--fl-card));
+  --good: var(--fl-success);
+  --warn: var(--fl-warning);
+  --bad: var(--fl-danger);
+  --good-soft: color-mix(in srgb, var(--fl-success) 16%, var(--fl-card));
+  --warn-soft: color-mix(in srgb, var(--fl-warning) 16%, var(--fl-card));
+  --bad-soft: color-mix(in srgb, var(--fl-danger) 16%, var(--fl-card));
+  --focus: var(--fl-brass);
+  --hl-metric: color-mix(in srgb, var(--fl-info) 24%, var(--fl-card));
+  --hl-field: color-mix(in srgb, var(--fl-brass) 24%, var(--fl-card));
+  --hl-time: color-mix(in srgb, var(--fl-accent) 22%, var(--fl-card));
+  --hl-behaviour: color-mix(in srgb, var(--fl-success) 22%, var(--fl-card));
+  --hl-unknown: color-mix(in srgb, var(--fl-danger) 22%, var(--fl-card));
+  --sem-font: var(--fl-font-body);
+  --sem-font-mono: var(--fl-font-mono);
+  --sem-radius-card: var(--fl-radius-card);
+  /* Chart series: plain colours only (charts draw on a canvas, which cannot read color-mix). */
+  --series-1: var(--fl-accent);
+  --series-2: var(--fl-brass);
+  --series-3: var(--fl-success);
+  --series-4: var(--fl-danger);
+  --series-5: var(--fl-info);
+  --series-6: var(--fl-warning);
+  --series-7: #4b45b8;
+  --series-8: #0f766e;
+}
+:root[data-theme='dark'] {
+  --series-7: #9b98f3;
+  --series-8: #3fb6a8;
+}
+
+/* classic: Semaphore's palette from its brand mark: deep sea navy, brass, signal-flag cream and amber. */
+:root[data-skin='classic'] {
+  /* Keep shared Fleet components on the selected skin's palette as well. */
+  --fl-background: var(--bg);
+  --fl-surface: var(--panel);
+  --fl-card: var(--panel);
+  --fl-sidebar: var(--panel-2);
+  --fl-foreground: var(--ink);
+  --fl-muted-foreground: var(--ink-2);
+  --fl-accent: var(--accent);
+  --fl-accent-ink: var(--panel);
+  --fl-muted: var(--panel-2);
+  --fl-control-border: var(--ink-2);
+  --fl-danger: var(--bad);
+  --fl-success: var(--good);
+  --fl-warning: var(--warn);
+  --fl-brass: var(--brass);
+  --sem-font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --sem-font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  --sem-radius-card: 8px;
+  --bg: #f4f1ea;
+  --panel: #ffffff;
+  --panel-2: #f9f7f2;
+  --line: #e2dccf;
+  --ink: #0d2233;
+  --ink-2: #4a5866;
+  --ink-3: #7d8894;
+  --brass: #a8834a;
+  --brass-soft: #f3ead9;
+  --accent: #1f6f8b;
+  --accent-soft: #e2f0f5;
+  --good: #2e7d4f;
+  --warn: #b7791f;
+  --bad: #c0392b;
+  --good-soft: #e3f3e9;
+  --warn-soft: #fbf0dc;
+  --bad-soft: #fbe5e2;
+  --focus: #f0b429;
+  --hl-metric: #d9ecf3;
+  --hl-field: #f3ead9;
+  --hl-time: #e6e3f6;
+  --hl-behaviour: #e3f3e9;
+  --hl-unknown: #fbe5e2;
+  --series-1: #1f6f8b;
+  --series-2: #a8834a;
+  --series-3: #2e7d4f;
+  --series-4: #c0392b;
+  --series-5: #6a4fa3;
+  --series-6: #b7791f;
+  --series-7: #00796b;
+  --series-8: #ad1457;
+  color-scheme: light;
+}
+
+:root[data-skin='classic'][data-theme='dark'] {
+  --bg: #071420;
+  --panel: #0d2233;
+  --panel-2: #10293d;
+  --line: #1f3a50;
+  --ink: #f1e4c8;
+  --ink-2: #c1b8a4;
+  --ink-3: #8b8f8f;
+  --brass: #c9a66b;
+  --brass-soft: #2a3324;
+  --accent: #5fb3d0;
+  --accent-soft: #123447;
+  --good: #5cc28a;
+  --warn: #f0b429;
+  --bad: #f07163;
+  --good-soft: #143425;
+  --warn-soft: #3a2f12;
+  --bad-soft: #3b1b18;
+  --focus: #f0b429;
+  --hl-metric: #15435a;
+  --hl-field: #3d3420;
+  --hl-time: #2d2a4a;
+  --hl-behaviour: #1b3d2a;
+  --hl-unknown: #4a1f1b;
+  --series-1: #5fb3d0;
+  --series-2: #c9a66b;
+  --series-3: #8fd18b;
+  --series-4: #f07163;
+  --series-5: #b39ddb;
+  --series-6: #f0b429;
+  --series-7: #4db6ac;
+  --series-8: #e57fa8;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-brass: var(--brass);
+  --color-brass-soft: var(--brass-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-good-soft: var(--good-soft);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad-soft: var(--bad-soft);
+  --font-sans: var(--sem-font);
+  --font-mono: var(--sem-font-mono);
+  --radius-lg: var(--sem-radius-card);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The brief editor draws highlights in a layer behind a transparent textarea, so the text the
+   analyst types is the text they see, with what Semaphore understood marked underneath. */
+.brief-wrap {
+  position: relative;
+}
+.brief-wrap textarea,
+.brief-wrap .brief-layer {
+  font: inherit;
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin: 0;
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  letter-spacing: normal;
+  box-sizing: border-box;
+  width: 100%;
+}
+.brief-wrap .brief-layer {
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  pointer-events: none;
+  overflow: hidden;
+}
+.brief-wrap textarea {
+  position: relative;
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--ink);
+  resize: none;
+  border-color: var(--line);
+  border-radius: 8px;
+  display: block;
+}
+.brief-wrap textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.hl {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px transparent;
+}
+.hl-metric { background: var(--hl-metric); }
+.hl-field { background: var(--hl-field); }
+.hl-time, .hl-range, .hl-compare, .hl-share, .hl-rank { background: var(--hl-time); }
+.hl-kind, .hl-click, .hl-ignore, .hl-threshold { background: var(--hl-behaviour); }
+.hl-unknown {
+  background: var(--hl-unknown);
+  text-decoration: underline wavy var(--bad);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+
+.grid-bg {
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+  background-position: -1px 0;
+}
+
+.flip-enter {
+  animation: flip 220ms ease-out;
+}
+@keyframes flip {
+  from { transform: rotateY(70deg); opacity: 0.2; }
+  to { transform: rotateY(0); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip-enter { animation: none; }
+  * { transition: none !important; }
+}
+
+/* Brand (UNIFIED-UI 5 and 8): the full emblem with its wordmark, the Night watch or Chart room
+   version of it, and the display serif for the welcome headline. */
+:root[data-theme='dark'] .only-light,
+:root:not([data-theme='dark']) .only-dark { display: none; }
+.font-display { font-family: Cambria, 'Cambria Math', Georgia, 'Times New Roman', serif; }
+
+/* Welcome: Semaphore opens on the emblem and the ways in. The emblem follows the window: it grows
+   with the height up to 380 px, and on a short or narrow window it gives way to the actions. */
+.welcome-emblem { width: clamp(160px, min(40vh, 60vw), 380px); height: auto; }
+@media (max-height: 520px) {
+  .welcome-emblem { width: clamp(96px, 30vh, 160px); }
+}
+
+/* The palette's brand: on a window with room for it, the full emblem tops the flag palette and the
+   header drops its small mark; smaller than that, the mark in the header is the brand. */
+.palette-emblem { display: none; }
+@media (min-width: 1200px) and (min-height: 760px) {
+  /* The theme rule above still hides the other theme's copy: it is the more specific selector. */
+  .palette-emblem { display: block; width: clamp(112px, 17vh, 144px); height: auto; margin: 0 auto 4px; }
+  .header-mark { display: none; }
+}
+
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
