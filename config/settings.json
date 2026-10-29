@@ -1,0 +1,13 @@
+{
+    "home": "",
+    "port": 0,
+    "browser": "auto",
+    "appWindow": true,
+    "heartbeatTimeoutSec": 20,
+    "leavingGraceSec": 5,
+    "firstHeartbeatSec": 120,
+    "queryWorkers": 4,
+    "view": "builder",
+    "playbookReviewer": "",
+    "refreshTimeoutMin": 30
+}

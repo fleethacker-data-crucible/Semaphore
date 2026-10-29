@@ -32,6 +32,8 @@ export interface CrossfilterResult {
    * selection that applies to this flag is sent to the source instead of filtered locally.
    */
   truncated: boolean;
+  /** Totals across every row before a top-N cut, for additive metrics (sum, count). */
+  totals: Record<string, number | null>;
 }
 
 export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], selections: Selections, behavior: Behavior): CrossfilterResult {
@@ -136,8 +138,18 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
       })
       .map((x) => x.row);
   }
+  const totals: Record<string, number | null> = {};
+  for (const m of plan.metrics) {
+    if (m.agg !== 'sum' && m.agg !== 'count') continue;
+    let t: number | null = null;
+    for (const r of out) {
+      const v = r.values[m.key];
+      if (typeof v === 'number') t = (t ?? 0) + v;
+    }
+    totals[m.key] = t;
+  }
   if (plan.displayLimit) out = out.slice(0, plan.displayLimit);
-  return { rows: out, applied, live, truncated };
+  return { rows: out, applied, live, truncated, totals };
 }
 
 /** Values compare as text so a selection made on one flag matches the same value on another. */
@@ -159,4 +171,25 @@ function compare(a: string | number | boolean, b: string | number | boolean): nu
   if (a === b) return 0;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   return String(a).localeCompare(String(b), 'en', { numeric: true });
+}
+
+/** Key a display row by its own dimension values, so two results can be lined up. */
+export function rowKey(row: DisplayRow): string {
+  return JSON.stringify(Object.keys(row.dims).sort().map((k) => norm(row.dims[k] ?? null)));
+}
+
+/**
+ * Earlier values for each current row, from the comparison window's result. Rows are matched on
+ * their dimension values. Time values from the earlier window are first moved forward by the
+ * window's offset (`moveDim`, from comparisonShift), so March this year lines up with March last
+ * year.
+ */
+export function lineUp(
+  current: readonly DisplayRow[],
+  previous: readonly DisplayRow[],
+  moveDim?: (key: string, value: Cell) => Cell,
+): Array<Record<string, number | null> | null> {
+  const moved = moveDim ? previous.map((r) => ({ ...r, dims: Object.fromEntries(Object.entries(r.dims).map(([k, v]) => [k, moveDim(k, v)])) })) : previous;
+  const prev = new Map(moved.map((r) => [rowKey(r), r.values]));
+  return current.map((r) => prev.get(rowKey(r)) ?? null);
 }

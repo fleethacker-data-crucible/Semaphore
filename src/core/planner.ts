@@ -6,7 +6,8 @@
 // the result too large are dropped; selections on those fields go back to the source instead.
 
 import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
-import { type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
+import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
+import { type PlannedJoin, planJoins, reachable } from './joins.ts';
 
 export const DEFAULT_ROW_CAP = 50_000;
 
@@ -37,7 +38,12 @@ export interface PlannedMetric {
 export interface QueryPlan {
   flagId: string;
   source: string;
+  /** The base table: where the measures are. */
   table: string;
+  /** Related tables joined in for fields to group or filter by (many-to-one only). */
+  joins?: PlannedJoin[];
+  /** Read fields as stored, without the catalog's cleaning steps (data-quality profiling). */
+  raw?: boolean;
   /** The flag's own dimensions, then the slice dimensions. */
   dimensions: PlannedDimension[];
   aggregates: PlannedAggregate[];
@@ -63,6 +69,10 @@ export interface QueryPlan {
   selfFilter: boolean;
   estimatedRows: number;
   notes: string[];
+  /** Set when the flag compares with an earlier window: which "last" filter gets shifted. */
+  compare?: { kind: Comparison; filter: number };
+  /** Show values as a share of the total. */
+  share?: boolean;
 }
 
 export type PlanResult = { ok: true; plan: QueryPlan } | { ok: false; error: string };
@@ -88,48 +98,61 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   if (!b) return { ok: false, error: 'This flag has no data binding yet.' };
   const notes: string[] = [];
 
-  // One source and one table per query in v1. Joins come with the catalog's relationships.
-  const tables = new Set<string>();
+  // One source per query. Measures come from one table, the base; fields to group or filter by
+  // may come from tables the base reaches through the catalog's relationships (joins.ts).
   let source: string | undefined;
-  const useSource = (s: string, t: string, what: string): string | null => {
-    if (source && source !== s) return `${what} is in a different source; a flag reads from one source.`;
-    source = s;
-    tables.add(t);
-    return tables.size > 1 ? `${what} is in another table; joining tables is not supported yet.` : null;
-  };
+  let table: string | undefined;
   for (const key of b.metrics) {
     const m = index.metric(key);
     if (!m) return { ok: false, error: `Unknown metric "${key}".` };
     const t = metricTable(index, m);
     if (!t) return { ok: false, error: `Metric "${key}" has no table.` };
-    const problem = useSource(m.source, t, `Metric "${m.label}"`);
-    if (problem) return { ok: false, error: problem };
+    if (source && source !== m.source) return { ok: false, error: `Metric "${m.label}" is in a different source; a flag reads from one source.` };
+    if (table && table !== t) return { ok: false, error: `Metric "${m.label}" is in another table; a flag's measures come from one table.` };
+    source = m.source;
+    table = t;
   }
   for (const d of b.dimensions) {
     const f = index.field(d.field);
     if (!f) return { ok: false, error: `Unknown field "${d.field}".` };
-    const problem = useSource(f.source, f.table, `Field "${f.label}"`);
-    if (problem) return { ok: false, error: problem };
+    if (source && source !== f.source) return { ok: false, error: `Field "${f.label}" is in a different source; a flag reads from one source.` };
+    source = f.source;
+    table ??= f.table;
   }
-  const table = [...tables][0];
   if (!source || !table) return { ok: false, error: 'This flag binds nothing that can be queried.' };
+  const base = table;
+  const joined = new Set<string>();
 
-  const sameTable = (fieldKey: string): boolean => {
+  /** Whether a field can be read in this flag's query: its base table, or a table related to it. */
+  const inScope = (fieldKey: string): boolean => {
     const f = index.field(fieldKey);
-    return !!f && f.source === source && f.table === table;
+    return !!f && f.source === source && (f.table === base || reachable(index, source!, base, f.table));
   };
+  const use = (fieldKey: string): void => {
+    const t = index.field(fieldKey)!.table;
+    if (t !== base) joined.add(t);
+  };
+  for (const d of b.dimensions) {
+    if (!inScope(d.field)) {
+      return { ok: false, error: `"${labelOf(index, d.field)}" is in a table not related to ${base}. Add a relationship under Data > Relationships.` };
+    }
+    use(d.field);
+  }
 
-  // Filters: the hoist's fixed filters, then the flag's own. Fixed filters on other tables
+  // Filters: the hoist's fixed filters, then the flag's own. Fixed filters on unrelated tables
   // cannot apply here and are reported rather than silently dropped.
   const filters: Filter[] = [];
   for (const f of hoist.filters) {
     if (flag.behavior.ignore.includes(f.field)) continue;
-    if (sameTable(f.field)) filters.push(f);
-    else notes.push(`Page filter on "${labelOf(index, f.field)}" does not apply: it is in another table.`);
+    if (inScope(f.field)) {
+      filters.push(f);
+      use(f.field);
+    } else notes.push(`Page filter on "${labelOf(index, f.field)}" does not apply: it is in a table not related to this one.`);
   }
   for (const f of b.filters) {
-    if (!sameTable(f.field)) return { ok: false, error: `Filter on "${labelOf(index, f.field)}" is in another table.` };
+    if (!inScope(f.field)) return { ok: false, error: `Filter on "${labelOf(index, f.field)}" is in a table not related to ${base}.` };
     filters.push(f);
+    use(f.field);
   }
 
   // Aggregates, as re-aggregable partials.
@@ -171,7 +194,7 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     const key = dimensionKey(d);
     if (own.includes(key)) continue;
     if (flag.behavior.ignore.includes(d.field)) continue;
-    if (!sameTable(d.field)) continue; // Selections on other tables do not reach this flag in v1.
+    if (!inScope(d.field)) continue; // Selections on unrelated tables do not reach this flag.
     if (!reaggregable) {
       live.push(key);
       continue;
@@ -204,7 +227,10 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
       notes.push(`Selections on ${labelOf(index, d.field)} re-query the source (pre-splitting would exceed ${fmt(rowCap)} rows).`);
     }
   }
-  for (const d of chosen) dimensions.push({ alias: `d${dimensions.length}`, key: dimensionKey(d), ...d });
+  for (const d of chosen) {
+    dimensions.push({ alias: `d${dimensions.length}`, key: dimensionKey(d), ...d });
+    use(d.field);
+  }
 
   const plan: QueryPlan = {
     flagId: flag.id,
@@ -223,7 +249,19 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     estimatedRows: Math.min(estimate, Number.MAX_SAFE_INTEGER),
     notes,
   };
+  if (joined.size) plan.joins = planJoins(index, source, base, joined);
   if (b.sort) plan.sort = b.sort;
+  if (b.share) plan.share = true;
+  if (b.compare) {
+    // The flag's own "last" filter wins over the page's, so search from the end.
+    let at = -1;
+    for (let i = filters.length - 1; i >= 0; i--) if (filters[i]!.op === 'last') {
+      at = i;
+      break;
+    }
+    if (at >= 0) plan.compare = { kind: b.compare, filter: at };
+    else notes.push('A comparison needs a "last N" date filter on the flag or the page, so it is not shown.');
+  }
   if (b.limit) {
     // Always cut locally too: Access's TOP n returns ties, so the source may send more than n.
     plan.displayLimit = b.limit;
@@ -277,4 +315,84 @@ function labelOf(index: CatalogIndex, key: string): string {
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString('en-US');
+}
+
+/**
+ * The plan for a flag's comparison window: the same query with its "last N" filter replaced by
+ * the earlier window. Like for like: "last 3 months" on 26 October compares 1 August–26 October
+ * with 1 May–26 July (previous-period) or 1 August–26 October a year earlier (previous-year).
+ * Every row is fetched so each category on screen can find its earlier value.
+ */
+export function comparisonPlan(plan: QueryPlan, today: Date = new Date()): QueryPlan | null {
+  if (!plan.compare) return null;
+  const f = plan.filters[plan.compare.filter];
+  if (!f || f.op !== 'last' || !f.unit || typeof f.values[0] !== 'number') return null;
+  const window = comparisonWindow(f.values[0], f.unit, plan.compare.kind, today);
+  const filters = plan.filters.map((x, i) => (i === plan.compare!.filter ? { field: x.field, op: 'between' as const, values: [window.from, window.to] } : x));
+  const { compare: _drop, displayLimit: _cut, ...rest } = plan;
+  return { ...rest, filters, limit: plan.rowCap, live: [...plan.live] };
+}
+
+/** The earlier window a comparison reads, as inclusive YYYY-MM-DD dates (UTC). */
+export function comparisonWindow(n: number, unit: TimeGrain, kind: Comparison, today: Date): { from: string; to: string } {
+  const start = periodStartUtc(today, unit, n - 1);
+  if (kind === 'previous-year') return { from: ymd(shift(start, 'year', -1)), to: ymd(shift(utcDay(today), 'year', -1)) };
+  return { from: ymd(shift(start, unit, -n)), to: ymd(shift(utcDay(today), unit, -n)) };
+}
+
+/**
+ * Moves a time value from the comparison window forward onto the current one, re-truncated to
+ * its grain, so lineUp() can match periods. Values of other dimensions pass through.
+ */
+export function comparisonShift(plan: QueryPlan): ((key: string, value: string | number | boolean | null) => string | number | boolean | null) | null {
+  if (!plan.compare) return null;
+  const f = plan.filters[plan.compare.filter];
+  if (!f || f.op !== 'last' || !f.unit || typeof f.values[0] !== 'number') return null;
+  const unit: TimeGrain = plan.compare.kind === 'previous-year' ? 'year' : f.unit;
+  const by = plan.compare.kind === 'previous-year' ? 1 : f.values[0];
+  const grains = new Map(plan.dimensions.filter((d) => d.grain).map((d) => [d.key, d.grain!]));
+  return (key, value) => {
+    const grain = grains.get(key);
+    if (!grain || typeof value !== 'string') return value;
+    const t = Date.parse(value.length === 10 ? `${value}T00:00:00Z` : value);
+    if (Number.isNaN(t)) return value;
+    return ymd(periodStartUtc(shift(new Date(t), unit, by), grain, 0));
+  };
+}
+
+function utcDay(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+function periodStartUtc(today: Date, unit: TimeGrain, back: number): Date {
+  const y = today.getUTCFullYear();
+  const m = today.getUTCMonth();
+  const d = today.getUTCDate();
+  switch (unit) {
+    case 'day':
+      return new Date(Date.UTC(y, m, d - back));
+    case 'week':
+      return new Date(Date.UTC(y, m, d - ((today.getUTCDay() + 6) % 7) - 7 * back));
+    case 'month':
+      return new Date(Date.UTC(y, m - back, 1));
+    case 'quarter':
+      return new Date(Date.UTC(y, Math.floor(m / 3) * 3 - 3 * back, 1));
+    case 'year':
+      return new Date(Date.UTC(y - back, 0, 1));
+  }
+}
+
+/** Move a date by whole units; month ends clamp (31 May minus 3 months is 28 or 29 February). */
+function shift(d: Date, unit: TimeGrain, by: number): Date {
+  if (unit === 'day') return new Date(d.getTime() + by * 86_400_000);
+  if (unit === 'week') return new Date(d.getTime() + by * 7 * 86_400_000);
+  const months = unit === 'month' ? by : unit === 'quarter' ? 3 * by : 12 * by;
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + months;
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m, Math.min(d.getUTCDate(), last)));
+}
+
+function ymd(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }

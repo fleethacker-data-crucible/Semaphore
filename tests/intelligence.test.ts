@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { indexCatalog } from '../src/core/catalog.ts';
 import type { Flag, Hoist } from '../src/core/hoist.ts';
 import {
   applyFlagDraft,
@@ -8,14 +9,16 @@ import {
   draftFlag,
   draftHoist,
   LocalRulesProvider,
+  MODEL_CONFIDENCE_CAP,
   OpenAICompatibleProvider,
   summarizeCatalog,
+  validateFlagDraft,
 } from '../src/core/intelligence/index.ts';
 import { draftFlagLocally } from '../src/core/intelligence/local-rules.ts';
 import type { FetchLike } from '../src/core/intelligence/remote.ts';
 import { isValidLayout } from '../src/core/layout.ts';
 import { planFlag } from '../src/core/planner.ts';
-import { flag, loadHoist, loadIndex } from './fixtures.ts';
+import { flag, loadCatalog, loadHoist, loadIndex } from './fixtures.ts';
 
 const index = loadIndex();
 const hoist = loadHoist();
@@ -121,7 +124,7 @@ test('providers receive keys, labels and types only: no tables, columns, sources
 // ---- remote providers -----------------------------------------------------------------------
 
 type Call = { url: string; init: Parameters<FetchLike>[1] };
-function fakeFetch(handler: (url: string, body: any) => { status?: number; body: unknown } | 'hang'): { fetch: FetchLike; calls: Call[] } {
+function fakeFetch(handler: (url: string, body: any) => { status?: number; body: unknown; headers?: Record<string, string> } | 'hang'): { fetch: FetchLike; calls: Call[] } {
   const calls: Call[] = [];
   const fetch: FetchLike = (url, init) => {
     calls.push({ url, init });
@@ -129,7 +132,12 @@ function fakeFetch(handler: (url: string, body: any) => { status?: number; body:
     if (out === 'hang') {
       return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
     }
-    return Promise.resolve({ ok: (out.status ?? 200) < 400, status: out.status ?? 200, text: async () => (typeof out.body === 'string' ? out.body : JSON.stringify(out.body)) });
+    return Promise.resolve({
+      ok: (out.status ?? 200) < 400,
+      status: out.status ?? 200,
+      text: async () => (typeof out.body === 'string' ? out.body : JSON.stringify(out.body)),
+      headers: { get: (name: string) => out.headers?.[name] ?? null },
+    });
   };
   return { fetch, calls };
 }
@@ -217,4 +225,95 @@ test('provider URLs: HTTPS, or HTTP on loopback only; no credentials in the URL'
   assert.throws(() => mk('http://ai.example.mil/x'), /HTTPS/);
   assert.throws(() => mk('https://user:pw@ai.example.mil/x'), /vault/);
   assert.throws(() => mk('not a url'), /valid URL/);
+});
+
+// ---- model drafts that mix sources, invent colour rules or oversell themselves ---------------
+
+// The fleet example plus a second source that also has "Labor cost", and a "Homeport" only it has.
+function twoSourceIndex() {
+  const c = loadCatalog();
+  c.sources.push({ id: 'testdb', label: 'Test DB', kind: 'access', dialect: 'access' } as (typeof c.sources)[number]);
+  c.fields.push(
+    { key: 't.cost', label: 'Labor cost', source: 'testdb', table: 'work_orders', column: 'labor_cost', type: 'number' },
+    { key: 't.region', label: 'Region', source: 'testdb', table: 'work_orders', column: 'region', type: 'string' },
+    { key: 't.homeport', label: 'Homeport', source: 'testdb', table: 'work_orders', column: 'homeport', type: 'string' },
+  );
+  c.metrics.push({ key: 't_labor_cost', label: 'Labor cost', agg: 'sum', field: 't.cost', source: 'testdb' });
+  return indexCatalog(c);
+}
+
+test('the catalog summary numbers each source as a set, without naming it', () => {
+  const s = summarizeCatalog(twoSourceIndex().catalog);
+  assert.equal(s.metrics.find((m) => m.key === 'labor_cost')?.set, 1);
+  assert.equal(s.metrics.find((m) => m.key === 't_labor_cost')?.set, 3);
+  assert.ok(!JSON.stringify(s).includes('Test DB'));
+});
+
+test('a draft that mixes sources keeps one: same-named metrics are swapped in, the rest left out', () => {
+  const two = twoSourceIndex();
+  // What the local model did on 28 Oct: the sample's Labor cost, plus Parts on hand, by the test DB's Homeport.
+  const d = validateFlagDraft(
+    { kind: 'bar', binding: { metrics: ['labor_cost', 'parts_on_hand'], dimensions: [{ field: 't.homeport' }], sort: { by: 'labor_cost', dir: 'desc' } }, behavior: { thresholds: [{ metric: 'labor_cost', op: 'gt', value: 5e6, tone: 'bad' }] }, confidence: 0.9 },
+    two,
+    'bar',
+    { brief: 'Labor cost by homeport, red over $5M', remote: true },
+  );
+  assert.deepEqual(d.binding?.metrics, ['t_labor_cost']);
+  assert.deepEqual(d.binding?.dimensions, [{ field: 't.homeport' }]);
+  assert.deepEqual(d.binding?.sort, { by: 't_labor_cost', dir: 'desc' });
+  assert.deepEqual(d.behavior.thresholds.map((t) => t.metric), ['t_labor_cost']);
+  assert.match(d.notes.join(' '), /Used "Labor cost" from Test DB/);
+  assert.match(d.notes.join(' '), /"Parts on hand" is in another source and was left out/);
+  assert.ok(d.confidence <= 0.4, 'something was left out');
+  const f: Flag = applyFlagDraft({ ...flag(hoist, 'empty-1'), brief: 'x' }, d);
+  const plan = planFlag(hoist, f, two);
+  assert.ok(plan.ok, `the repaired draft plans: ${!plan.ok ? plan.error : ''}`);
+});
+
+test('a draft that stays in one source is left as it is', () => {
+  const d = validateFlagDraft({ kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, confidence: 0.7 }, twoSourceIndex(), 'bar', { remote: true });
+  assert.deepEqual(d.binding?.metrics, ['labor_cost']);
+  assert.equal(d.confidence, 0.7);
+});
+
+test('colour rules the brief did not ask for are dropped', () => {
+  const raw = { kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, behavior: { thresholds: [{ metric: 'labor_cost', op: 'gt', value: 5e6, tone: 'bad' }] } };
+  const quiet = validateFlagDraft(raw, index, 'bar', { brief: 'Labor cost by region' });
+  assert.deepEqual(quiet.behavior.thresholds, []);
+  assert.match(quiet.notes.join(' '), /Colour rules were left out/);
+  const asked = validateFlagDraft(raw, index, 'bar', { brief: 'Labor cost by region, turn red over $5M' });
+  assert.equal(asked.behavior.thresholds.length, 1);
+});
+
+test("a model's own confidence is capped; local rules are not", () => {
+  const raw = { kind: 'bar', binding: { metrics: ['labor_cost'], dimensions: [{ field: 'jobs.region' }] }, confidence: 0.99 };
+  assert.equal(validateFlagDraft(raw, index, 'bar', { remote: true }).confidence, MODEL_CONFIDENCE_CAP);
+  assert.equal(validateFlagDraft(raw, index, 'bar').confidence, 0.99);
+});
+
+test('a model that refuses temperature 0 is asked again with its default, and from then on', async () => {
+  const bodies: any[] = [];
+  const { fetch } = fakeFetch((_url, body) => {
+    bodies.push(body);
+    if (body.temperature === 0) return { status: 400, body: { error: { message: "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported." } } };
+    return { body: { choices: [{ message: { content: '{"kind":"kpi","binding":{"metrics":["work_orders"]},"confidence":0.8}' } }] } };
+  });
+  const p = new OpenAICompatibleProvider({ id: 'oai', label: 'Fairlead', url: 'https://gw.example.mil/v1', model: 'openai/gpt-5-mini', fetch });
+  const first = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(first.providerId, 'oai', 'answered by the model, not local rules');
+  assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false]);
+  await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.deepEqual(bodies.map((b) => 'temperature' in b), [true, false, false], 'not asked with 0 again');
+});
+
+test("when Fairlead's local fallback answers, the draft names the model that really did", async () => {
+  const answer = { choices: [{ message: { content: '{"kind":"kpi","binding":{"metrics":["work_orders"]},"confidence":0.8}' } }] };
+  let fallback = true;
+  const { fetch } = fakeFetch(() => ({ body: answer, headers: fallback ? { 'X-Fairlead-Target': 'ollama/qwen2.5:14b', 'X-Fairlead-Fallback': 'local' } : ({ 'X-Fairlead-Target': 'openrouter/nvidia/nemotron' } as Record<string, string>) }));
+  const p = new OpenAICompatibleProvider({ id: 'fairlead', label: 'Fairlead (openrouter/nvidia/nemotron)', url: 'https://gw.example.mil/v1', model: 'openrouter/nvidia/nemotron', fetch });
+  const fell = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(fell.draft.answeredBy, 'ollama/qwen2.5:14b');
+  fallback = false;
+  const direct = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
+  assert.equal(direct.draft.answeredBy, undefined, 'the model asked for answered: nothing to say');
 });

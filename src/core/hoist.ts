@@ -36,12 +36,22 @@ export interface Threshold {
   tone: Tone;
 }
 
+export type Comparison = 'previous-period' | 'previous-year';
+export const COMPARISONS: readonly Comparison[] = ['previous-period', 'previous-year'];
+
 export interface Binding {
   metrics: string[];
   dimensions: DimensionRef[];
   filters: Filter[];
   sort?: { by: string; dir: 'asc' | 'desc' };
   limit?: number;
+  /**
+   * Compare with the window just before the "last N" date filter (previous-period) or the same
+   * window a year earlier (previous-year). Needs a "last" filter on the flag or the page.
+   */
+  compare?: Comparison;
+  /** Show each value as a share of the total across all rows, before any top-N cut. */
+  share?: boolean;
 }
 
 export interface Behavior {
@@ -76,6 +86,8 @@ export interface Flag {
   notes: string[];
   /** Body for `text` flags. */
   text?: string;
+  /** false: the analyst marked this flag "do not learn", so the playbook never takes it. */
+  learn?: boolean;
 }
 
 export interface Hoist {
@@ -88,6 +100,8 @@ export interface Hoist {
   /** Fixed filters every flag inherits, e.g. "fiscal year 2026". */
   filters: Filter[];
   flags: Flag[];
+  /** An experiment page: the analyst is trying things out, so the playbook and the team style never learn from it. */
+  experiment?: boolean;
   updated: string;
 }
 
@@ -120,6 +134,8 @@ export interface EffectiveBrief {
   flag: string;
   pageFilters: Filter[];
   kind: FlagKind;
+  /** The analyst left the kind to Semaphore: pick it from the shape of the data. */
+  auto?: boolean;
 }
 
 export function effectiveBrief(hoist: Hoist, flag: Flag): EffectiveBrief {
@@ -173,6 +189,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
       grid: { cols },
       filters,
       flags,
+      ...(raw.experiment === true ? { experiment: true } : {}),
       updated: str(raw.updated).slice(0, 40) || new Date(0).toISOString(),
     },
     warnings: capWarnings(warnings),
@@ -227,6 +244,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   };
   if (confidence !== undefined) flag.confidence = confidence;
   if (kind === 'text') flag.text = str(raw.text).slice(0, 20000);
+  if (raw.learn === false) flag.learn = false;
   return flag;
 }
 
@@ -281,6 +299,9 @@ export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warn
     else warnings.push(`${where}: sort on "${by}", which the flag does not show, removed.`);
   }
   if (isInt(raw.limit) && raw.limit > 0) binding.limit = Math.min(raw.limit, 10000);
+  if (COMPARISONS.includes(raw.compare as Comparison)) binding.compare = raw.compare as Comparison;
+  else if (raw.compare !== undefined) warnings.push(`${where}: unknown comparison "${String(raw.compare).slice(0, 40)}" removed.`);
+  if (raw.share === true) binding.share = true;
   return binding;
 }
 

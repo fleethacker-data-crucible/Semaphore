@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title description"><title id="title">The core on main</title><desc id="description">The catalog and hoist feed validated draft bindings, query planning and parameterized SQL. An external caller executes the query, returns aggregates to cross-filtering and consumes the resulting model. No runnable UI or server exists on main.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title description"><title id="title">Inside the analytical core</title><desc id="description">The catalog and hoist feed validated draft bindings, query planning and parameterized SQL. An external caller executes the query, returns aggregates to cross-filtering and consumes the resulting model. The browser and server are application layers outside this core.</desc>
 <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#1f5f7b"/></marker></defs>
 <style>text{font-family:"Segoe UI",Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
 <rect x="0" y="0" width="1280" height="760" rx="0" fill="#fbfaf2" stroke="#fbfaf2" stroke-width="1.5"/>
 <text x="40" y="44" font-size="14" fill="#755735" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
-<text x="40" y="88" font-size="32" fill="#132633" font-weight="700" text-anchor="start" class="">The core on main</text>
+<text x="40" y="88" font-size="32" fill="#132633" font-weight="700" text-anchor="start" class="">Inside the analytical core</text>
 <text x="40" y="119" font-size="17" fill="#425c6c" font-weight="400" text-anchor="start" class="">A TypeScript library: it describes, plans and filters. An integrating application executes and displays.</text>
-<text x="1240" y="44" font-size="13" fill="#755735" font-weight="700" text-anchor="end" class="">CURRENT / v0.1 CORE</text>
+<text x="1240" y="44" font-size="13" fill="#755735" font-weight="700" text-anchor="end" class="">CORE / ANALYTICAL ENGINE</text>
 <g data-card="1  Catalog + hoist">
 <rect x="40" y="170" width="360" height="176" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
 <text x="60" y="201" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">INPUT MODELS</text>
