@@ -9,8 +9,8 @@
 #
 # The browser's OpenAICompatibleProvider talks to /api/ai/v1 with the session token; this server adds
 # the Fairlead client key. The key comes from SEMAPHORE_AI_KEY (process environment or
-# config\semaphore.env, for CI and test machines) or else from %LOCALAPPDATA%\Semaphore\fairlead-key.dat,
-# DPAPI-protected for this Windows account by Set-SemaphoreAiKey.ps1. It never reaches the browser, the
+# config\semaphore.env, for CI and test machines), Windows Credential Manager, or a legacy DPAPI file.
+# New setup writes only to the app-prefixed Windows credential. It never reaches the browser, the
 # log, the runtime file or an error message.
 #
 # Port authority: the key is sent only after the address answers /__fleethacker/id as "fairlead"
@@ -26,6 +26,7 @@ $script:SemAiDefaultUrl = 'http://127.0.0.1:8776/v1'
 $script:SemAiMaxRequest = 262144       # 256 KB: a draft request is a brief plus catalog labels
 $script:SemAiMaxResponse = 2000000     # same cap as MAX_RESPONSE_CHARS in src/core/intelligence/remote.ts
 $script:SemAiTimeoutSec = 180          # local models can be slow; the browser waits a little longer
+. (Join-Path $PSScriptRoot 'AiCredential.ps1')
 
 function Get-SemAiKeyPath {
     $base = $env:LOCALAPPDATA
@@ -96,6 +97,9 @@ function Get-SemAiSettings {
     $privacyLocal = -not ($privacy -and $privacy.Trim().ToLowerInvariant() -in @('off', '0', 'false', 'no'))
     $key = Get-SemEnvValue -Name 'SEMAPHORE_AI_KEY' -Root $Root
     $source = 'environment'
+    # An explicit legacy path is a test/migration seam; never read a real user
+    # credential when the caller supplies its own isolated key file.
+    if (-not $key -and -not $PSBoundParameters.ContainsKey('KeyPath')) { $key = Read-SemAiCredential; $source = 'credential-manager' }
     if (-not $key) { $key = Read-SemAiKeyFile -Path $KeyPath; $source = 'file' }
     if (-not $key) { $source = 'none' }
     $problem = Test-SemAiUrl $url

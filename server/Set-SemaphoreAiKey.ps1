@@ -4,8 +4,8 @@
   Stores the Fairlead client key Semaphore uses for AI drafting, encrypted for this Windows account.
  .DESCRIPTION
   Create the key in Fairlead > Clients (it starts with fl-). This script asks for it without showing
-  it, protects it with DPAPI for the current user and writes %LOCALAPPDATA%\Semaphore\fairlead-key.dat.
-  Only this account on this machine can read it back. The key is never printed or logged.
+  it, then stores it in Windows Credential Manager as Semaphore/FairleadClientKey.
+  The credential belongs to the current Windows account. The key is never printed or logged.
   Afterwards it asks Fairlead whether the key works. A running Semaphore picks the key up on the
   next draft; no restart is needed.
  .PARAMETER Clear
@@ -24,6 +24,7 @@ $here = $PSScriptRoot
 
 $path = Get-SemAiKeyPath
 if ($Clear) {
+    Remove-SemAiCredential
     if ([IO.File]::Exists($path)) { [IO.File]::Delete($path); Write-Host 'Removed the stored Fairlead key. Semaphore drafts with local rules until you set one again.' }
     else { Write-Host 'No Fairlead key was stored.' }
     return
@@ -31,15 +32,15 @@ if ($Clear) {
 
 if (-not $Check) {
     Write-Host 'Semaphore drafts through Fairlead. Paste the client key from Fairlead > Clients (it starts with fl-).'
-    Write-Host 'It is not shown while you paste, and it is stored encrypted for your Windows account only.'
+    Write-Host 'It is not shown while you paste, and it is stored in Windows Credential Manager for your Windows account.'
     $secure = Read-Host -Prompt 'Fairlead client key' -AsSecureString
     if ($secure.Length -eq 0) { Write-Host 'Nothing entered; the stored key is unchanged.'; return }
-    try { Save-SemAiKeyFile -Key $secure -Path $path }
+    try { Save-SemAiCredential -Key $secure }
     catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }
-    Write-Host ('Stored, encrypted: ' + $path) -ForegroundColor Green
+    Write-Host 'Stored in Windows Credential Manager: Semaphore/FairleadClientKey' -ForegroundColor Green
 }
 
-$s = Get-SemAiSettings -Root (Get-SemRoot) -KeyPath $path
+$s = Get-SemAiSettings -Root (Get-SemRoot)
 if ($s.Problem) { Write-Host $s.Problem -ForegroundColor Red; exit 1 }
 if (-not $s.Key) { Write-Host 'No Fairlead key is stored. Run this script without -Check to set one.' -ForegroundColor Yellow; exit 1 }
 if ($s.KeySource -eq 'environment') { Write-Host 'Note: SEMAPHORE_AI_KEY is set, so it is used instead of the stored key.' -ForegroundColor Yellow }

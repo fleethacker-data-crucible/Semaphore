@@ -72,6 +72,7 @@ BeforeAll {
 
 Describe 'Semaphore intelligence' {
 BeforeEach {
+    Mock Read-SemAiCredential { return $null }
     $script:Saved = @{}
     foreach ($n in $script:EnvNames) { $script:Saved[$n] = [Environment]::GetEnvironmentVariable($n); [Environment]::SetEnvironmentVariable($n, $null) }
     $script:Root = Join-Path ([IO.Path]::GetTempPath()) ('sem-ai-' + [guid]::NewGuid().ToString('N'))
@@ -156,6 +157,37 @@ Context 'Key file (DPAPI)' -Skip:($env:OS -ne 'Windows_NT') {
     It 'treats an unreadable file as no key' {
         [IO.File]::WriteAllText($script:KeyFile, 'not dpapi')
         Read-SemAiKeyFile -Path $script:KeyFile | Should -BeNullOrEmpty
+    }
+}
+
+Context 'Windows Credential Manager selection' {
+    It 'round-trips a synthetic credential under a unique test target' -Skip:($env:OS -ne 'Windows_NT') {
+        $target = 'Semaphore/Test/' + [guid]::NewGuid().ToString('N')
+        try {
+            Save-SemAiCredential -Key (ConvertTo-SecureString $script:Key -AsPlainText -Force) -Target $target
+            [SemaphoreAiCredential]::Read($target) | Should -Be $script:Key
+        } finally { Remove-SemAiCredential -Target $target }
+        [SemaphoreAiCredential]::Read($target) | Should -BeNullOrEmpty
+    }
+    It 'uses the app credential by default without exposing it in status' {
+        Mock Read-SemAiCredential { return $script:Key }
+        $s = Get-SemAiSettings -Root $script:Root
+        $s.KeySource | Should -Be 'credential-manager'
+        $s.Key | Should -Be $script:Key
+        (Get-SemAiStatus -Settings $s | ConvertTo-Json) | Should -Not -Match ([regex]::Escape($script:Key))
+    }
+    It 'keeps the environment override ahead of Credential Manager' {
+        $env:SEMAPHORE_AI_KEY = $script:Key
+        $s = Get-SemAiSettings -Root $script:Root
+        $s.KeySource | Should -Be 'environment'
+        Should -Invoke Read-SemAiCredential -Times 0 -Exactly
+    }
+    It 'does not read a user credential for an explicit isolated key-file path' {
+        Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile | Out-Null
+        Should -Invoke Read-SemAiCredential -Times 0 -Exactly
+    }
+    It 'rejects malformed input before touching the Windows store' {
+        { Save-SemAiCredential -Key (ConvertTo-SecureString 'invalid' -AsPlainText -Force) } | Should -Throw '*Fairlead client key*'
     }
 }
 
