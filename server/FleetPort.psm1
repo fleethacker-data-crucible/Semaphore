@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     FleetHacker port blocks with self-detection (Windows PowerShell 5.1). ASCII only.
 .DESCRIPTION
