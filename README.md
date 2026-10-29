@@ -20,7 +20,7 @@ The runnable application is in the open development PRs below. Their features ar
 | `main` | Catalog and dashboard models, layout, planning, SQL generation, cached-result filtering and draft-provider contracts | v0.1.0 core available here |
 | [PR #10](https://github.com/fleethacker-data-crucible/Semaphore/pull/10) · `armp/semaphore-0.3.0` | v0.3 dashboard UI, Windows PowerShell server and launchers, sample/CSV workflows, database adapter code, analyst playbooks and leadership snapshots | Open engineering preview |
 | [PR #13](https://github.com/fleethacker-data-crucible/Semaphore/pull/13) · `feature/fairlead-intelligence` | Builds on #10: Fairlead-assisted drafting, data cleaning and Qlik assistance, joins, drill-down, SQL desk, lake queries and report sharing | Open; stacked on #10 |
-| [PR #11](https://github.com/fleethacker-data-crucible/Semaphore/pull/11) | Shared Fleet Gate caller and MIT license file | Open |
+| [PR #11](https://github.com/fleethacker-data-crucible/Semaphore/pull/11) | Shared Fleet Gate caller and MIT license file | Merged |
 
 Use the README on the branch you check out for that branch's build and launch instructions. The architecture and roadmap also describe planned application behavior; they do not mean those components already exist on `main`.
 
@@ -88,4 +88,4 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
 
 ## License status
 
-This branch does not yet include a `LICENSE` file. [PR #11](https://github.com/fleethacker-data-crucible/Semaphore/pull/11) adds the organization's MIT license; the application development branch also includes it.
+MIT. See [LICENSE](LICENSE).
