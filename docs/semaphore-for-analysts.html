@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Semaphore for Analysts</title>
+<title>Semaphore for Analysts - Illustrated Preview</title>
 <style>
 /* Fleet UI v0.2 (docs/UNIFIED-UI.md), vendored inline: tokens, type, focus, components.
    Layout: Fleet header (emblem + wordmark, 56 px) · document column · Fleet status bar (28 px). */
@@ -202,7 +202,7 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
 .status-line { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fl-text-secondary); color: var(--fl-muted-foreground); border: 1px dashed var(--fl-border-strong); border-radius: var(--fl-radius-card); padding: 12px 16px; }
 .status-line svg { color: var(--fl-warning); margin-top: 2px; }
 </style>
-</head>
+<style>.guide-shot{margin:24px 0;padding:20px;border:1px solid var(--fl-border);border-radius:10px;background:var(--fl-card)}.guide-shot img{display:block;width:100%;height:auto;margin:16px auto;border:1px solid var(--fl-border)}.guide-shot figcaption{color:var(--fl-muted-foreground);font-size:14px;line-height:1.6}.guide-shot h3{font-size:20px}#screenshot-walkthrough{scroll-margin-top:80px}@media print{.guide-shot{break-inside:avoid}.guide-shot img{max-height:75vh;object-fit:contain}}</style></head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <!-- Lucide icons (ISC) -->
@@ -240,6 +240,12 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
 </header>
 
 <main class="gutter">
+<section class="fl-card" style="margin-top:24px;margin-bottom:24px" aria-label="Preview status">
+<h2>Engineering preview - illustrated walkthrough</h2>
+<p>This guide shows <a href="https://github.com/fleethacker-data-crucible/Semaphore/pull/17">the application development preview in PR #17</a>, not the core-only application state on main. Screenshots were captured from <code>feature/fairlead-intelligence</code> at <code>093defc</code>, using built-in synthetic data. Publishing this guide does not merge or release the application.</p>
+<p><a href="#screenshot-walkthrough">Jump to seven actual screenshots</a> | <a href="Semaphore-Qlik-DataNoodler-Comparison.pdf">Download the comparison and visual walkthrough (PDF)</a></p>
+<p>Some original sections below describe development features. The screenshot captions identify which paths were demonstrated; this is not a claim of Qlik feature parity, operational approval or a validated live database deployment.</p>
+</section>
 
 <section class="head">
   <span class="eyebrow">For data analysts · FleetHacker Edge-Ops · preview</span>
@@ -280,6 +286,7 @@ pre .k { color: var(--fl-accent); font-weight: 600; } pre .p { color: var(--fl-b
   </div>
 </section>
 
+<section id="screenshot-walkthrough"><span class="eyebrow">Actual preview screens / 29 October 2026</span><h2>See the workflow on screen</h2><p>New captures from feature/fairlead-intelligence, using built-in synthetic data in a fresh browser-only session. Local rules drafted the chart. No remote model or real database was used. The source briefing below includes broader development features; these captures show exactly the paths exercised.</p><figure class="guide-shot"><h3>Start here</h3><img src="assets/analyst-guide/01-welcome.png" alt="Continue the example, create a new hoist, add data or switch to leadership questions."><figcaption>Continue the example, create a new hoist, add data or switch to leadership questions.</figcaption></figure><figure class="guide-shot"><h3>Build the dashboard</h3><img src="assets/analyst-guide/02-dashboard.png" alt="Synthetic maintenance data with KPIs, grouped bars, a trend and a newly drafted comparison."><figcaption>Synthetic maintenance data with KPIs, grouped bars, a trend and a newly drafted comparison.</figcaption></figure><figure class="guide-shot"><h3>Inspect a draft</h3><img style="max-width:560px" src="assets/analyst-guide/03-inspector.png" alt="Type a brief, inspect annotations and the readback, choose a chart and accept only after checking it."><figcaption>Type a brief, inspect annotations and the readback, choose a chart and accept only after checking it.</figcaption></figure><figure class="guide-shot"><h3>Filter the whole page</h3><img src="assets/analyst-guide/04-filtered.png" alt="Selecting Icebreaker changes the KPIs and charts; the chip records the active selection."><figcaption>Selecting Icebreaker changes the KPIs and charts; the chip records the active selection.</figcaption></figure><figure class="guide-shot"><h3>Inspect the catalog</h3><img style="max-width:560px" src="assets/analyst-guide/05-data.png" alt="Sample sources are explicitly labeled. Real databases require configured server connections."><figcaption>Sample sources are explicitly labeled. Real databases require configured server connections.</figcaption></figure><figure class="guide-shot"><h3>Read Qlik definitions</h3><img src="assets/analyst-guide/06-qlik.png" alt="Illustrative script and expression in the real dialog. This capture is not a completed database import."><figcaption>Illustrative script and expression in the real dialog. This capture is not a completed database import.</figcaption></figure><figure class="guide-shot"><h3>Ask as leadership</h3><img src="assets/analyst-guide/07-ask.png" alt="The answer is labeled drafted, not reviewed. This fresh session has zero reviewed answers."><figcaption>The answer is labeled drafted, not reviewed. This fresh session has zero reviewed answers.</figcaption></figure></section>
 <section id="qlik">
   <span class="eyebrow">Coming from Qlik</span>
   <h2>Everything you know has a home here</h2>
