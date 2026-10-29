@@ -2,10 +2,10 @@
 <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#1f5f7b"/></marker></defs>
 <style>text{font-family:"Segoe UI",Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
 <rect x="0" y="0" width="1280" height="760" rx="0" fill="#fbfaf2" stroke="#fbfaf2" stroke-width="1.5"/>
-<text x="40" y="44" font-size="14" fill="#8a6b45" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
+<text x="40" y="44" font-size="14" fill="#755735" font-weight="700" text-anchor="start" class="">SEMAPHORE / ARCHITECTURE</text>
 <text x="40" y="88" font-size="32" fill="#132633" font-weight="700" text-anchor="start" class="">AI payloads and trust boundaries</text>
 <text x="40" y="119" font-size="17" fill="#425c6c" font-weight="400" text-anchor="start" class="">The payload depends on the feature. Local routing is the default; it is not a blanket “no data leaves” promise.</text>
-<text x="1240" y="44" font-size="13" fill="#8a6b45" font-weight="700" text-anchor="end" class="">PREVIEW / PR #13</text>
+<text x="1240" y="44" font-size="13" fill="#755735" font-weight="700" text-anchor="end" class="">PREVIEW / PR #13</text>
 <g data-card="Flag / page drafting">
 <rect x="40" y="169" width="370" height="103" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
 <text x="60" y="200" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">Flag / page drafting</text>
@@ -28,7 +28,7 @@
 </g>
 <g data-card="Semaphore proxy">
 <rect x="500" y="315" width="300" height="198" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
-<text x="520" y="346" font-size="12" fill="#8a6b45" font-weight="700" text-anchor="start" class="">LOCAL WINDOWS PROCESS</text>
+<text x="520" y="346" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">LOCAL WINDOWS PROCESS</text>
 <text x="520" y="376" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">Semaphore proxy</text>
 <text x="520" y="408" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Loopback API + session checks</text>
 <text x="520" y="431" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Fairlead key added server-side</text>
@@ -36,7 +36,7 @@
 </g>
 <g data-card="Fairlead router">
 <rect x="880" y="315" width="360" height="198" rx="14" fill="#ffffff" stroke="#8c8370" stroke-width="1.5"/>
-<text x="900" y="346" font-size="12" fill="#8a6b45" font-weight="700" text-anchor="start" class="">LOCAL SERVICE</text>
+<text x="900" y="346" font-size="12" fill="#755735" font-weight="700" text-anchor="start" class="">LOCAL SERVICE</text>
 <text x="900" y="376" font-size="21" fill="#132633" font-weight="700" text-anchor="start" class="">Fairlead router</text>
 <text x="900" y="408" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Receives the feature payload</text>
 <text x="900" y="431" font-size="16" fill="#425c6c" font-weight="400" text-anchor="start" class="">Local route + local privacy header</text>
