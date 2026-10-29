@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     FleetHacker port blocks with self-detection (Windows PowerShell 5.1). ASCII only.
 .DESCRIPTION
@@ -261,7 +261,7 @@ function Get-FleetHttpSysRequestQueueText {
     HTTP://LOCALHOST:8845/                  host:port
     HTTP://127.0.0.1:25000:127.0.0.1/       host:port:ip (IP-bound prefix; TalkForge registers this form)
     HTTP://[::1]:8845/                      bracketed IPv6 host
-    HTTP://*:5357/<path>/, HTTP://+:80/     wildcards
+    Wildcard host prefixes (+ or *) are recognized only for inspection; never bound.
   Returns @{ Scheme; Host; Port; BoundIp; Path; Loopback }. Loopback is true only when the host is localhost,
   127.0.0.1 or [::1] AND, for the host:port:ip form, the bound ip is 127.0.0.1 or ::1 too. + and * are never loopback.
 #>

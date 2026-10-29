@@ -16,7 +16,7 @@ export interface AiStatus {
   model: string;
   /** Requests carry X-Fairlead-Privacy: local, so prompts stay on this computer. */
   privacyLocal: boolean;
-  keySource: 'environment' | 'file' | 'none';
+  keySource: 'environment' | 'credential-manager' | 'file' | 'none';
   problem: string | null;
   setup: string;
 }

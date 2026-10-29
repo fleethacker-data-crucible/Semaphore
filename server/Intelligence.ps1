@@ -86,7 +86,7 @@ function Test-SemAiUrl {
 }
 
 function Get-SemAiSettings {
-    # Url, Model, PrivacyLocal, Key (or $null), KeySource: environment | file | none, Problem (or $null).
+    # Url, Model, PrivacyLocal, Key (or $null), KeySource: environment | credential-manager | file | none, Problem (or $null).
     param([string]$Root = (Get-SemRoot), [string]$KeyPath = (Get-SemAiKeyPath))
     $url = Get-SemEnvValue -Name 'SEMAPHORE_AI_URL' -Root $Root
     if (-not $url) { $url = $script:SemAiDefaultUrl }
