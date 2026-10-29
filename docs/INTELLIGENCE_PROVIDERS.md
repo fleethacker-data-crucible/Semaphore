@@ -10,16 +10,18 @@ Semaphore works with no model at all. **Local rules** is the default provider an
 | Contract endpoint | A platform-side service implementing the contract below | Yes, to that endpoint |
 | Databricks serving endpoint | Planned, reusing Halyard's client | Yes |
 
-## What is sent, and what never is
+## What each AI feature sends
 
-| Sent | Never sent |
+| Feature | Payload sent to the selected provider |
 | --- | --- |
-| The hoist brief and the flag brief | Any data row or cached result |
-| The page's fixed filters (field keys and values the analyst typed) | Table or column names, source names, connection strings |
-| Metric and field **keys, labels, types and synonyms** (`summarizeCatalog`), with a **set number** per source (1, 2, ...) so a model keeps a flag to one source | Credentials or vault item names |
-| The flag's current kind | Anything about other people |
+| Flag/page drafting | Briefs, summarized metric/field keys, labels, types and synonyms; the selected flag kind and applicable draft context |
+| Cleaning assistance | A field label and up to 300 distinct string values with their counts |
+| Qlik expression assistance | The selected expression and its label, plus summarized field metadata |
+| Briefing assistance | Page title and computed facts, including chart titles and flag IDs |
 
-SQL is generated locally from the validated draft, never by the provider.
+The built-in UI does not upload complete source tables to the model. Distinct values, expressions and computed facts can nevertheless contain business data. The Fairlead `local` route and local-privacy header are the default; changing route/privacy settings can allow remote processing. This is a description of the UI's payload construction, not a server-side classifier that detects sensitive content in arbitrary prompts. Connection strings and the Fairlead credential are not included in these model payloads.
+
+SQL for drafted flags is generated locally from validated bindings. The separate SQL desk accepts user-written queries under the server's query guard.
 
 ## Rules every provider's output goes through
 
@@ -30,7 +32,7 @@ SQL is generated locally from the validated draft, never by the provider.
 5. A model's own confidence is capped at 0.8 (`MODEL_CONFIDENCE_CAP`): it has not seen the data.
 6. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
 7. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
-8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Tokens come from the Lazarette vault.
+8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Direct provider adapters receive a token from their caller. The browser UI uses the server-side Fairlead client key from the environment or Windows Credential Manager, with legacy DPAPI-file compatibility.
 
 ## Fairlead
 
