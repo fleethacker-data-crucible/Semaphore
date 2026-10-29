@@ -7,9 +7,9 @@
 
 # SEMAPHORE · Dashboard Intelligence
 
-A local-first dashboard builder meant to replace Qlik on thin clients: analysts drop flags on a page and say in plain English what each should show, and Semaphore wires the data. Next, it learns from the analysts' reviewed work so leadership can simply ask, and so it can stand in when an analyst is away.
+Semaphore is an analyst workbench for building dashboards from plain-English briefs, CSV files and configured database sources. Analysts review proposed charts and their SQL, accept useful definitions into a playbook, and publish summarized snapshots for leadership questions. It targets Windows thin clients and Qlik-style analytical workflows.
 
-> **Engineering preview (0.3).** Runs on sample data and CSV files today; database sources go through ODBC or OLE DB and have not yet been tried on the target Windows machines.
+> **Engineering preview (0.3 development line).** This README describes `armp/semaphore-0.3.0` in [PR #10](https://github.com/fleethacker-data-crucible/Semaphore/pull/10). The default `main` branch still contains the v0.1 TypeScript core. Sample and CSV workflows are available here; database adapters need validation against the intended services and target workstations. [PR #13](https://github.com/fleethacker-data-crucible/Semaphore/pull/13) adds the Fairlead integration and further analytical features.
 
 Part of the Data Crucible family alongside Lazarette, Halyard and Shellback, and built on the same [TechStack](TechStack).
 
@@ -28,7 +28,7 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
 
 Semaphore serves two people. **Analysts** build: they describe flags, check Semaphore's drafts and accept them. **Leadership** asks: they want an answer they can trust, not a dashboard tool.
 
-Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. It learns only from accepted work, never by watching people. Leaders never connect to a database: they are answered from small, already-summarised snapshots of the analysts' accepted flags, each showing how fresh it is.
+Every flag an analyst accepts pairs a plain-English question with the exact data behind its answer. The **playbook** collects those reviewed pairs, so leadership gets a single question box answered from the analysts' own work, each answer labelled *reviewed*, *drafted, not reviewed* or *can't answer yet*. When an analyst is out, Semaphore stands in: it answers familiar questions, briefs leadership on what changed, and queues anything new for the analyst's return. The playbook reuses accepted definitions and snapshots; it does not train a model on user activity. Leaders never connect to a database: they are answered from small, already-summarised snapshots of the analysts' accepted flags, each showing how fresh it is.
 
 <p align="center">
   <picture>
@@ -42,14 +42,14 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 ## Run it
 
 1. On a build machine, run `npm ci` then `npm run build` once. This writes the page to `web\dist` (the workstation never builds anything).
-2. Copy the folder to the workstation and double-click **`Launch-Semaphore.bat`**. It needs Windows PowerShell 5.1 and Edge or Chrome: no admin rights, no installs, no network.
+2. Copy the folder to the workstation and double-click **`Launch-Semaphore.bat`**. It needs Windows PowerShell 5.1 and Edge or Chrome. The built sample/CSV application runs offline without Node.js, admin rights or runtime installation. Configured databases or a shared network folder require network access.
 3. Semaphore opens on the fleet-maintenance example with generated sample data. Click **New hoist** for an empty page, or **Data** to add CSV files or a database.
 4. Leadership double-clicks **`Ask-Semaphore.bat`** instead: a question box answered from the analysts' reviewed work, with no database access needed. Share the playbook by pointing `SEMAPHORE_HOME` at one network folder on every computer.
 5. To stop, choose **End session**, or close the tab: the server stops itself about 20 seconds later. `server\Stop-Semaphore.ps1` stops any copy that is still running.
 
-> **Intelligence router:** remote AI providers and, once Semaphore connects to them, its data sources will go through the Fleet intelligence router, [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead), instead of tool-specific endpoints and connection details. See [TechStack](TechStack), "Intelligence router".
+> **Current connections:** the UI uses deterministic local rules. Database queries currently use Semaphore's own connectors. [PR #13](https://github.com/fleethacker-data-crucible/Semaphore/pull/13) adds model requests through [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead); routing database connections through Fairlead is still a direction in [TechStack](TechStack).
 
-Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off.
+Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore listens on `127.0.0.1`, port 8774 to 8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install a background service or scheduled task. The current 8774–8776 port block also needs reconciliation with other Fleet assignments before shared deployment.
 
 ## What it does
 
@@ -79,12 +79,13 @@ List them in `sources.json` in your Semaphore folder (`%USERPROFILE%\Semaphore`,
 ]
 ```
 
-ODBC and OLE DB come with Windows (.NET Framework), so nothing is installed; the database's own driver must already be on the machine. Then open **Data**, pick the table and choose **Profile and add**.
+Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database driver/provider, matching the PowerShell process architecture, must already be installed; Semaphore does not install it. Then open **Data**, pick the table and choose **Profile and add**.
 
 ## Privacy and security in short
 
 - The server listens on loopback only, checks every request's `Host` and `Origin`, and needs the session token the launcher gives the browser. The token is never written to disk or logged.
-- Rows never leave the machine. CSV files are read in the page and never uploaded. AI providers, when added, see only briefs and catalog names, never data, tables, columns or credentials.
+- CSV files are parsed in the browser. Database queries use the configured services, and shared playbook snapshots contain summarized result data. Treat shared snapshots as data-bearing files.
+- The UI on this branch uses local rules without a model. Optional core provider adapters send briefs and summarized catalog metadata. The broader AI features in PR #13 have additional payloads described in that branch's documentation.
 - No passwords in connection strings: use a DSN or Windows authentication (the Lazarette vault bridge is next). SQL is generated by Semaphore with bound, typed parameters, and the server refuses anything but a single `SELECT`.
 - Hoists and the catalog are JSON files in your Semaphore folder.
 
@@ -93,7 +94,7 @@ ODBC and OLE DB come with Windows (.NET Framework), so nothing is installed; the
 Node 22.18 or later. `npm ci` installs the build tools (esbuild, Tailwind, React, ECharts); they are bundled into `web\dist` and never needed on the workstation.
 
 ```shell
-npm test             # node --test: core, data path and UI logic (98 tests)
+npm test             # node --test: core, data path and UI logic
 npm run typecheck    # strict tsc for the core and the UI
 npm run build        # web/dist
 npm run dev          # rebuild on change
@@ -112,4 +113,4 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## License
 
-No license has been chosen yet; there is no `LICENSE` file.
+The organization uses MIT. The root license file is being added in [PR #11](https://github.com/fleethacker-data-crucible/Semaphore/pull/11) and is not yet present on this branch.
