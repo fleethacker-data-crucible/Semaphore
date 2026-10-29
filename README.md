@@ -24,6 +24,15 @@ The runnable application is in the open development PRs below. Their features ar
 
 Use the README on the branch you check out for that branch's build and launch instructions. The architecture and roadmap also describe planned application behavior; they do not mean those components already exist on `main`.
 
+## Architecture at a glance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/core-overview-dark.svg">
+  <img src="docs/diagrams/core-overview-light.svg" alt="The current TypeScript core validates dashboard models, plans SQL and cross-filters results; query execution and rendering belong to the caller." width="1280">
+</picture>
+
+[Architecture diagrams](docs/ARCHITECTURE-DIAGRAMS.md): current core, preview application, and AI payload / credential boundaries, with editable SVGs and Mermaid flows.
+
 ## What the core does today
 
 | Component | Implemented behavior |
