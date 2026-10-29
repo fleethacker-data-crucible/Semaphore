@@ -80,6 +80,8 @@ Before radio, ships talked with flags. *Semaphore* is a sailor spelling out a me
 
 ## Documentation and examples
 
+- [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots of the application preview, with workflow captions and clear preview status. Download the HTML and its `docs/assets/analyst-guide` folder to view it locally.
+- [Semaphore, Qlik and Data Noodler comparison (PDF)](docs/Semaphore-Qlik-DataNoodler-Comparison.pdf): capability tables, architecture and the screenshot walkthrough.
 - [Architecture](docs/ARCHITECTURE.md): implemented core and target application design
 - [Flag specification](docs/FLAG_SPEC.md): catalog, hoist and flag formats
 - [Intelligence providers](docs/INTELLIGENCE_PROVIDERS.md): local rules, provider contract and validation
