@@ -4,8 +4,9 @@
 // AI switched off, local rules draft every flag, and a failing Fairlead falls back to them too.
 
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
-import { type IntelligenceProvider, LocalRulesProvider, OpenAICompatibleProvider } from '../../../src/core/intelligence/index.ts';
+import { type ExampleSource, type IntelligenceProvider, LocalRulesProvider, OpenAICompatibleProvider } from '../../../src/core/intelligence/index.ts';
 import type { FetchLike } from '../../../src/core/intelligence/remote.ts';
+import type { PlaybookEntry } from '../../../src/core/playbook.ts';
 import { api, sessionToken } from './api.ts';
 
 export interface AiStatus {
@@ -29,6 +30,7 @@ export interface AiCheck {
 }
 
 const USE_KEY = 'semaphore.ai';
+const EXAMPLES_KEY = 'semaphore.ai.examples';
 /** The server gives Fairlead 180 s; the browser waits a little longer so the server's message wins. */
 const DRAFT_TIMEOUT_MS = 190_000;
 
@@ -60,6 +62,37 @@ export function setAiWanted(on: boolean): void {
   } catch {
     /* settings are a convenience */
   }
+}
+
+/**
+ * The analyst's second switch: also send reviewed examples (briefs and catalog keys and labels from
+ * the playbook) with a draft request. Kept per browser and OFF unless they turned it on: the briefs
+ * are the team's own words, so sharing them is a choice, even when Fairlead keeps them on this computer.
+ */
+export function aiExamplesWanted(): boolean {
+  try {
+    return localStorage.getItem(EXAMPLES_KEY) === 'on';
+  } catch {
+    return false;
+  }
+}
+
+export function setAiExamplesWanted(on: boolean): void {
+  try {
+    localStorage.setItem(EXAMPLES_KEY, on ? 'on' : 'off');
+  } catch {
+    /* settings are a convenience */
+  }
+}
+
+/**
+ * What to pass to draftFlag / draftHoist as `examples`: the playbook's entries when the analyst
+ * switched examples on, AI drafting is on and a Fairlead key is stored; otherwise nothing, and no
+ * example is built or sent. The request still goes only through this server's relay.
+ */
+export function examplesFor(wanted: boolean, status: AiStatus | null, useAi: boolean, entries: readonly PlaybookEntry[], user: string): ExampleSource | undefined {
+  if (!wanted || !useAi || !status?.configured) return undefined;
+  return { entries, names: user ? [user] : [] };
 }
 
 export function aiLabel(status: AiStatus): string {

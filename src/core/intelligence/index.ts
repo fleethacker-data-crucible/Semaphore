@@ -4,6 +4,7 @@
 // "drafted" until the analyst accepts it.
 
 import type { CatalogIndex } from '../catalog.ts';
+import type { PlaybookEntry } from '../playbook.ts';
 import { effectiveBrief, emptyBehavior, type Flag, type Hoist, LIMITS } from '../hoist.ts';
 import { DEFAULT_SIZE, findSlot } from '../layout.ts';
 import { applyTeamStyle, describeStyle, type TeamStyle } from '../style.ts';
@@ -15,11 +16,23 @@ import {
   validateFlagDraft,
   validateHoistDraft,
 } from './contract.ts';
+import { selectExamples } from './examples.ts';
 import { LocalRulesProvider } from './local-rules.ts';
 
 export * from './contract.ts';
+export { EXAMPLE_LIMITS, type ExampleOptions, selectExamples } from './examples.ts';
 export { LocalRulesProvider } from './local-rules.ts';
 export { ContractProvider, OpenAICompatibleProvider } from './remote.ts';
+
+/**
+ * Reviewed examples for a draft request: the analyst's switch is on and these are the playbook's
+ * entries to choose from. Leave the option out (switch off) and no example is built or sent.
+ */
+export interface ExampleSource {
+  entries: readonly PlaybookEntry[];
+  /** Names to take out of the example briefs, besides those on the entries (for example the signed-in user). */
+  names?: readonly string[];
+}
 
 export interface DraftOutcome<T> {
   draft: T;
@@ -34,12 +47,14 @@ export async function draftFlag(
   hoist: Hoist,
   flag: Flag,
   index: CatalogIndex,
-  options: { auto?: boolean; style?: TeamStyle } = {},
+  options: { auto?: boolean; style?: TeamStyle; examples?: ExampleSource } = {},
 ): Promise<DraftOutcome<FlagDraft>> {
   const brief = effectiveBrief(hoist, flag);
   if (options.auto) brief.auto = true;
   const teamStyle = options.style ? describeStyle(options.style, index) : [];
-  const request = { task: 'draft-flag' as const, brief, catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}) };
+  // Reviewed examples go only to a provider that is not local rules, and only when the analyst switched them on.
+  const examples = provider.local || !options.examples ? [] : selectExamples(brief.flag || brief.hoist, options.examples.entries, index, { ...(options.examples.names ? { names: options.examples.names } : {}) });
+  const request = { task: 'draft-flag' as const, brief, catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}), ...(examples.length ? { examples } : {}) };
   // The team style finishes whatever came back (the AI was also told it), filling only what the brief left open.
   const styled = (draft: FlagDraft): FlagDraft =>
     options.style ? applyTeamStyle(draft, options.style, index, { auto: !!options.auto, brief: `${brief.hoist} ${brief.flag}` }).draft : draft;
@@ -53,9 +68,10 @@ export async function draftFlag(
   }
 }
 
-export async function draftHoist(provider: IntelligenceProvider, brief: string, index: CatalogIndex, options: { style?: TeamStyle } = {}): Promise<DraftOutcome<HoistDraft>> {
+export async function draftHoist(provider: IntelligenceProvider, brief: string, index: CatalogIndex, options: { style?: TeamStyle; examples?: ExampleSource } = {}): Promise<DraftOutcome<HoistDraft>> {
   const teamStyle = options.style ? describeStyle(options.style, index) : [];
-  const request = { task: 'draft-hoist' as const, brief: brief.slice(0, LIMITS.briefChars), catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}) };
+  const examples = provider.local || !options.examples ? [] : selectExamples(brief, options.examples.entries, index, { ...(options.examples.names ? { names: options.examples.names } : {}) });
+  const request = { task: 'draft-hoist' as const, brief: brief.slice(0, LIMITS.briefChars), catalog: summarizeCatalog(index.catalog), ...(teamStyle.length ? { teamStyle } : {}), ...(examples.length ? { examples } : {}) };
   const styled = (draft: HoistDraft): HoistDraft =>
     options.style
       ? { ...draft, flags: draft.flags.map((f) => ({ ...applyTeamStyle(f, options.style!, index, { auto: true, brief: `${brief} ${f.brief}` }).draft, brief: f.brief })) }
