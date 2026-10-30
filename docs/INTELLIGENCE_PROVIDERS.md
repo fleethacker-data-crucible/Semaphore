@@ -8,7 +8,7 @@ Semaphore works with no model at all. **Local rules** is the default provider an
 | Fairlead (the UI's AI switch) | The Fleet model router on `127.0.0.1:8776`, reached through Semaphore's own server. Route `local` with `X-Fairlead-Privacy: local` by default. | No, by default (Fairlead's `local` route) |
 | OpenAI-compatible gateway | Any `/v1/chat/completions` API: enterprise gateways, Azure OpenAI, Ollama, LM Studio. Semaphore writes the prompts. | Yes, to that gateway |
 | Contract endpoint | A platform-side service implementing the contract below | Yes, to that endpoint |
-| Databricks serving endpoint | Planned, reusing Halyard's client | Yes |
+| Databricks serving endpoint | `DatabricksProvider`: workspace URL + endpoint name + a token held server-side. Tested against a simulated endpoint only; see [DATABRICKS.md](DATABRICKS.md). In the app, reach it through a Fairlead route. | Yes, to that workspace |
 
 ## What each AI feature sends
 
@@ -32,7 +32,7 @@ SQL for drafted flags is generated locally from validated bindings. The separate
 5. A model's own confidence is capped at 0.8 (`MODEL_CONFIDENCE_CAP`): it has not seen the data.
 6. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
 7. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
-8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Direct provider adapters receive a token from their caller. The browser UI uses the server-side Fairlead client key from the environment or Windows Credential Manager, with legacy DPAPI-file compatibility.
+8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials (the Databricks workspace URL follows the same rule). Direct provider adapters receive a token from their caller. The browser UI uses the server-side Fairlead client key from the environment or Windows Credential Manager, with legacy DPAPI-file compatibility.
 
 ## Fairlead
 
