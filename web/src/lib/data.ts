@@ -97,7 +97,7 @@ async function run(plan: QueryPlan, ctx: DataContext) {
   if (ctx.localSources.has(plan.source)) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
-    const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table)].every((t) => ctx.workerTables?.has(t));
+    const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])].every((t) => ctx.workerTables?.has(t));
     return { origin: 'page' as const, result: await remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);

@@ -141,6 +141,12 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
   const totals: Record<string, number | null> = {};
   for (const m of plan.metrics) {
     if (m.agg !== 'sum' && m.agg !== 'count') continue;
+    // Split by a many-side field, a row can sit in several groups: adding the groups up would
+    // count it more than once, so there is no total to give (manyjoin.ts).
+    if (plan.many?.overlap) {
+      totals[m.key] = null;
+      continue;
+    }
     let t: number | null = null;
     for (const r of out) {
       const v = r.values[m.key];
