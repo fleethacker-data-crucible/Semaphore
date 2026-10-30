@@ -25,6 +25,12 @@ export interface Filter {
   /** For `last`: one number, the count of `unit` periods back from today. */
   values: Array<string | number>;
   unit?: TimeGrain;
+  /**
+   * Set by drill.ts on the filter a drill step adds (never read from a saved hoist). A comparison
+   * moves such a filter back with its earlier window, so a drilled period is compared with the
+   * same period one window earlier (drill-compare.ts).
+   */
+  drill?: true;
 }
 
 export type Tone = 'good' | 'warn' | 'bad';
