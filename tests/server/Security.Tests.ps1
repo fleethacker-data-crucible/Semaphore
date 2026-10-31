@@ -8,6 +8,7 @@ BeforeAll {
     . ([IO.Path]::Combine($server, 'Routes.ps1'))
     . ([IO.Path]::Combine($server, 'Query.ps1'))
     . ([IO.Path]::Combine($server, 'Vault.ps1'))
+    . ([IO.Path]::Combine($server, 'Connectors.ps1'))
 
     $script:TestHome = Join-Path ([IO.Path]::GetTempPath()) ('sem-home-' + [guid]::NewGuid().ToString('N'))
     $script:TestWeb = Join-Path ([IO.Path]::GetTempPath()) ('sem-web-' + [guid]::NewGuid().ToString('N'))

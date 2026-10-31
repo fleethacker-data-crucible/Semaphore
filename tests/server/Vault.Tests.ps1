@@ -3,7 +3,7 @@
 # Get-ArcSecret). A real Lazarette vault is not touched: see docs/VAULT.md for what still needs checking by hand.
 BeforeAll {
     $server = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server'))
-    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1', 'Vault.ps1') { . ([IO.Path]::Combine($server, $f)) }
+    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1') { . ([IO.Path]::Combine($server, $f)) }
 
     $script:Arc = Join-Path $TestDrive 'Lazarette'
     New-Item -ItemType Directory -Path (Join-Path $script:Arc 'lib') -Force | Out-Null

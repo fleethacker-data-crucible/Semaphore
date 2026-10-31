@@ -14,7 +14,7 @@ BeforeAll {
 Describe 'Server scripts' {
     It 'finds the server scripts' {
         $names = @($script:Scripts | ForEach-Object { $_.Name })
-        foreach ($n in @('Start-Semaphore.ps1', 'Stop-Semaphore.ps1', 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Set-SemaphoreAiKey.ps1', 'FleetPort.psm1', 'FleetPorts.psd1')) {
+        foreach ($n in @('Start-Semaphore.ps1', 'Stop-Semaphore.ps1', 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'Set-SemaphoreAiKey.ps1', 'FleetPort.psm1', 'FleetPorts.psd1')) {
             $names | Should -Contain $n
         }
     }

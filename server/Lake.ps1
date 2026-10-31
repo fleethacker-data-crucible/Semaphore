@@ -169,7 +169,7 @@ function Invoke-SemAwsRequest {
 }
 function Invoke-SemAwsJson {
     # Athena and Glue JSON 1.1 APIs: POST / with X-Amz-Target. Returns the parsed answer or throws AWS's message.
-    param([hashtable]$Lake, [ValidateSet('athena', 'glue')][string]$Service, [string]$Target, [hashtable]$Payload, [int]$TimeoutSec = 30)
+    param([hashtable]$Lake, [ValidateSet('athena', 'glue', 'redshift-data')][string]$Service, [string]$Target, [hashtable]$Payload, [int]$TimeoutSec = 30)
     $base = if ($Lake.Endpoint) { $Lake.Endpoint } else { "https://$Service.$($Lake.Region).amazonaws.com" }
     $body = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $Payload -Depth 8 -Compress))
     $r = Invoke-SemAwsRequest -Lake $Lake -Service $Service -Method 'POST' -Url ($base + '/') -Headers @{ 'Content-Type' = 'application/x-amz-json-1.1'; 'X-Amz-Target' = $Target } -Body $body -TimeoutSec $TimeoutSec

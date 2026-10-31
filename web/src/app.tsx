@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
@@ -456,7 +456,7 @@ export function App() {
         const p = await profileTable(source, table);
         const s = server?.sources.find((x) => x.id === source);
         const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = kind === 'postgres' ? 'postgres' : kind === 'oracle' ? 'oracle' : kind === 'access' ? 'access' : kind === 'azure-sql' ? 'tsql' : 'ansi';
+        const dialect = dialectForKind(kind);
         const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
@@ -484,7 +484,7 @@ export function App() {
             const p = await profileTable(t.source, t.table);
             const s = server?.sources.find((x) => x.id === t.source);
             const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = kind === 'postgres' ? 'postgres' : kind === 'oracle' ? 'oracle' : kind === 'access' ? 'access' : kind === 'azure-sql' ? 'tsql' : 'ansi';
+            const dialect = dialectForKind(kind);
             cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
