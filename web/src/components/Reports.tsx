@@ -1,7 +1,7 @@
 // Recurring reports on screen: leadership's shelf of editions and the edition itself (frozen
 // answers, read like the page), and the analyst's offer to keep a page coming while away.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CalendarClock, Newspaper, ScrollText, Square, Volume2, X } from 'lucide-react';
 import type { Briefing } from '../../../src/core/briefing.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
@@ -9,6 +9,7 @@ import { pickLocalVoice, speechText } from '../../../src/core/voice.ts';
 import { type Cadence, describeCadence, type Edition, type FrozenFlag, latestEditions, type ReportSchedule } from '../../../src/core/reports.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
+import { useModal } from '../lib/modal.ts';
 
 const noop = () => undefined;
 
@@ -36,9 +37,11 @@ export function FrozenGrid({ flags, cols, index, themeKey }: { flags: FrozenFlag
 }
 
 export function EditionView({ edition, index, themeKey, onClose }: { edition: Edition; index: CatalogIndex; themeKey: string; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section role="dialog" aria-label={edition.title} className="mx-auto max-w-6xl rounded-xl border border-line bg-bg shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label={edition.title} className="mx-auto max-w-6xl rounded-xl border border-line bg-bg shadow-xl">
         <header className="flex items-start gap-2 border-b border-line px-5 py-3">
           <Newspaper size={18} className="mt-0.5 text-brass" />
           <div className="flex-1">
