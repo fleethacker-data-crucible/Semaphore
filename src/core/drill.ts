@@ -42,6 +42,11 @@ export function canDrill(index: CatalogIndex, flag: Flag): boolean {
 
 /** The filter a clicked value stands for: one category, or the whole period a date bar covers. */
 function stepFilter(step: DrillStep): Filter {
+  // Tagged so a comparison can move a drilled period back with its earlier window (drill-compare.ts).
+  return { ...rawStepFilter(step), drill: true };
+}
+
+function rawStepFilter(step: DrillStep): Filter {
   if (!step.grain || step.value === null) return { field: step.field, op: 'eq', values: [step.value === null ? '' : (step.value as string | number)] };
   const start = String(step.value).slice(0, 10);
   const from = new Date(`${start}T00:00:00Z`);
@@ -95,8 +100,9 @@ export function drillView(flag: Flag, steps: readonly DrillStep[], index: Catalo
   const binding = { ...flag.binding, dimensions: dims, filters, ...(limit ? { limit } : {}), ...(sort ? { sort } : {}) };
   if (!limit) delete binding.limit;
   if (!sort) delete binding.sort;
-  // A comparison would need the drilled window's own earlier window; it is dropped below the top.
-  delete binding.compare;
+  // A comparison carries down a drill: the earlier window is narrowed by the same steps, moved back
+  // with it (drill-compare.ts). The rows behind a value are a list, not a series, so it ends there.
+  if (detail) delete binding.compare;
   return { flag: { ...flag, kind: kind === 'kpi' || kind === 'pie' ? 'bar' : kind, binding }, detail };
 }
 
