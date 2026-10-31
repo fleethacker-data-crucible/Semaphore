@@ -73,7 +73,7 @@ function Test-SemRouteCovered {
     param([string]$Route)
     foreach ($c in (Get-SemCommandRegistry)) {
         if ($c.route -eq $Route) { return $true }
-        $rx = '^' + [regex]::Escape($c.route).Replace('\{id\}', '[^/]+') + '$'
+        $rx = '^' + [regex]::Escape($c.route).Replace('\{id}', '[^/]+') + '$'
         if ($c.route.StartsWith('/api/') -and $Route -match $rx) { return $true }
     }
     return $script:SemUiOnlyRoutes.Contains($Route)
