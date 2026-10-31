@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Plain-English drafting can split by many-side fields** ("credit limit by order status"): same reach rule as the planner, one many-side table per flag, a note that groups can add up to more than the total.
 - **Lineage follows one-to-many joins**: Data > Lineage draws every hop to a field on the many side of a flag's base table, and notes a flag that reads a field reachable in more than one way.
 - **Welcome page and emblem** (UNIFIED-UI 6 and 8). Semaphore opens on the full emblem, a headline and the ways in: continue the last page, a new hoist, a saved one, add data, or the leadership view ("Open straight to the builder next time" turns it off). The emblem follows the window: it grows with the height up to 380 px and shrinks on a short window. On a window with room for it the full emblem also tops the flag palette, and the header's small mark gives way to it. Web copies of the Night watch and Chart room emblems (`web/public/brand`, 768 px) have the backdrop outside the art made transparent.
 - **AI drafts keep to one source.** The catalog a model sees numbers each source as a set; a draft that still mixes sources keeps one, swapping in same-named metrics and fields or leaving the rest out with a note. Colour rules the brief did not ask for are dropped, and a model's own confidence is capped at 0.8. Found testing against a throwaway Access database through Fairlead.
