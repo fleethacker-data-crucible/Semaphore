@@ -6,6 +6,8 @@ const languages: Record<Dialect, { name: string; syntax: string }> = {
   oracle: { name: 'Oracle SQL', syntax: 'Double quotes name columns and tables. TRUNC groups dates; FETCH FIRST caps rows.' },
   access: { name: 'Microsoft Access SQL', syntax: 'Square brackets name columns and tables. DateSerial and DatePart group dates; TOP caps rows.' },
   tsql: { name: 'T-SQL (SQL Server / Azure SQL)', syntax: 'Square brackets name columns and tables. TOP caps rows. Date grouping uses DATETRUNC and requires SQL Server 2022+ or a compatible Azure SQL engine.' },
+  synapse: { name: 'T-SQL (Azure Synapse)', syntax: 'Square brackets name columns and tables. TOP caps rows. Synapse has no DATETRUNC, so dates group with DATEADD and DATEDIFF.' },
+  spark: { name: 'Spark SQL (Foundry, Databricks)', syntax: 'Backticks name columns and tables. date_trunc groups dates; LIMIT caps rows. Foundry takes no bound values, so Semaphore writes each value as a checked literal.' },
   ansi: { name: 'ANSI-like SQL profile', syntax: 'This profile uses double-quoted names, date_trunc and LIMIT. It is not universal ANSI SQL; confirm those features with your database.' },
 };
 

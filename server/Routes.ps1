@@ -18,6 +18,7 @@
 #          logged and kept as <home>\snapshots\.last-refresh.json; GET returns it (404 before the first)
 #   POST   /api/query    { source, sql, params, rowCap, timeoutSec }   (Query.ps1, worker pool)
 #   POST   /api/profile  { source, table? }                           (Query.ps1, worker pool)
+#   GET    /api/vault                     Lazarette bridge status, never a secret (Vault.ps1)
 #   GET    /api/ai                        AI status, never the key            (Intelligence.ps1)
 #   POST   /api/ai/check                  is Fairlead reachable with the key  (Intelligence.ps1, worker pool)
 #   POST   /api/ai/v1/chat/completions    drafting request passed to Fairlead (Intelligence.ps1, worker pool)
@@ -191,7 +192,7 @@ function Invoke-SemDocRoute {
 function Get-SemInfo {
     $sources = @()
     foreach ($s in @(Get-SemSources -HomeDir $script:Sem.Home)) {
-        $sources += [ordered]@{ id = $s.id; label = $s.label; kind = $s.kind; provider = $s.provider; placeholders = 'question' }
+        $sources += [ordered]@{ id = $s.id; label = $s.label; kind = $s.kind; provider = $s.provider; placeholders = 'question'; vault = [bool](Get-SemSourceVault $s) }
     }
     return [ordered]@{
         tool = 'semaphore'; version = $script:Sem.Version; pid = $PID; port = $script:Sem.Port; home = $script:Sem.Home
@@ -258,6 +259,11 @@ function Invoke-SemRoute {
         if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
         Start-SemWorkerRequest -Req $Req
         return
+    }
+    if ($p -eq '/api/vault') {
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        [void](Initialize-SemVault -Root $script:Sem.Root)
+        Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home); return
     }
     if ($p -eq '/api/ai') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }

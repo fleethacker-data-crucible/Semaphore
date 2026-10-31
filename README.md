@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/emblem-dark.png">
-    <img src="assets/brand/emblem-light.png" width="280" alt="Semaphore emblem: a ship's semaphore mast with two signal arms over a deck panel showing a compass rose and a bar chart, riding the waves, above the SEMAPHORE wordmark">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/emblem-dark-transparent.png">
+    <img src="assets/brand/emblem-light-transparent.png" width="280" alt="Semaphore emblem: a ship's semaphore mast with two signal arms over a deck panel showing a compass rose and a bar chart, riding the waves, above the SEMAPHORE wordmark">
   </picture>
 </p>
 
@@ -146,6 +146,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
+- [docs/UNIFIED-UI.md](docs/UNIFIED-UI.md): the Fleet Unified UI requirements Semaphore follows (an unchanged copy; see [docs/SKINS.md](docs/SKINS.md) for how Semaphore applies them)
 - [docs/VAULT.md](docs/VAULT.md): the Lazarette bridge for database secrets and AWS sessions
 - [docs/CONNECTORS.md](docs/CONNECTORS.md): Redshift, Synapse, Foundry, and how each connector is tested
 - [SQL languages and compatibility](docs/SQL-LANGUAGES.md): the full dialect name under a flipped card, syntax and parameter explanations, and the implemented profiles and their limits.
