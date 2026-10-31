@@ -207,6 +207,7 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Intelligence.ps1')
 . (Join-Path $here 'Lake.ps1')
 . (Join-Path $here 'Vault.ps1')
+. (Join-Path $here 'Connectors.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
 if ($CheckOnly) { if (Invoke-SemSelfCheck) { exit 0 } else { exit 1 } }
