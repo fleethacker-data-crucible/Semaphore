@@ -2,9 +2,10 @@
 // server, the lake included. It runs through the same /api/query as flags, so the same guard (one
 // SELECT, nothing that writes), row cap and, for the lake, the same cost guard and cache apply.
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Download, History, Play, TerminalSquare, X } from 'lucide-react';
 import { ApiError, type QueryResponse, runServerQuery, type ServerSource } from '../lib/api.ts';
+import { useModal } from '../lib/modal.ts';
 
 const HISTORY_KEY = 'semaphore.sqldesk';
 const ROW_CAP = 5000;
@@ -46,6 +47,8 @@ function toCsv(r: QueryResponse): string {
 }
 
 export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   const [source, setSource] = useState(sources[0]?.id ?? '');
   const [sql, setSql] = useState('');
   const [result, setResult] = useState<QueryResponse | null>(null);
@@ -83,7 +86,7 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
   const src = sources.find((s) => s.id === source);
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section role="dialog" aria-label="SQL desk" className="w-[900px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="SQL desk" className="w-[900px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <TerminalSquare size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">SQL desk</h2>
@@ -116,6 +119,7 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
             <History size={14} className="text-ink-3" aria-hidden />
           </div>
           <textarea
+            data-autofocus
             value={sql}
             onChange={(e) => setSql(e.target.value.slice(0, 100_000))}
             onKeyDown={(e) => {

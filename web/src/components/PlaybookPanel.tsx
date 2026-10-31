@@ -2,13 +2,14 @@
 // needs review and why, the questions leadership asked that are waiting for an answer, and which
 // measures have no reviewed answer yet.
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { BadgeCheck, BookOpen, CircleAlert, Inbox, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { coverage, flagForReview, type PlaybookEntry, type QuestionItem, restoreEntry, retireEntry } from '../../../src/core/playbook.ts';
 import type { TeamStyle } from '../../../src/core/style.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
 import { AwayTab, StyleTab } from './TeamPanels.tsx';
+import { useModal } from '../lib/modal.ts';
 
 export interface PlaybookPanelProps {
   playbook: PlaybookState;
@@ -24,6 +25,8 @@ export interface PlaybookPanelProps {
 }
 
 export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnswer, style, initialTab }: PlaybookPanelProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   const open = playbook.questions.filter((q) => q.status === 'open').sort((a, b) => b.askedAt.localeCompare(a.askedAt));
   const review = playbook.entries.filter((e) => e.status === 'needs-review');
   const [tab, setTab] = useState<'questions' | 'entries' | 'coverage' | 'style' | 'away'>(initialTab ?? (open.length ? 'questions' : 'entries'));
@@ -34,7 +37,7 @@ export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnsw
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-ink/20" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside role="dialog" aria-label="Playbook" className="flex h-full w-[560px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
+      <aside ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Playbook" className="flex h-full w-[560px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
         <header className="border-b border-line px-4 py-3">
           <div className="flex items-center gap-2">
             <BookOpen size={16} className="text-brass" />

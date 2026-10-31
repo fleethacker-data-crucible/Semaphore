@@ -3,12 +3,13 @@
 // profiles those tables, labels their fields with Qlik's names and adds the measures. Expressions it
 // cannot read become flags to draft (by the AI when it is on, or by hand).
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ArrowRight, CircleAlert, FileCode2, Link2, Sparkles, Wand2, X } from 'lucide-react';
 import type { Metric } from '../../../src/core/catalog.ts';
 import type { AiQlikResult } from '../../../src/core/intelligence/tasks.ts';
 import { parseLoadScript, parseQlikExpression, qlikAssociations, qlikLabels, qlikMappings, type QlikScript } from '../../../src/core/qlik.ts';
 import type { ServerSource } from '../lib/api.ts';
+import { useModal } from '../lib/modal.ts';
 
 export interface QlikImportPlan {
   tables: Array<{ source: string; table: string; labels: Map<string, string>; qlik: string }>;
@@ -35,6 +36,8 @@ LOAD wo_id AS [Work Order], region AS Region, labor_cost AS [Labor Cost];
 SQL SELECT wo_id, region, labor_cost FROM work_orders;`;
 
 export function QlikImport({ sources, busy, onImport, onDraftAsFlag, ai, onReadWithAi, onAddMeasures, onClose }: QlikImportProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   const [aiRead, setAiRead] = useState<Record<string, AiQlikResult | string>>({});
   const askAi = async (label: string, expression: string, line: string) => {
     setAiRead((m) => ({ ...m, [line]: 'Reading…' }));
@@ -97,7 +100,7 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, ai, onReadW
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section role="dialog" aria-label="Import from Qlik" className="w-[760px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Import from Qlik" className="w-[760px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <FileCode2 size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Import from Qlik</h2>
