@@ -82,11 +82,9 @@ with no database. For a comparing flag it now also holds the earlier window's pr
 
 ## What it does not do
 
-- The report has no drill levels. A flag set to drill acts as a page filter in the file (the file
-  carries the top level only, as ARCHITECTURE.md says), so there is no drilled comparison to carry
-  there. Pre-splitting each level would multiply the file, and the last level (the rows behind a
-  value) cannot be pre-split at all. This is the remaining part of the roadmap line, if the reader
-  should drill.
+- A shared report carries drill levels only as far as the budget allows (see SHARED_REPORT_DRILL.md);
+  the rows behind the last level are never in the file, and page filters do not apply below the top
+  level in the file.
 - When the window's offset is not a whole number of the grain being matched (a one-month window with a
   quarter drill or pick), rows are matched by the shift-and-cut that `lineUp` has always used, so an earlier
   row is the quarter the shifted date falls in rather than an exact like-for-like slice. A drilled

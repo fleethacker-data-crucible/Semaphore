@@ -74,5 +74,5 @@ Semaphore is meant to be an AI tool that still works without AI: the model draft
 
 - Databricks serving endpoint provider.
 - Flag kits: saved flag sets that remap to a new catalog.
-- Comparisons under a drill and in shared reports (today they show at the top level only).
+- Comparisons under a drill and in shared reports (today they show at the top level only). Drill levels inside shared reports: see SHARED_REPORT_DRILL.md.
 - Joins one-to-many (a measure on the one side split by the many side) with distinct handling.
