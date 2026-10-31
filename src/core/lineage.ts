@@ -5,6 +5,7 @@
 
 import { type Catalog, indexCatalog, metricTable } from './catalog.ts';
 import { joinPath } from './joins.ts';
+import { reachOf } from './manyjoin.ts';
 import type { Hoist } from './hoist.ts';
 
 export type LineageKind = 'source' | 'table' | 'field' | 'metric' | 'flag';
@@ -105,8 +106,21 @@ export function buildLineage(catalog: Catalog, hoist: Hoist, all = false): Linea
       for (const k of read) {
         const f = index.field(k);
         if (!f || f.source !== source || f.table === base) continue;
-        for (const r of joinPath(index, source, base, f.table) ?? []) {
+        let hops = joinPath(index, source, base, f.table) ?? [];
+        if (hops.length === 0) {
+          // Not reachable many-to-one: a field on the many side of the base (customers split by orders.status), by the
+          // one path the planner would take. More than one path is refused by the planner, so none is drawn and the flag says so.
+          const reach = reachOf(index, source, base, f.table);
+          if (reach.kind === 'many') hops = reach.path.map((h) => h.rel);
+          else if (reach.kind === 'ambiguous') {
+            const at = nodes.get(g);
+            if (at && !at.detail?.includes('more than one way')) nodes.set(g, { ...at, detail: `${at.detail ?? flag.kind} · reads a field reachable in more than one way` });
+          }
+        }
+        for (const r of hops) {
+          nodes.set(id.table(source, r.from.table), { id: id.table(source, r.from.table), kind: 'table', label: r.from.table });
           nodes.set(id.table(source, r.to.table), { id: id.table(source, r.to.table), kind: 'table', label: r.to.table });
+          edge(id.source(source), id.table(source, r.from.table));
           edge(id.source(source), id.table(source, r.to.table));
           edge(id.table(source, r.from.table), id.table(source, r.to.table), true);
         }

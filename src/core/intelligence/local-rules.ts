@@ -16,7 +16,7 @@
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
-import { reachable } from '../joins.ts';
+import { reachOf } from '../manyjoin.ts';
 import type { Behavior, Binding, Comparison, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
 import { suggestKind } from '../shape.ts';
 import type { DraftFlagRequest, DraftHoistRequest, FlagDraft, HoistDraft, IntelligenceProvider } from './contract.ts';
@@ -143,6 +143,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   // "and"/"," that follows one of those.
   const dims: DimensionRef[] = [];
   let lastDimEnd = -1;
+  let manyTable: string | undefined; // the one many-side table this flag may split by (manyjoin.ts refuses two)
   for (const m of all) {
     if (m.kind !== 'field') continue;
     const before = text.slice(Math.max(0, m.start - 30), m.start);
@@ -155,9 +156,26 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     if (f.type === 'number') continue;
     if (table === undefined) table = f.table;
     const src = first?.source ?? f.source;
-    if (f.table !== table && (f.source !== src || !reachable(index, src, table, f.table))) {
-      notes.push(`"${f.label}" is in a table not related to this one, so the flag cannot split by it.`);
-      continue;
+    if (f.table !== table) {
+      const reach = f.source !== src ? ({ kind: 'unrelated' } as const) : reachOf(index, src, table, f.table);
+      if (reach.kind === 'unrelated') {
+        notes.push(`"${f.label}" is in a table not related to this one, so the flag cannot split by it.`);
+        continue;
+      }
+      if (reach.kind === 'ambiguous') {
+        notes.push(`"${f.label}" relates to this table in more than one way, so Semaphore will not guess which: the flag does not split by it.`);
+        continue;
+      }
+      if (reach.kind === 'many') {
+        if (manyTable !== undefined && manyTable !== f.table) {
+          notes.push(`"${f.label}" is on a different many-side table than another field in this brief, and a flag may split by only one, so it is left out.`);
+          continue;
+        }
+        if (manyTable === undefined) {
+          manyTable = f.table;
+          notes.push(`Splitting by "${f.label}" counts each row of ${table} once in every group it appears in, so the groups can add up to more than the total.`);
+        }
+      }
     }
     if (!dims.some((d) => d.field === m.key)) dims.push({ field: m.key });
     lastDimEnd = m.end;

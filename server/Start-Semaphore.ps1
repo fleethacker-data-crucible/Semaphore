@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Starts Semaphore: the local server on 127.0.0.1 (port block 8774-8776) and the browser.
+  Starts Semaphore: the local server on 127.0.0.1 (port block 8800-8802) and the browser.
   Launch-Semaphore.bat calls this. Windows PowerShell 5.1 only. ASCII only.
 .DESCRIPTION
   Lifecycle (TechStack "Lifecycle rules"): the server stops 20 s after the last heartbeat of its
@@ -170,7 +170,7 @@ function Invoke-SemSelfCheck {
     try {
         Import-Module (Join-Path $here 'FleetPort.psm1') -Force
         $b = Get-FleetPortBlock -Tool 'semaphore' -RegistryPath (Join-Path $here 'FleetPorts.psd1')
-        if ($b.Start -ne 8774 -or $b.End -ne 8776 -or $b.Policy -ne 'reuse') { $problems.Add('FleetPorts.psd1: semaphore must be 8774-8776, reuse') }
+        if ($b.Start -ne 8800 -or $b.End -ne 8802 -or $b.Policy -ne 'reuse') { $problems.Add('FleetPorts.psd1: semaphore must be 8800-8802, reuse') }
     } catch { $problems.Add('Port block: ' + $_.Exception.Message) }
     $s = Read-SemSettings -Root $root
     $homeDir = Resolve-SemHome -Settings $s
@@ -208,6 +208,7 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Lake.ps1')
 . (Join-Path $here 'Vault.ps1')
 . (Join-Path $here 'Connectors.ps1')
+. (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
 if ($CheckOnly) { if (Invoke-SemSelfCheck) { exit 0 } else { exit 1 } }
@@ -292,7 +293,7 @@ if ($running.Count -gt 0) {
     }
 }
 
-# ---- Port block 8774-8776 (PORTS.md), FleetPort reuse policy ---------------------
+# ---- Port block 8800-8802 (PORTS.md), FleetPort reuse policy ---------------------
 $resolveArgs = @{ Tool = 'semaphore'; Version = $version; RegistryPath = (Join-Path $here 'FleetPorts.psd1'); NoListener = $true }
 if ($Port -gt 0) { $resolveArgs.Start = $Port; $resolveArgs.Size = 1; $resolveArgs.Policy = 'reuse' }
 elseif ($settings.port -gt 0) { $resolveArgs.Start = $settings.port }

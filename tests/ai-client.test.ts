@@ -35,7 +35,7 @@ beforeEach(() => {
   for (const k of ['location', 'sessionStorage', 'fetch']) saved[k] = (globalThis as Record<string, unknown>)[k];
   const store = new Map([['semaphore.session', 'session-token-123']]);
   Object.assign(globalThis, {
-    location: { origin: 'http://127.0.0.1:8774' },
+    location: { origin: 'http://127.0.0.1:8800' },
     sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) },
     fetch: async (url: string, init: { headers: Record<string, string>; body?: string }) => {
       sent.push({ url, headers: init.headers, body: JSON.parse(init.body ?? '{}') });
@@ -75,7 +75,7 @@ test('Fairlead drafts through this server, with the session token and the config
   assert.equal(out.fallbackReason, undefined);
   assert.deepEqual(out.draft.binding?.metrics, ['labor_cost']);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0]!.url, 'http://127.0.0.1:8774/api/ai/v1/chat/completions');
+  assert.equal(sent[0]!.url, 'http://127.0.0.1:8800/api/ai/v1/chat/completions');
   assert.equal(sent[0]!.headers['X-Semaphore-Session'], 'session-token-123');
   assert.equal(sent[0]!.headers.Authorization, undefined, 'the page never sends a provider key');
   assert.equal(sent[0]!.body.model, 'local');

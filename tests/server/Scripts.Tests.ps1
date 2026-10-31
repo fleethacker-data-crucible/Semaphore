@@ -14,7 +14,7 @@ BeforeAll {
 Describe 'Server scripts' {
     It 'finds the server scripts' {
         $names = @($script:Scripts | ForEach-Object { $_.Name })
-        foreach ($n in @('Start-Semaphore.ps1', 'Stop-Semaphore.ps1', 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'Set-SemaphoreAiKey.ps1', 'FleetPort.psm1', 'FleetPorts.psd1')) {
+        foreach ($n in @('Start-Semaphore.ps1', 'Stop-Semaphore.ps1', 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'Commands.ps1', 'Invoke-SemaphoreCli.ps1', 'Set-SemaphoreAiKey.ps1', 'FleetPort.psm1', 'FleetPorts.psd1')) {
             $names | Should -Contain $n
         }
     }
@@ -83,10 +83,10 @@ Describe 'Launcher, version, settings and port block' {
         Get-SemVersion -Root $script:Root | Should -Not -Be '0.0.0'
     }
 
-    It 'FleetPorts.psd1 gives semaphore 8774-8776 with the reuse policy, disjoint from every other block' {
+    It 'FleetPorts.psd1 gives semaphore 8800-8802 with the reuse policy, disjoint from every other block' {
         $reg = Import-PowerShellDataFile ([IO.Path]::Combine($script:Server, 'FleetPorts.psd1'))
         $reg.ContainsKey('semaphore') | Should -BeTrue
-        $reg['semaphore'].Start | Should -Be 8774
+        $reg['semaphore'].Start | Should -Be 8800
         $reg['semaphore'].Size | Should -Be 3
         $reg['semaphore'].Policy | Should -Be 'reuse'
         $seen = @{}
