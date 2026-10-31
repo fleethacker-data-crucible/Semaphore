@@ -1,5 +1,5 @@
 @echo off
-rem Semaphore: starts the local server (127.0.0.1, ports 8774-8776) and opens the browser.
+rem Semaphore: starts the local server (127.0.0.1, ports 8800-8802) and opens the browser.
 rem   --console      keep this console window (questions are asked here)
 rem   --replace      if Semaphore is already running, stop it and start fresh
 rem   --stay         keep running after the browser tab closes (or SEMAPHORE_AUTO_STOP=0)
