@@ -4,7 +4,7 @@
 BeforeAll {
     $script:Root = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
     $server = Join-Path $script:Root 'server'
-    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Commands.ps1') { . (Join-Path $server $f) }
+    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'Commands.ps1') { . (Join-Path $server $f) }
 
     function script:New-Home {
         $h = Join-Path $TestDrive ('home-' + [guid]::NewGuid().ToString('N'))
@@ -57,7 +57,7 @@ Describe 'Parity between the routes and the commands' {
     }
     It 'would catch a new route that has no command' {
         Test-SemRouteCovered '/api/brand-new-route' | Should -BeFalse
-        Test-SemRouteCovered '/api/vault' | Should -BeFalse -Because 'when /api/vault lands (Lazarette bridge) it needs a "vault status" command or a reason'
+        Test-SemRouteCovered '/api/vault' | Should -BeTrue -Because 'the Lazarette bridge route has its "vault status" command'
         Test-SemRouteCovered '/api/hoists/abc' | Should -BeTrue
     }
     It 'lists a browser-only route only when it really is a route, with a reason' {
@@ -136,6 +136,14 @@ Describe 'Commands run on a Semaphore folder' {
         New-Item -ItemType Directory -Force -Path (Join-Path $script:H 'snapshots') | Out-Null
         Set-Content -LiteralPath (Join-Path $script:H 'snapshots\.last-refresh.json') -Value '{"version":1,"refreshed":3,"skipped":1,"failed":[]}'
         (Run 'refresh report' @{} $false $false $script:H).Result.refreshed | Should -Be 3
+    }
+    It 'reports the vault bridge without any secret: which source names which item, never unlocked from here' {
+        Set-Content -LiteralPath (Join-Path $script:H 'sources.json') -Encoding UTF8 -Value '[{"id":"maint","provider":"odbc","connection":"DSN=x","vaultItem":"maint-db"},{"id":"plain","provider":"odbc","connection":"DSN=y"}]'
+        $r = Run 'vault status' @{} $false $false $script:H
+        $r.Ok | Should -BeTrue
+        @($r.Result.sources) | Should -Be @('maint -> maint-db')
+        $r.Result.unlocked | Should -BeFalse
+        (ConvertTo-Json -InputObject $r.Result -Depth 5) | Should -Not -BeLike '*DSN*'
     }
     It 'reports AI status without printing a key' {
         $env:SEMAPHORE_AI_KEY = 'fl-test-key-never-print-0123456789'
