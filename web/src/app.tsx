@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -29,6 +29,7 @@ import { api, captureSessionToken, endSession, listItems, loadItem, probeServer,
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
+import { useKits } from './lib/kits.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
 import { csvWorker, WorkerError } from './lib/worker.ts';
@@ -39,6 +40,7 @@ import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../s
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
 import { PlaybookPanel } from './components/PlaybookPanel.tsx';
+import { KitsPanel } from './components/KitsPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
@@ -109,6 +111,7 @@ export function App() {
   const [refreshLog, setRefreshLog] = useState<string[]>([]);
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
+  const [kitsOpen, setKitsOpen] = useState(false);
   const [serverLost, setServerLost] = useState(false);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
@@ -137,6 +140,7 @@ export function App() {
 
   // The playbook, and the team style card learnt from it: drafts are finished the way the team builds.
   const playbook = usePlaybook(server, serverChecked);
+  const kitStore = useKits(server, serverChecked);
   const user = server?.user || 'analyst';
   const teamStyle = useMemo(() => learnStyle(playbook.entries, index, playbook.styleOverrides), [playbook.entries, index, playbook.styleOverrides]);
   const [playbookTab, setPlaybookTab] = useState<'away' | undefined>(undefined);
@@ -975,6 +979,9 @@ export function App() {
           <IconButton label="Share as a report: one HTML file with working filters" onClick={() => setShareOpen(true)}>
             <FileDown size={16} />
           </IconButton>
+          <IconButton label="Flag kits: save flags as a kit, or fly a kit on this page" onClick={() => setKitsOpen(true)}>
+            <Package size={16} />
+          </IconButton>
           <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
             <ScrollText size={16} />
           </IconButton>
@@ -1191,6 +1198,19 @@ export function App() {
             setPlaybookTab(undefined);
           }}
           onAnswer={answerQuestionItem}
+        />
+      )}
+
+      {kitsOpen && (
+        <KitsPanel
+          store={kitStore}
+          hoist={hoist}
+          index={index}
+          onClose={() => setKitsOpen(false)}
+          onApply={(h, summary) => {
+            change(h);
+            notify(summary);
+          }}
         />
       )}
 
