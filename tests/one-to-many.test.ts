@@ -22,7 +22,7 @@ function shop(dialect: Dialect = 'postgres'): Catalog {
   });
   return {
     version: 1,
-    sources: [{ id: 's', label: 'Shop', kind: dialect === 'tsql' ? 'azure-sql' : dialect === 'ansi' ? 'aws-athena' : dialect, dialect }],
+    sources: [{ id: 's', label: 'Shop', kind: ({ tsql: 'azure-sql', ansi: 'aws-athena', synapse: 'azure-synapse', spark: 'foundry' } as const)[dialect as 'tsql' | 'ansi' | 'synapse' | 'spark'] ?? (dialect as 'postgres' | 'oracle' | 'access'), dialect }],
     fields: [
       f('customers', 'credit_limit', 'Credit limit', 'number'),
       f('customers', 'segment', 'Segment'),
