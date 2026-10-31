@@ -3,6 +3,7 @@
 # Semaphore API routes. They run after the gate in Http.ps1 has checked the caller, Host, Origin
 # and the session token. JSON in and out, UTF-8. Errors: { error: "message", code: "..." }.
 #
+#   GET    /api/commands                  the command registry the CLI uses (Commands.ps1)
 #   GET    /api/info                      tool, version, pid, port, home, autoStop, stay, sources
 #   POST   /api/heartbeat   { tab }       presence
 #   POST   /api/leaving     { token, tab} (Http.ps1: token in the body, sendBeacon)
@@ -204,6 +205,10 @@ function Get-SemInfo {
 function Invoke-SemRoute {
     param($Req)
     $p = $Req.Path; $m = $Req.Method
+    if ($p -eq '/api/commands') {
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Send-SemJson 200 (Get-SemCommandList); return
+    }
     if ($p -eq '/api/info') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Send-SemJson 200 (Get-SemInfo); return
