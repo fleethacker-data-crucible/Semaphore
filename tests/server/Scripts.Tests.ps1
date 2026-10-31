@@ -83,10 +83,10 @@ Describe 'Launcher, version, settings and port block' {
         Get-SemVersion -Root $script:Root | Should -Not -Be '0.0.0'
     }
 
-    It 'FleetPorts.psd1 gives semaphore 8774-8776 with the reuse policy, disjoint from every other block' {
+    It 'FleetPorts.psd1 gives semaphore 8800-8802 with the reuse policy, disjoint from every other block' {
         $reg = Import-PowerShellDataFile ([IO.Path]::Combine($script:Server, 'FleetPorts.psd1'))
         $reg.ContainsKey('semaphore') | Should -BeTrue
-        $reg['semaphore'].Start | Should -Be 8774
+        $reg['semaphore'].Start | Should -Be 8800
         $reg['semaphore'].Size | Should -Be 3
         $reg['semaphore'].Policy | Should -Be 'reuse'
         $seen = @{}
