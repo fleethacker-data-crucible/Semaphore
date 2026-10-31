@@ -10,6 +10,8 @@ When a flag is flipped over, its footer names the SQL language used to generate 
 | `oracle` | Oracle SQL | Double-quoted identifiers, `TRUNC`, `FETCH FIRST`; native `:p1` markers or driver `?` markers. Confirm the target Oracle version supports the generated row limit. |
 | `access` | Microsoft Access SQL | Bracketed identifiers, Access date functions, `TOP`, positional `?` markers. `COUNT(DISTINCT)` is refused by the renderer. |
 | `tsql` | T-SQL (SQL Server / Azure SQL) | Bracketed identifiers, `TOP`, `DATETRUNC`; native `@p1` markers or driver `?` markers. Date grouping requires SQL Server 2022+ or a compatible Azure SQL engine. |
+| `synapse` | T-SQL (Azure Synapse) | Bracketed identifiers, `TOP`, native `@p1` or driver `?` markers. No `DATETRUNC` in Synapse pools, so dates group with `DATEADD`/`DATEDIFF`; weeks start Monday. |
+| `spark` | Spark SQL (Foundry, Databricks) | Backtick identifiers, `date_trunc`, `LIMIT`, positional markers. Foundry takes no bound values, so the server writes each checked value inline (see [CONNECTORS.md](CONNECTORS.md)). |
 | `ansi` | ANSI-like SQL profile | Double-quoted identifiers, `date_trunc`, `LIMIT`, positional markers. This is a specific profile used for compatible sources such as the Athena path, not universal ANSI SQL. |
 
 Values listed as parameters are supplied separately by the driver. A query displayed with `$1`, `:p1`, `@p1` or `?` is not a complete copy-and-run script for an arbitrary SQL editor. Do not concatenate business values into SQL to remove those markers.

@@ -2,16 +2,17 @@
 # =============================================================================
 # Semaphore's lake engine: the S3 data lake through Amazon Athena, with a cost guard and a result
 # cache. It folds in the "Sounding Line" proposal (comms repo, proposals/sounding-line): the same
-# engine will later serve a raw-SQL desk, and short AWS sessions brokered through Lazarette.
+# engine serves the raw-SQL desk, and AWS sessions can be brokered through Lazarette (Vault.ps1).
 #
 # A lake source in <home>\sources.json:
 #   { "id": "lake", "label": "Data lake", "kind": "aws-athena", "provider": "athena",
 #     "region": "us-gov-west-1", "workgroup": "semaphore", "database": "maintenance",
 #     "priceUsdPerTB": 5, "approveAboveGB": 10, "dailyLimitGB": 200, "cacheHours": 12 }
 # Optional "endpoint" (http(s) base, e.g. a simulator on 127.0.0.1) replaces the AWS endpoints.
-# AWS keys are never written in sources.json (refused). They come from the environment
-# (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN): today a short session the
-# analyst or IT sets; later one brokered through Lazarette. Keys are never logged or returned.
+# AWS keys are never written in sources.json (refused). A "vault": { "item": "name" } block takes them from
+# a Lazarette item (fields AccessKeyId, SecretAccessKey, SessionToken), so analysts hold no AWS keys; without
+# one they come from the environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN), a short
+# session the analyst or IT sets. Keys are never logged or returned.
 #
 # Cost guard, before a query runs:
 #   * the table's location (Glue) and its size on S3 (ListObjectsV2) give an upper bound on the
@@ -108,7 +109,7 @@ function Get-SemLakeSettings {
         $endpoint = $endpoint.TrimEnd('/')
     }
     foreach ($forbidden in @('accessKey', 'accessKeyId', 'secretKey', 'secretAccessKey', 'sessionToken', 'aws_access_key_id', 'aws_secret_access_key')) {
-        if ($Raw.PSObject.Properties[$forbidden]) { throw 'AWS keys do not belong in sources.json. Remove them; Semaphore takes a short session from the environment (later from Lazarette).' }
+        if ($Raw.PSObject.Properties[$forbidden]) { throw 'AWS keys do not belong in sources.json. Remove them; Name a Lazarette item with a "vault" block, or set a short session in the environment.' }
     }
     $num = { param($v, $d, $min, $max) $x = 0.0; if ($null -ne $v -and [double]::TryParse([string]$v, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$x) -and $x -ge $min -and $x -le $max) { $x } else { $d } }
     return @{
@@ -118,9 +119,11 @@ function Get-SemLakeSettings {
     }
 }
 function Get-SemAwsCredentials {
-    # From the environment only. Throws a readable message when there are none.
+    # The Lazarette item's session when the request carries one (Vault.ps1), else the environment. Throws a readable message when there are none.
+    $va = Get-SemVaultValue 'accessKeyId'; $vs = Get-SemVaultValue 'secretAccessKey'
+    if ($va -and $vs) { return @{ AccessKey = $va; SecretKey = $vs; SessionToken = [string](Get-SemVaultValue 'sessionToken') } }
     $ak = [Environment]::GetEnvironmentVariable('AWS_ACCESS_KEY_ID'); $sk = [Environment]::GetEnvironmentVariable('AWS_SECRET_ACCESS_KEY')
-    if (-not $ak -or -not $sk) { throw 'No AWS session: the lake needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (a short session) in the environment that started Semaphore.' }
+    if (-not $ak -or -not $sk) { throw 'No AWS session: the lake needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (a short session) in the environment that started Semaphore, or a "vault" block naming a Lazarette item.' }
     return @{ AccessKey = $ak; SecretKey = $sk; SessionToken = [string][Environment]::GetEnvironmentVariable('AWS_SESSION_TOKEN') }
 }
 function Get-SemLakeSafeText {
@@ -129,6 +132,7 @@ function Get-SemLakeSafeText {
     foreach ($n in @('AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_ACCESS_KEY_ID')) {
         $v = [Environment]::GetEnvironmentVariable($n); if ($v) { $Text = $Text.Replace($v, '[redacted]') }
     }
+    $Text = Get-SemVaultSafeText $Text
     $Text = [regex]::Replace($Text, '[\x00-\x1F\x7F]+', ' ').Trim()
     if ($Text.Length -gt 300) { $Text = $Text.Substring(0, 300) + '...' }
     return $Text
@@ -165,7 +169,7 @@ function Invoke-SemAwsRequest {
 }
 function Invoke-SemAwsJson {
     # Athena and Glue JSON 1.1 APIs: POST / with X-Amz-Target. Returns the parsed answer or throws AWS's message.
-    param([hashtable]$Lake, [ValidateSet('athena', 'glue')][string]$Service, [string]$Target, [hashtable]$Payload, [int]$TimeoutSec = 30)
+    param([hashtable]$Lake, [ValidateSet('athena', 'glue', 'redshift-data')][string]$Service, [string]$Target, [hashtable]$Payload, [int]$TimeoutSec = 30)
     $base = if ($Lake.Endpoint) { $Lake.Endpoint } else { "https://$Service.$($Lake.Region).amazonaws.com" }
     $body = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $Payload -Depth 8 -Compress))
     $r = Invoke-SemAwsRequest -Lake $Lake -Service $Service -Method 'POST' -Url ($base + '/') -Headers @{ 'Content-Type' = 'application/x-amz-json-1.1'; 'X-Amz-Target' = $Target } -Body $body -TimeoutSec $TimeoutSec

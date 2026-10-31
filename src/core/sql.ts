@@ -7,6 +7,7 @@
 import { type CatalogIndex, type Dialect, type FieldType, isIdentifier, isSqlDialect } from './catalog.ts';
 import { cleanSql, cleanType, dedupes, stepsFor } from './cleaning.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
+import { MANY_ALIAS, manyJoinSql, manyParts, renderManyBlock, type SqlKit } from './manyjoin.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import type { PlannedAggregate, PlannedDimension, QueryPlan } from './planner.ts';
 
@@ -42,13 +43,16 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     params.push(p);
     const n = params.length;
     if (options.placeholders === 'question') return '?';
-    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' ? `@p${n}` : '?';
+    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' || dialect === 'synapse' ? `@p${n}` : '?';
   };
 
   const joins = plan.joins ?? [];
   const dedupe = !plan.raw && dedupes(index, plan.source, plan.table);
   // Columns are qualified by table alias whenever more than one table, or a subquery, is read.
-  const aliased = joins.length > 0 || dedupe;
+  const aliased = joins.length > 0 || dedupe || !!plan.many;
+  // A one-to-many split reads the many side through a derived table of distinct pairs (manyjoin.ts).
+  const many = plan.many ? manyParts(plan, index) : null;
+  const kit: SqlKit = { quote, quoteTable, truncate, filterSql, SqlError };
   // Oracle takes no AS before a table alias; the others accept it.
   const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${quote(alias, dialect)}`;
   const stored = (fieldKey: string): string => {
@@ -70,10 +74,24 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
   }
 
+  // The derived table is added after the cleaning columns are written, because the "?" dialects
+  // need values bound in the order they appear in the text.
+  const withMany = (f: string): string => {
+    if (!plan.many) return f;
+    const j = manyJoinSql(plan, renderManyBlock(plan, index, dialect, bind, today, kit), dialect, kit);
+    return dialect === 'access' && joins.length > 0 ? `(${f}) ${j}` : `${f} ${j}`;
+  };
+
   // Cleaning steps are applied once, in an inner query, and everything else reads its columns.
   // Repeating a cleaned expression in GROUP BY would bind its values twice, and Postgres would not
   // accept "CASE x WHEN $1 …" in SELECT as the same expression as "CASE x WHEN $5 …" in GROUP BY.
-  const used = [...new Set([...plan.dimensions.map((d) => d.field), ...plan.aggregates.flatMap((a) => (a.field ? [a.field] : [])), ...plan.filters.map((f) => f.field)])];
+  const used = [
+    ...new Set([
+      ...plan.dimensions.filter((d) => !many?.owns(d.field)).map((d) => d.field),
+      ...plan.aggregates.flatMap((a) => (a.field ? [a.field] : [])),
+      ...plan.filters.filter((f) => !many?.owns(f.field)).map((f) => f.field),
+    ]),
+  ];
   const inner = new Map<string, string>();
   if (!plan.raw && used.some((k) => stepsFor(index, k).length)) {
     const cols = used.map((k, i) => {
@@ -89,8 +107,10 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
       }
       return `${expr} AS ${quote(`c${i}`, dialect)}`;
     });
-    from = `(SELECT ${cols.join(', ')} FROM ${from}) ${as('q')}`;
-  }
+    // The group values of the many side pass through unchanged (cleaned inside the derived table).
+    for (const g of many?.dims ?? []) cols.push(`${quote(MANY_ALIAS, dialect)}.${quote(g.col, dialect)} AS ${quote(g.col, dialect)}`);
+    from = `(SELECT ${cols.join(', ')} FROM ${withMany(from)}) ${as('q')}`;
+  } else from = withMany(from);
   const column = (fieldKey: string): string => {
     if (!inner.size) return stored(fieldKey);
     const c = inner.get(fieldKey);
@@ -98,7 +118,12 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     return `${quote('q', dialect)}.${quote(c, dialect)}`;
   };
 
-  const dimExpr = (d: PlannedDimension): string => (d.grain ? truncate(column(d.field), d.grain, dialect) : column(d.field));
+  const dimExpr = (d: PlannedDimension): string => {
+    // Many-side group values arrive already cleaned and truncated to their grain.
+    const g = many?.dims.find((x) => x.dim.alias === d.alias);
+    if (g) return `${quote(inner.size ? 'q' : MANY_ALIAS, dialect)}.${quote(g.col, dialect)}`;
+    return d.grain ? truncate(column(d.field), d.grain, dialect) : column(d.field);
+  };
   const aggExpr = (a: PlannedAggregate): string => {
     const col = a.field === null ? '*' : column(a.field);
     if (a.fn === 'count_distinct') {
@@ -116,7 +141,8 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   ];
   if (select.length === 0) throw new SqlError('Nothing to select.');
 
-  const where = plan.filters.map((f) => filterSql(f, column(f.field), typeOf(f.field), bind, today));
+  // Filters on the many side already apply inside the derived table.
+  const where = plan.filters.filter((f) => !many?.owns(f.field)).map((f) => filterSql(f, column(f.field), typeOf(f.field), bind, today));
   const groupBy = plan.dimensions.map(dimExpr);
 
   let orderBy = '';
@@ -136,7 +162,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   }
 
   const limit = Math.max(1, Math.floor(plan.limit));
-  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
+  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
@@ -147,7 +173,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   return { dialect, sql, params };
 }
 
-function filterSql(f: Filter, col: string, type: FieldType, bind: (p: SqlParam) => string, today: Date): string {
+export function filterSql(f: Filter, col: string, type: FieldType, bind: (p: SqlParam) => string, today: Date): string {
   const p = (v: string | number): string => bind(typedParam(v, type));
   // On a date field, "up to 31 March" means the whole of 31 March, including times that day.
   const upTo = (v: string | number): string =>
@@ -235,10 +261,11 @@ export function periodStart(today: Date, unit: TimeGrain, back: number): string 
 
 export function quote(name: string, dialect: Dialect): string {
   if (!isIdentifier(name) || name.includes('.')) throw new SqlError(`Unsafe identifier "${name}".`);
-  return dialect === 'access' || dialect === 'tsql' ? `[${name}]` : `"${name}"`;
+  if (dialect === 'spark') return `\`${name}\``;
+  return dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `[${name}]` : `"${name}"`;
 }
 
-function quoteTable(name: string, dialect: Dialect): string {
+export function quoteTable(name: string, dialect: Dialect): string {
   if (!isIdentifier(name)) throw new SqlError(`Unsafe table name "${name}".`);
   return name
     .split('.')
@@ -255,6 +282,10 @@ export function truncate(col: string, grain: TimeGrain, dialect: Dialect): strin
   if (dialect === 'tsql') {
     // DATETRUNC is in Azure SQL and SQL Server 2022+. iso_week starts on Monday regardless of DATEFIRST.
     return `DATETRUNC(${grain === 'week' ? 'iso_week' : grain}, ${col})`;
+  }
+  if (dialect === 'synapse') {
+    // Synapse pools have no DATETRUNC. DATEADD/DATEDIFF counts whole periods from a fixed origin; 1900-01-01 was a Monday.
+    return grain === 'week' ? `DATEADD(week, DATEDIFF(day, '19000101', ${col}) / 7, '19000101')` : `DATEADD(${grain}, DATEDIFF(${grain}, 0, ${col}), 0)`;
   }
   if (dialect === 'access') {
     switch (grain) {

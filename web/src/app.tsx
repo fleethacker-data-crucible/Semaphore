@@ -3,12 +3,13 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
+import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { emptyBehavior, type Flag, type FlagKind, GRID_COLS, type Hoist, type Layout, parseHoist } from '../../src/core/hoist.ts';
@@ -26,9 +27,10 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
-import { aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
+import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
+import { useKits } from './lib/kits.ts';
 import { useHoistHistory } from './lib/history.ts';
 import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
 import { csvWorker, WorkerError } from './lib/worker.ts';
@@ -39,6 +41,7 @@ import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../s
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
 import { PlaybookPanel } from './components/PlaybookPanel.tsx';
+import { KitsPanel } from './components/KitsPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { DataPanel } from './components/DataPanel.tsx';
@@ -109,9 +112,11 @@ export function App() {
   const [refreshLog, setRefreshLog] = useState<string[]>([]);
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
+  const [kitsOpen, setKitsOpen] = useState(false);
   const [serverLost, setServerLost] = useState(false);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
+  const [useExamples, setUseExamples] = useState(aiExamplesWanted);
   const [files, setFiles] = useState<TableRows>({});
   // CSV files are kept in the CSV worker when there is one (lib/worker.ts); `files` is the fallback.
   const worker = useMemo(() => csvWorker(), []);
@@ -136,6 +141,7 @@ export function App() {
 
   // The playbook, and the team style card learnt from it: drafts are finished the way the team builds.
   const playbook = usePlaybook(server, serverChecked);
+  const kitStore = useKits(server, serverChecked);
   const user = server?.user || 'analyst';
   const teamStyle = useMemo(() => learnStyle(playbook.entries, index, playbook.styleOverrides), [playbook.entries, index, playbook.styleOverrides]);
   const [playbookTab, setPlaybookTab] = useState<'away' | undefined>(undefined);
@@ -300,12 +306,15 @@ export function App() {
     [change],
   );
 
+  // Reviewed examples ride along with a draft only when the analyst switched them on (lib/ai.ts).
+  const aiExamples = useMemo(() => examplesFor(useExamples, ai, useAi, playbook.entries, user), [useExamples, ai, useAi, playbook.entries, user]);
+
   const draftSelected = useCallback(async () => {
     if (!selected) return;
     const provider = draftingProvider(index, ai, useAi);
     setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
     try {
-      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle });
+      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
       // When Fairlead fell back to a local model, the draft names the model that really answered.
       const by = outcome.draft.answeredBy;
       const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
@@ -327,7 +336,7 @@ export function App() {
     } finally {
       setBusy(null);
     }
-  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle]);
+  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle, aiExamples]);
 
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
@@ -335,7 +344,7 @@ export function App() {
       setBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`);
       try {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
-        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle });
+        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
         const draft = outcome ? outcome.draft : starterHoistLocally(index);
         const next = applyHoistDraft({ ...base, title: base.title }, draft, () => newId());
         change(next);
@@ -347,8 +356,15 @@ export function App() {
         setBusy(null);
       }
     },
-    [hoist, index, change, notify, ai, useAi, teamStyle],
+    [hoist, index, change, notify, ai, useAi, teamStyle, aiExamples],
   );
+
+  const toggleExamples = useCallback(() => {
+    const on = !useExamples;
+    setUseExamples(on);
+    setAiExamplesWanted(on);
+    notify(on ? 'Reviewed examples are on: drafts also send a few similar reviewed briefs with catalog keys and labels. Never rows, results or names.' : 'Reviewed examples are off: drafts send only the brief and the catalog.');
+  }, [useExamples, notify]);
 
   // The header's AI switch. Turning Fairlead on checks it, so a missing Fairlead or a refused key
   // shows up now rather than on the next draft.
@@ -412,18 +428,23 @@ export function App() {
       const held = new Set(workerTables);
       for (const file of Array.from(list)) {
         try {
-          const text = await file.text();
+          const raw = await file.text();
+          // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first (src/core/fleet-exports.ts).
+          const fx = fleetExportToCsv(file.name, raw);
+          const text = fx ? fx.csv : raw;
+          const name = fx ? fx.fileName : file.name;
+          if (fx) notes.push(fx.note);
           // Parsed in the CSV worker when there is one: a large file never freezes the page.
           let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
           if (worker) {
-            t = await worker.load(file.name, text);
+            t = await worker.load(name, text);
             held.add(t.name);
           } else {
-            const parsed = readCsv(file.name, text);
+            const parsed = readCsv(name, text);
             tables[parsed.name] = parsed.rows;
             t = { ...parsed, rows: parsed.rows.length };
           }
-          await putFile({ name: file.name, text, added: new Date().toISOString() });
+          await putFile({ name, text, added: new Date().toISOString() });
           // Replace the measures and fields of a file loaded before under the same name.
           const without: Catalog = {
             ...cat,
@@ -432,7 +453,7 @@ export function App() {
           };
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
           cat = pruneCatalog(proposal.catalog);
-          notes.push(`${file.name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
+          notes.push(`${name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
         } catch (e) {
           notes.push(`${file.name}: ${e instanceof CsvError || e instanceof WorkerError ? e.message : 'could not be read.'}`);
         }
@@ -456,7 +477,7 @@ export function App() {
         const p = await profileTable(source, table);
         const s = server?.sources.find((x) => x.id === source);
         const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = kind === 'postgres' ? 'postgres' : kind === 'oracle' ? 'oracle' : kind === 'access' ? 'access' : kind === 'azure-sql' ? 'tsql' : 'ansi';
+        const dialect = dialectForKind(kind);
         const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
@@ -484,7 +505,7 @@ export function App() {
             const p = await profileTable(t.source, t.table);
             const s = server?.sources.find((x) => x.id === t.source);
             const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = kind === 'postgres' ? 'postgres' : kind === 'oracle' ? 'oracle' : kind === 'access' ? 'access' : kind === 'azure-sql' ? 'tsql' : 'ansi';
+            const dialect = dialectForKind(kind);
             cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
@@ -964,6 +985,9 @@ export function App() {
           <IconButton label="Share as a report: one HTML file with working filters" onClick={() => setShareOpen(true)}>
             <FileDown size={16} />
           </IconButton>
+          <IconButton label="Flag kits: save flags as a kit, or fly a kit on this page" onClick={() => setKitsOpen(true)}>
+            <Package size={16} />
+          </IconButton>
           <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
             <ScrollText size={16} />
           </IconButton>
@@ -991,6 +1015,21 @@ export function App() {
               title={ai.configured ? (useAi ? 'Drafts go through Fairlead. Click to draft with local rules only.' : 'Drafting with local rules only. Click to use Fairlead.') : (ai.problem ?? ai.setup)}
             >
               <Bot size={14} /> {ai.configured ? (useAi ? 'AI: Fairlead' : 'AI: off') : 'AI: local rules'}
+            </button>
+          )}
+          {server && ai?.configured && useAi && (
+            <button
+              type="button"
+              onClick={toggleExamples}
+              aria-pressed={useExamples}
+              className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:border-accent ${useExamples ? 'border-accent text-accent' : 'border-line text-ink-2'}`}
+              title={
+                useExamples
+                  ? `Drafts also send up to 3 similar reviewed briefs from the playbook, as catalog keys and labels only, never rows, results or names${ai.privacyLocal ? ' (kept on this computer by Fairlead)' : ''}. Click to stop.`
+                  : 'Off: drafts send only the brief and the catalog. Click to also send a few similar reviewed briefs from the playbook as worked examples.'
+              }
+            >
+              <BookOpen size={14} /> {useExamples ? 'Examples: on' : 'Examples: off'}
             </button>
           )}
           {!skinFixed && (
@@ -1165,6 +1204,19 @@ export function App() {
             setPlaybookTab(undefined);
           }}
           onAnswer={answerQuestionItem}
+        />
+      )}
+
+      {kitsOpen && (
+        <KitsPanel
+          store={kitStore}
+          hoist={hoist}
+          index={index}
+          onClose={() => setKitsOpen(false)}
+          onApply={(h, summary) => {
+            change(h);
+            notify(summary);
+          }}
         />
       )}
 
