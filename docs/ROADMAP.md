@@ -8,7 +8,7 @@ Framework-free core with tests: catalog, hoist and flag model, validation, lego 
 
 Done:
 
-- `Launch-Semaphore.bat`, the PowerShell 5.1 loopback server and every TechStack lifecycle rule (heartbeat, auto-stop, End session, `Stop-Semaphore.ps1`, single instance, runtime file, off switch). Port block 8774-8776 in the suite registry.
+- `Launch-Semaphore.bat`, the PowerShell 5.1 loopback server and every TechStack lifecycle rule (heartbeat, auto-stop, End session, `Stop-Semaphore.ps1`, single instance, runtime file, off switch). Port block 8800-8802 in the suite registry.
 - `/api/query` and `/api/profile` over ODBC and OLE DB (BCL only), typed bound parameters, timeout and row cap.
 - Sources: CSV files in the browser, the generated fleet-maintenance sample, and server sources from `sources.json`.
 - Source profiling into a proposed catalog: labels and synonyms from column names, measures from types and names.

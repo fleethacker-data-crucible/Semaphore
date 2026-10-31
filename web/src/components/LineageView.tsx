@@ -1,11 +1,12 @@
 // Lineage on screen: sources → tables → fields → measures → flags, left to right. Click anything to
 // see what feeds it and what it feeds; joins between tables are the dashed arcs.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Network, X } from 'lucide-react';
 import type { Catalog } from '../../../src/core/catalog.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { buildLineage, connected, LINEAGE_COLUMNS, type LineageKind, type LineageNode } from '../../../src/core/lineage.ts';
+import { useModal } from '../lib/modal.ts';
 
 const COL_W = 210;
 const BOX_W = 176;
@@ -19,6 +20,8 @@ function short(s: string, n = 24): string {
 }
 
 export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoist: Hoist; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   const [all, setAll] = useState(false);
   const [focus, setFocus] = useState<string | null>(null);
   const lineage = useMemo(() => buildLineage(catalog, hoist, all), [catalog, hoist, all]);
@@ -48,7 +51,7 @@ export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoi
 
   return (
     <div className="fixed inset-0 z-50 overflow-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section role="dialog" aria-label="Lineage" className="mx-auto w-fit max-w-full rounded-xl border border-line bg-panel shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Lineage" className="mx-auto w-fit max-w-full rounded-xl border border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Network size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Where the numbers come from</h2>
