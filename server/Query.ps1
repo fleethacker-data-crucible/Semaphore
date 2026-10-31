@@ -56,7 +56,7 @@ function Get-SemSources {
             elseif ($provider -eq 'foundry') { [void](Get-SemFoundrySettings $s) }
             elseif ($provider -eq 'synapse') { $connection = New-SemSynapseConnection $s; $provider = 'odbc' }   # an ODBC source from here on
         } catch { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $_.Exception.Message); continue }
-        $badVault = Test-SemVaultBlock -Vault (Get-SemJsonProp $s 'vault') -Provider $provider
+        $badVault = Test-SemVaultBlock -Vault (Get-SemRawVault $s) -Provider $provider
         if ($badVault) { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $badVault); continue }
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
