@@ -206,6 +206,7 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Query.ps1')
 . (Join-Path $here 'Intelligence.ps1')
 . (Join-Path $here 'Lake.ps1')
+. (Join-Path $here 'Vault.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
 if ($CheckOnly) { if (Invoke-SemSelfCheck) { exit 0 } else { exit 1 } }
@@ -223,6 +224,16 @@ if ($Refresh) {
         Write-SemLog 'INFO' 'Refresh: Semaphore is already running on this computer; it refreshes snapshots itself. Nothing to do.'
         exit 0
     }
+}
+
+# ---- Lazarette vault (only when a source names an item) ---------------------------
+$vaultSources = @(Get-SemSources -HomeDir $homeDir | Where-Object { Get-SemSourceVault $_ })
+if ($vaultSources.Count -gt 0 -and -not $CheckOnly) {
+    $arcLib = Get-SemArcLibPath -Root $root
+    if ($arcLib) { . $arcLib }   # script scope: the main loop reads the secrets, workers get them with each request
+    $open = Request-SemVaultUnlock -Root $root -Interactive ([bool]$ShowConsole)
+    if ($open) { Write-SemLog 'INFO' ('Lazarette is open for {0} source(s)' -f $vaultSources.Count) }
+    else { Write-SemLog 'WARN' ('Lazarette is locked or missing; {0} source(s) that use it will say so (start with --console to unlock)' -f $vaultSources.Count) }
 }
 
 # ---- One instance -----------------------------------------------------------
