@@ -3,7 +3,7 @@
 # without an AWS account. AWS's own SigV4 test vector checks the signing itself.
 BeforeAll {
     $server = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server'))
-    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1') { . ([IO.Path]::Combine($server, $f)) }
+    foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1') { . ([IO.Path]::Combine($server, $f)) }
 
     function script:Start-FakeAws {
         # Routes by X-Amz-Target (Athena, Glue) or path (S3 ListObjectsV2). Records every request.
