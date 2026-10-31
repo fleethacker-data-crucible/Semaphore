@@ -43,7 +43,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     params.push(p);
     const n = params.length;
     if (options.placeholders === 'question') return '?';
-    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' ? `@p${n}` : '?';
+    return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' || dialect === 'synapse' ? `@p${n}` : '?';
   };
 
   const joins = plan.joins ?? [];
@@ -162,7 +162,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   }
 
   const limit = Math.max(1, Math.floor(plan.limit));
-  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
+  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
@@ -261,7 +261,8 @@ export function periodStart(today: Date, unit: TimeGrain, back: number): string 
 
 export function quote(name: string, dialect: Dialect): string {
   if (!isIdentifier(name) || name.includes('.')) throw new SqlError(`Unsafe identifier "${name}".`);
-  return dialect === 'access' || dialect === 'tsql' ? `[${name}]` : `"${name}"`;
+  if (dialect === 'spark') return `\`${name}\``;
+  return dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `[${name}]` : `"${name}"`;
 }
 
 export function quoteTable(name: string, dialect: Dialect): string {
@@ -281,6 +282,10 @@ export function truncate(col: string, grain: TimeGrain, dialect: Dialect): strin
   if (dialect === 'tsql') {
     // DATETRUNC is in Azure SQL and SQL Server 2022+. iso_week starts on Monday regardless of DATEFIRST.
     return `DATETRUNC(${grain === 'week' ? 'iso_week' : grain}, ${col})`;
+  }
+  if (dialect === 'synapse') {
+    // Synapse pools have no DATETRUNC. DATEADD/DATEDIFF counts whole periods from a fixed origin; 1900-01-01 was a Monday.
+    return grain === 'week' ? `DATEADD(week, DATEDIFF(day, '19000101', ${col}) / 7, '19000101')` : `DATEADD(${grain}, DATEDIFF(${grain}, 0, ${col}), 0)`;
   }
   if (dialect === 'access') {
     switch (grain) {

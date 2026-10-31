@@ -6,8 +6,9 @@
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { applySelections, type CrossfilterResult, lineUp, type Selections } from '../../../src/core/crossfilter.ts';
 import { runPlan, type TableRows } from '../../../src/core/engine.ts';
+import { comparisonPlanFor, comparisonSelections } from '../../../src/core/drill-compare.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
-import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from '../../../src/core/planner.ts';
+import { comparisonShift, planFlag, type QueryPlan } from '../../../src/core/planner.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
 import type { CsvWorker } from './worker.ts';
@@ -33,6 +34,12 @@ export interface FlagResult {
   display: CrossfilterResult;
   /** Earlier values per displayed row, when the flag compares. */
   previous?: Array<Record<string, number | null> | null>;
+  /**
+   * The comparison window's rows as the source returned them (pre-split, like `raw`), with the
+   * plan that asked for them. A shared report keeps them so it can line the comparison up again
+   * under a selection (web/src/lib/report-view.ts).
+   */
+  previousRaw?: { plan: QueryPlan; rows: ReadonlyArray<Record<string, string | number | boolean | null>> };
   /** Where the numbers came from and how long they took. */
   origin: 'page' | 'server';
   ms: number;
@@ -154,11 +161,14 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
   if (lake.cached || lake.scannedBytes !== undefined) {
     out.lake = { cached: !!lake.cached, ...(lake.asOf ? { asOf: lake.asOf } : {}), ...(lake.scannedBytes !== undefined ? { scannedBytes: lake.scannedBytes } : {}), warnings: lake.estimate?.warnings ?? [] };
   }
-  const earlier = comparisonPlan(plan, ctx.today);
+  // The comparison reads the earlier window under the same narrowing: drill steps on the compared
+  // date move back with it, and a period picked elsewhere is looked up one window back.
+  const earlier = comparisonPlanFor(plan, ctx.today);
   if (earlier) {
     const prev = await run(earlier, ctx);
-    const prevDisplay = applySelections(earlier, prev.result.rows, selections, flag.behavior);
+    const prevDisplay = applySelections(earlier, prev.result.rows, comparisonSelections(plan, selections), flag.behavior);
     out.previous = lineUp(display.rows, prevDisplay.rows, comparisonShift(plan) ?? undefined);
+    out.previousRaw = { plan: earlier, rows: prev.result.rows };
   }
   return out;
 }
