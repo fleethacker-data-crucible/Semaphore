@@ -283,3 +283,41 @@ Describe 'AWS session from the vault' {
         } finally { $fake.L.Stop(); $fake.PS.Dispose() }
     }
 }
+
+Describe 'vaultItem short form and the item-names table' {
+    It 'accepts "vaultItem" as the short form of vault.item, for every provider that uses the vault' {
+        $s = New-Source '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":"maint-db"},{"id":"b","provider":"oledb","connection":"Provider=x","vaultItem":"parts-tracker"},{"id":"c","provider":"athena","region":"us-gov-west-1","database":"maint","vaultItem":"aws-semaphore"}]'
+        $s.Count | Should -Be 3
+        (Get-SemVaultNeeds $s[0]).Item | Should -Be 'maint-db'
+        (Get-SemVaultNeeds $s[2]).Roles.Role | Should -Contain 'accessKeyId'
+    }
+    It 'accepts the catalog-style name with spaces and a slash' {
+        $s = New-Source '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":"Semaphore / maint-warehouse"}]'
+        $s.Count | Should -Be 1
+    }
+    It 'refuses <Why>' -TestCases @(
+        @{ Why = 'both forms at once'; Json = '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":"i","vault":{"item":"j"}}]' }
+        @{ Why = 'a non-text vaultItem'; Json = '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":5}]' }
+        @{ Why = 'a bad item name'; Json = '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":"a;b"}]' }
+    ) { (New-Source $Json).Count | Should -Be 0 }
+    It 'resolves the secrets for a source that uses the short form' {
+        $script:FakeVault.Open = $true
+        $s = (New-Source '[{"id":"a","provider":"odbc","connection":"DSN=x","vaultItem":"maint-db"}]')[0]
+        (Resolve-SemVaultSecrets -Source $s).Values.password | Should -BeLike 'S3cr*'
+    }
+    It 'documents the sources it can load: the JSON example in VAULT.md loads every source' {
+        $doc = Get-Content -LiteralPath ([IO.Path]::Combine($server, '..', 'docs', 'VAULT.md')) -Raw
+        $m = [regex]::Match($doc, '(?s)```json\s*(\[.*?\])\s*```')
+        $m.Success | Should -BeTrue
+        $n = [regex]::Matches($m.Groups[1].Value, '"id"').Count
+        $n | Should -BeGreaterThan 2
+        (New-Source $m.Groups[1].Value).Count | Should -Be $n
+    }
+    It 'documents every default field name and the Fairlead key target the code uses' {
+        $doc = Get-Content -LiteralPath ([IO.Path]::Combine($server, '..', 'docs', 'VAULT.md')) -Raw
+        foreach ($roles in $script:SemVaultRoles.Values) { foreach ($r in $roles) { if ($r.Field) { $doc | Should -BeLike "*$($r.Field)*" -Because "the default field $($r.Field) is in the code" } } }
+        $doc | Should -BeLike '*Semaphore/FairleadClientKey*'
+        $src = Get-Content -LiteralPath ([IO.Path]::Combine($server, 'AiCredential.ps1')) -Raw
+        $src | Should -BeLike "*'Semaphore/FairleadClientKey'*"
+    }
+}
