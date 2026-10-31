@@ -47,6 +47,7 @@ function Get-SemCommandRegistry {
     }
     & $add 'refresh run' '(starts Start-Semaphore.ps1 --refresh)' 'POST' 'Refresh every playbook snapshot headless and stop (the same run as --refresh). Needs a machine that can reach the sources; it refuses when Semaphore is already open.' @() $false 'RefreshRun'
     & $add 'refresh report' '/api/refresh-report' 'GET' 'The report of the last snapshot refresh.' @() $false 'RefreshReport'
+    & $add 'vault status' '/api/vault' 'GET' 'Whether Lazarette is found for sources that name a vault item, and which source names which item. Never a secret. (A running Semaphore also says whether the vault is unlocked.)' @() $false 'VaultStatus'
     & $add 'ai status' '/api/ai' 'GET' 'Whether drafting goes through Fairlead, the address and which key source is used. Never prints the key.' @() $false 'AiStatus'
     & $add 'session stop' '(runs Stop-Semaphore.ps1)' 'POST' 'Stop every running copy of Semaphore on this computer.' @() $true 'SessionStop'
     return $list.ToArray()
@@ -141,6 +142,10 @@ function Invoke-SemCommand {
                 $file = Join-Path (Get-SemDocDir -Kind 'snapshots' -HomeDir $HomeDir) '.last-refresh.json'
                 if (-not [IO.File]::Exists($file)) { return (& $r $false $null 'No refresh has run yet.' '' $false) }
                 return (& $r $true ([IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json) '' '' $false)
+            }
+            'VaultStatus' {
+                $uses = @(Get-SemSources -HomeDir $HomeDir | ForEach-Object { $n = Get-SemVaultNeeds $_; if ($n) { '{0} -> {1}' -f $_.id, $n.Item } })
+                return (& $r $true ([ordered]@{ lazarette = [bool](Get-SemArcLibPath -Root $Root); unlocked = $false; sources = $uses; note = 'A command-line run never unlocks the vault; unlock it in the console that starts Semaphore.' }) '' '' $false)
             }
             'AiStatus' { return (& $r $true (Get-SemAiStatus) '' '' $false) }
             'RefreshRun' {

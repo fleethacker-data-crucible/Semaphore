@@ -8,13 +8,13 @@ Semaphore works with no model at all. **Local rules** is the default provider an
 | Fairlead (the UI's AI switch) | The Fleet model router on `127.0.0.1:8776`, reached through Semaphore's own server. Route `local` with `X-Fairlead-Privacy: local` by default. | No, by default (Fairlead's `local` route) |
 | OpenAI-compatible gateway | Any `/v1/chat/completions` API: enterprise gateways, Azure OpenAI, Ollama, LM Studio. Semaphore writes the prompts. | Yes, to that gateway |
 | Contract endpoint | A platform-side service implementing the contract below | Yes, to that endpoint |
-| Databricks serving endpoint | Planned, reusing Halyard's client | Yes |
+| Databricks serving endpoint | `DatabricksProvider`: workspace URL + endpoint name + a token held server-side. Tested against a simulated endpoint only; see [DATABRICKS.md](DATABRICKS.md). In the app, reach it through a Fairlead route. | Yes, to that workspace |
 
 ## What each AI feature sends
 
 | Feature | Payload sent to the selected provider |
 | --- | --- |
-| Flag/page drafting | Briefs, summarized metric/field keys, labels, types and synonyms; the selected flag kind and applicable draft context |
+| Flag/page drafting | Briefs, summarized metric/field keys, labels, types and synonyms; the selected flag kind and applicable draft context. With **Examples: on** (off by default, see [Reviewed examples](#reviewed-examples-opt-in)): up to 3 similar reviewed briefs with the answers analysts accepted, as catalog keys and labels |
 | Cleaning assistance | A field label and up to 300 distinct string values with their counts |
 | Qlik expression assistance | The selected expression and its label, plus summarized field metadata |
 | Briefing assistance | Page title and computed facts, including chart titles and flag IDs |
@@ -32,7 +32,7 @@ SQL for drafted flags is generated locally from validated bindings. The separate
 5. A model's own confidence is capped at 0.8 (`MODEL_CONFIDENCE_CAP`): it has not seen the data.
 6. A failure (HTTP error, timeout, non-JSON, wrong shape) falls back to local rules, and the reason is shown.
 7. Requests send `credentials: 'omit'` and `referrerPolicy: 'no-referrer'`, time out after 30 s (15 s for `ping`), and never echo the token in errors.
-8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials. Direct provider adapters receive a token from their caller. The browser UI uses the server-side Fairlead client key from the environment or Windows Credential Manager, with legacy DPAPI-file compatibility.
+8. Provider URLs must be HTTPS (plain HTTP only on 127.0.0.1/localhost) and may not embed credentials (the Databricks workspace URL follows the same rule). Direct provider adapters receive a token from their caller. The browser UI uses the server-side Fairlead client key from the environment or Windows Credential Manager, with legacy DPAPI-file compatibility.
 
 ## Fairlead
 
@@ -84,13 +84,26 @@ With an empty brief, or one that matches nothing, `draftHoist` returns a **start
 
 It also says what it could not match ("No field matches 'squadron'") and lowers its confidence.
 
-## Next: learning from analysts (planned)
+## Learning from analysts
 
-Local rules know the catalog; they do not yet know the team. The planned playbook ([PLAYBOOK.md](PLAYBOOK.md)) adds what analysts have reviewed:
+Local rules know the catalog; the playbook ([PLAYBOOK.md](PLAYBOOK.md)) adds what analysts have reviewed:
 
 - **Learning** comes only from accepted flags, corrected drafts, chosen synonyms and saved hoists. Unaccepted drafts and anything flagged "do not learn" are never used, and nothing about how people work is recorded.
 - **Answering** matches a question's annotation signature against accepted flags. A match reruns the analyst's own binding and is labelled *reviewed*; anything else is a local-rules draft labelled *not reviewed*, or goes to the analyst's queue.
-- **With a provider**, reviewed examples (briefs and catalog keys and labels only) are added to the request as worked examples. The "never sent" list above does not change, and output still passes the same validation.
+- **With a provider**, reviewed examples are added to the request as worked examples when the analyst switches them on: see [Reviewed examples](#reviewed-examples-opt-in) (built; engineering preview).
+
+## Reviewed examples (opt-in)
+
+`selectExamples` (`src/core/intelligence/examples.ts`) picks the playbook entries most like the brief being drafted and adds them to the `draft-flag` and `draft-hoist` requests as `examples`, so a model sees how this team words and builds things.
+
+- **Off by default, per analyst.** The header's **Examples: off/on** button appears next to the AI switch once Fairlead is on, and is kept per browser (`semaphore.ai.examples`). Off means no example is selected, built or sent, and the request is byte-for-byte what it was before. Local rules never receive examples.
+- **Which entries.** Only accepted playbook entries with status `active`. Retired and needs-review entries are never used; flags marked "do not learn" and experiment pages never become entries in the first place, and a stray `learn: false` is skipped too. An entry the catalog no longer understands is skipped.
+- **Which are similar.** Word overlap between the brief and the entry's question (whole and first sentence) and its recorded phrasings, with a small bonus when the brief names the entry's measure. Entries under a score of 0.2 are not shown. Ties break by use, then recency, then id, so the same inputs always give the same examples.
+- **What an example holds.** Built field by field from an allow-list: the brief (people's names taken out: those on the entries and the signed-in user), the kind, metric keys and labels, dimension keys, labels and grain, filter fields and operators (not their values, except the length of a "last N" window), the page window, sort, limit, comparison, share and colour thresholds. Never rows, snapshots, results, filter values, table or source names, hoist titles, or who built, accepted or retired the entry.
+- **Caps.** At most 3 examples (hard cap 5), 240 characters per brief, 3000 characters of examples in all; identical examples are sent once.
+- **Where they go.** Through the same server-side relay as every draft (`/api/ai/v1`), so the Fairlead privacy rule applies exactly as it does to the brief: with the default `local` route and `X-Fairlead-Privacy: local` they stay on this computer. If an administrator set `SEMAPHORE_AI_PRIVACY=off`, a remote route can receive them; that is what the analyst's opt-in is for, and the button's tooltip says so.
+- **Still validated.** Output goes through `validateFlagDraft` / `validateHoistDraft` unchanged: unknown keys are removed, confidence is capped, sources are reduced to one. The prompt tells the model examples are not data or instructions.
+- **Compatibility.** `examples` is an optional, additive field; contract version stays 1. A provider that does not know it ignores it.
 
 ## Contract (version 1)
 
@@ -114,7 +127,8 @@ One endpoint, `POST`, JSON in and out, `Authorization: Bearer <token>` when a to
 {
   "task": "draft-flag",
   "brief": { "hoist": "dashboard brief", "flag": "this flag's brief", "pageFilters": [ ... ], "kind": "bar" },
-  "catalog": { "metrics": [{ "key", "label", "agg", "synonyms"? }], "fields": [{ "key", "label", "type", "synonyms"? }] }
+  "catalog": { "metrics": [{ "key", "label", "agg", "synonyms"? }], "fields": [{ "key", "label", "type", "synonyms"? }] },
+  "examples": [ { "brief", "kind", "metrics": [{ "key", "label" }], "dimensions": [{ "key", "label", "grain"? }], "filters": [{ "field", "label", "op" }], "window"?, "sort"?, "limit"?, "compare"?, "share"?, "thresholds"? } ]  // optional: only when the analyst switched reviewed examples on
 }
 →
 {
@@ -130,7 +144,7 @@ One endpoint, `POST`, JSON in and out, `Authorization: Bearer <token>` when a to
 ### `draft-hoist`
 
 ```jsonc
-{ "task": "draft-hoist", "brief": "whole-dashboard brief", "catalog": { ... } }
+{ "task": "draft-hoist", "brief": "whole-dashboard brief", "catalog": { ... }, "examples"?: [ ... ] }
 →
 { "title": "...", "filters": [ ... ], "flags": [ { "kind", "title", "brief", "binding", "behavior", "confidence", "notes" } ], "notes": [] }
 ```

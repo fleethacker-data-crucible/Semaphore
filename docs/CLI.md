@@ -33,6 +33,7 @@ The same list is served by the running server at `GET /api/commands` and by `com
 | (same nouns) `delete --id <id> --yes` | Move a document to the `.trash` folder (not erased). |
 | `refresh run` | Refresh every playbook snapshot headless and stop (the same run as `Start-Semaphore.ps1 --refresh`). Refuses while Semaphore is open. Needs a machine that can reach the sources. |
 | `refresh report` | The report of the last refresh. |
+| `vault status` | Whether Lazarette is found, and which source names which vault item. Never a secret. A command-line run never unlocks the vault. |
 | `ai status` | Whether drafting goes through Fairlead, the address and where the key comes from. Never the key. |
 | `session stop --yes` | Stop every running copy of Semaphore on this computer. |
 
@@ -40,4 +41,4 @@ The same list is served by the running server at `GET /api/commands` and by `com
 
 Only headless work is offered. The routes the browser session needs have no command, and the registry lists each with its reason (`uiOnly` in `commands --json`): heartbeat and leaving (tab presence), end (use `session stop`), query and profile (the page plans the SQL and holds the session token), and the AI check and relay (they carry the browser session). `tests/server/Commands.Tests.ps1` fails when a route in `server/Routes.ps1` or a `/api` path in the UI has neither a command nor a reason, so a new route cannot arrive without one.
 
-Not covered yet: the Lazarette vault status route and the connector routes arrive in other pull requests and will need a `vault status` command or a reason when they land. Run on Windows PowerShell 5.1; not tried on a real workstation folder.
+Run on Windows PowerShell 5.1; not tried on a real workstation folder.
