@@ -105,22 +105,22 @@ Describe 'Runtime files and Stop-Semaphore' {
     AfterAll { Remove-Item -LiteralPath $script:FakeRoot -Recurse -Force -ErrorAction SilentlyContinue }
 
     It 'writes the runtime file without the token and removes it' {
-        $script:Sem.Port = 8774; $script:Sem.Version = '0.2.0'; $script:Sem.Token = New-SemToken; $script:Sem.ScriptPath = 'x'
+        $script:Sem.Port = 8800; $script:Sem.Version = '0.2.0'; $script:Sem.Token = New-SemToken; $script:Sem.ScriptPath = 'x'
         $f = Write-SemRuntimeFile -Root $script:FakeRoot
         $f | Should -Match ('semaphore-server-' + $PID + '\.json$')
         $text = [IO.File]::ReadAllText($f)
         $text | Should -Not -Match ([regex]::Escape($script:Sem.Token))
         $j = $text | ConvertFrom-Json
         $j.pid | Should -Be $PID
-        $j.port | Should -Be 8774
-        $j.url | Should -Be 'http://127.0.0.1:8774/'
+        $j.port | Should -Be 8800
+        $j.url | Should -Be 'http://127.0.0.1:8800/'
         Remove-SemRuntimeFile
         Test-Path -LiteralPath $f | Should -BeFalse
     }
 
     It 'deletes a stale runtime file whose process is gone' {
         $stale = [IO.Path]::Combine($script:FakeRoot, 'logs', 'semaphore-server-999999.json')
-        [IO.File]::WriteAllText($stale, '{"pid":999999,"port":8774,"url":"http://127.0.0.1:8774/","startedAt":"2026-01-01T00:00:00Z"}')
+        [IO.File]::WriteAllText($stale, '{"pid":999999,"port":8800,"url":"http://127.0.0.1:8800/","startedAt":"2026-01-01T00:00:00Z"}')
         @(Get-SemInstances -Root $script:FakeRoot | Where-Object { $_.File }).Count | Should -Be 0
         Test-Path -LiteralPath $stale | Should -BeFalse
     }

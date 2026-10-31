@@ -15,7 +15,7 @@ BeforeAll {
     [IO.File]::WriteAllText([IO.Path]::Combine($script:TestWeb, 'assets', 'app.js'), 'console.log(1)')
     [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetTempPath()) 'sem-secret.txt'), 'secret')
 
-    $script:Sem.Port = 8774
+    $script:Sem.Port = 8800
     $script:Sem.Token = New-SemToken
     $script:Sem.Version = '0.2.0'
     $script:Sem.WebRoot = $script:TestWeb
@@ -25,7 +25,7 @@ BeforeAll {
     function Invoke-TestRequest {
         param([string]$Method = 'GET', [string]$Path = '/', [hashtable]$Headers = @{}, [string]$Body = '', [switch]$NoHost, $Remote = [Net.IPAddress]::Loopback)
         $h = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
-        if (-not $NoHost) { $h['Host'] = '127.0.0.1:8774' }
+        if (-not $NoHost) { $h['Host'] = '127.0.0.1:8800' }
         foreach ($k in $Headers.Keys) { $h[$k] = [string]$Headers[$k] }
         $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
         $req = @{ Method = $Method; Path = $Path; Query = ''; Headers = $h; ContentLength = $bytes.Length; Body = $bytes; Json = $null; RemoteAddress = $Remote; Client = $null }
@@ -49,39 +49,39 @@ AfterAll {
 
 Describe 'Host and Origin gate' {
     It 'accepts Host <H> with Origin <O>' -TestCases @(
-        @{ H = '127.0.0.1:8774'; O = '' }, @{ H = 'localhost:8774'; O = '' },
-        @{ H = '127.0.0.1:8774'; O = 'http://127.0.0.1:8774' }, @{ H = 'LOCALHOST:8774'; O = 'http://localhost:8774' }
+        @{ H = '127.0.0.1:8800'; O = '' }, @{ H = 'localhost:8800'; O = '' },
+        @{ H = '127.0.0.1:8800'; O = 'http://127.0.0.1:8800' }, @{ H = 'LOCALHOST:8800'; O = 'http://localhost:8800' }
     ) {
         $hd = @{ Host = $H }; if ($O) { $hd['Origin'] = $O }
         $d = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
         foreach ($k in $hd.Keys) { $d[$k] = $hd[$k] }
-        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Loopback) -Headers $d -Port 8774 | Should -BeTrue
+        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Loopback) -Headers $d -Port 8800 | Should -BeTrue
     }
 
     It 'refuses Host <H> with Origin <O>' -TestCases @(
-        @{ H = 'evil.example:8774'; O = '' }, @{ H = '127.0.0.1:8775'; O = '' }, @{ H = '127.0.0.1'; O = '' }, @{ H = ''; O = '' },
-        @{ H = '192.168.1.5:8774'; O = '' }, @{ H = '127.0.0.1:8774'; O = 'http://evil.example' }, @{ H = '127.0.0.1:8774'; O = 'null' },
-        @{ H = '127.0.0.1:8774'; O = 'http://127.0.0.1:8775' }, @{ H = '127.0.0.1:8774'; O = 'https://127.0.0.1:8774' }
+        @{ H = 'evil.example:8800'; O = '' }, @{ H = '127.0.0.1:8775'; O = '' }, @{ H = '127.0.0.1'; O = '' }, @{ H = ''; O = '' },
+        @{ H = '192.168.1.5:8800'; O = '' }, @{ H = '127.0.0.1:8800'; O = 'http://evil.example' }, @{ H = '127.0.0.1:8800'; O = 'null' },
+        @{ H = '127.0.0.1:8800'; O = 'http://127.0.0.1:8775' }, @{ H = '127.0.0.1:8800'; O = 'https://127.0.0.1:8800' }
     ) {
         $d = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
         if ($H) { $d['Host'] = $H }
         if ($O) { $d['Origin'] = $O }
-        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Loopback) -Headers $d -Port 8774 | Should -BeFalse
+        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Loopback) -Headers $d -Port 8800 | Should -BeFalse
     }
 
     It 'refuses a caller that is not on loopback' {
         $d = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
-        $d['Host'] = '127.0.0.1:8774'
-        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Parse('10.0.0.8')) -Headers $d -Port 8774 | Should -BeFalse
+        $d['Host'] = '127.0.0.1:8800'
+        Test-SemRequestOrigin -RemoteAddress ([Net.IPAddress]::Parse('10.0.0.8')) -Headers $d -Port 8800 | Should -BeFalse
         (Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth) -Remote ([Net.IPAddress]::Parse('10.0.0.8'))).Status | Should -Be 403
     }
 
     It 'answers 403 for a foreign Host or Origin, even with the right token' {
-        $a = Get-Auth; $a['Host'] = 'attacker.example:8774'
+        $a = Get-Auth; $a['Host'] = 'attacker.example:8800'
         (Invoke-TestRequest -Path '/api/info' -Headers $a -NoHost).Status | Should -Be 403
         $a = Get-Auth; $a['Origin'] = 'http://attacker.example'
         (Invoke-TestRequest -Path '/api/info' -Headers $a).Status | Should -Be 403
-        (Invoke-TestRequest -Path '/' -Headers @{ Host = 'attacker.example:8774' } -NoHost).Status | Should -Be 403
+        (Invoke-TestRequest -Path '/' -Headers @{ Host = 'attacker.example:8800' } -NoHost).Status | Should -Be 403
     }
 
     It 'sends the security headers on every response' {
@@ -122,7 +122,7 @@ Describe 'Session token' {
         $j = $r.Body | ConvertFrom-Json
         $j.tool | Should -Be 'semaphore'
         $j.version | Should -Be '0.2.0'
-        $j.port | Should -Be 8774
+        $j.port | Should -Be 8800
         $j.autoStop | Should -BeTrue
         $r.Body | Should -Not -Match ([regex]::Escape($script:Sem.Token))
     }
@@ -137,7 +137,7 @@ Describe 'Session token' {
 
     It 'never reads the token from the query string' {
         $h = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
-        $h['Host'] = '127.0.0.1:8774'
+        $h['Host'] = '127.0.0.1:8800'
         $req = @{ Method = 'POST'; Path = '/api/leaving'; Query = 'token=' + $script:Sem.Token; Headers = $h; ContentLength = 0; Body = (New-Object byte[] 0); Json = $null; RemoteAddress = [Net.IPAddress]::Loopback; Client = $null }
         $ms = New-Object IO.MemoryStream; $script:Sem.Stream = $ms
         Invoke-SemRequest -Req $req
@@ -145,7 +145,7 @@ Describe 'Session token' {
     }
 
     It 'parses a request line and refuses odd paths and bodies' {
-        (ConvertFrom-SemRequestHead -Text "GET /api/info?x=1 HTTP/1.1`r`nHost: 127.0.0.1:8774" -RemoteAddress ([Net.IPAddress]::Loopback)).Path | Should -Be '/api/info'
+        (ConvertFrom-SemRequestHead -Text "GET /api/info?x=1 HTTP/1.1`r`nHost: 127.0.0.1:8800" -RemoteAddress ([Net.IPAddress]::Loopback)).Path | Should -Be '/api/info'
         (ConvertFrom-SemRequestHead -Text "GET /a\b HTTP/1.1`r`nHost: x").ErrorStatus | Should -Be 400
         (ConvertFrom-SemRequestHead -Text "GET /%2e%2e/x HTTP/1.1`r`nHost: x").ErrorStatus | Should -Be 400
         (ConvertFrom-SemRequestHead -Text "POST /api/query HTTP/1.1`r`nTransfer-Encoding: chunked").ErrorStatus | Should -Be 400
