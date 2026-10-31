@@ -120,10 +120,10 @@ function Sources(p: DataPanelProps) {
         <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-line px-3 py-3 text-sm hover:border-accent">
           <Plus size={15} className="text-accent" />
           <span>
-            <span className="font-medium">CSV files</span>
-            <span className="block text-[11px] text-ink-3">Read in this page and kept in this browser. Semaphore proposes measures and fields for you to check.</span>
+            <span className="font-medium">CSV files and Fleet exports</span>
+            <span className="block text-[11px] text-ink-3">CSV, or the JSON exports of PacketRat and Eight Bells (or any list of records). Read in this page and kept in this browser. Semaphore proposes measures and fields for you to check.</span>
           </span>
-          <input type="file" accept=".csv,.tsv,.txt,text/csv" multiple className="sr-only" onChange={(e) => e.target.files?.length && p.onAddCsv(e.target.files)} />
+          <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && p.onAddCsv(e.target.files)} />
         </label>
         <button type="button" onClick={p.onImportQlik} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
           <span className="font-medium">Import from Qlik</span>

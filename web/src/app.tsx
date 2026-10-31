@@ -9,6 +9,7 @@ import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { CsvError, readCsv } from '../../src/core/csv.ts';
+import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { emptyBehavior, type Flag, type FlagKind, GRID_COLS, type Hoist, type Layout, parseHoist } from '../../src/core/hoist.ts';
@@ -427,18 +428,23 @@ export function App() {
       const held = new Set(workerTables);
       for (const file of Array.from(list)) {
         try {
-          const text = await file.text();
+          const raw = await file.text();
+          // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first (src/core/fleet-exports.ts).
+          const fx = fleetExportToCsv(file.name, raw);
+          const text = fx ? fx.csv : raw;
+          const name = fx ? fx.fileName : file.name;
+          if (fx) notes.push(fx.note);
           // Parsed in the CSV worker when there is one: a large file never freezes the page.
           let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
           if (worker) {
-            t = await worker.load(file.name, text);
+            t = await worker.load(name, text);
             held.add(t.name);
           } else {
-            const parsed = readCsv(file.name, text);
+            const parsed = readCsv(name, text);
             tables[parsed.name] = parsed.rows;
             t = { ...parsed, rows: parsed.rows.length };
           }
-          await putFile({ name: file.name, text, added: new Date().toISOString() });
+          await putFile({ name, text, added: new Date().toISOString() });
           // Replace the measures and fields of a file loaded before under the same name.
           const without: Catalog = {
             ...cat,
@@ -447,7 +453,7 @@ export function App() {
           };
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
           cat = pruneCatalog(proposal.catalog);
-          notes.push(`${file.name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
+          notes.push(`${name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
         } catch (e) {
           notes.push(`${file.name}: ${e instanceof CsvError || e instanceof WorkerError ? e.message : 'could not be read.'}`);
         }
