@@ -51,7 +51,7 @@ function New-SemSynapseConnection {
     $allowed = @('ActiveDirectoryIntegrated', 'ActiveDirectoryInteractive', 'ActiveDirectoryMsi', 'ActiveDirectoryPassword', 'SqlPassword')
     if ($allowed -cnotcontains $auth) { throw ('Synapse "authentication" must be one of: ' + ($allowed -join ', ') + '.') }
     $needsPassword = @('ActiveDirectoryPassword', 'SqlPassword') -ccontains $auth
-    if ($needsPassword -and $null -eq (Get-SemJsonProp $Raw 'vault')) { throw ($auth + ' needs a "vault" block: the user and password come from Lazarette, never from sources.json.') }
+    if ($needsPassword -and $null -eq (Get-SemRawVault $Raw)) { throw ($auth + ' needs a "vault" block: the user and password come from Lazarette, never from sources.json.') }
     $driver = [string](Get-SemJsonProp $Raw 'driver'); if (-not $driver) { $driver = 'ODBC Driver 18 for SQL Server' }
     if ($driver -cnotmatch '\AODBC Driver (17|18) for SQL Server\z') { throw 'The Synapse "driver" must be "ODBC Driver 17 for SQL Server" or "ODBC Driver 18 for SQL Server".' }
     foreach ($forbidden in @('password', 'pwd', 'uid', 'user', 'secret')) { if ($Raw.PSObject.Properties[$forbidden]) { throw 'Credentials do not belong in sources.json. Use a "vault" block.' } }

@@ -49,6 +49,7 @@ function Test-SemVaultBlock {
     param($Vault, [string]$Provider)
     if ($null -eq $Vault) { return $null }
     if ($Vault -isnot [Management.Automation.PSCustomObject]) { return 'The vault setting must be an object like { "item": "name" }.' }
+    if ($null -ne (Get-SemJsonProp $Vault 'conflict')) { return 'Give "vault" or "vaultItem", not both.' }
     $item = Get-SemJsonProp $Vault 'item'
     if ($item -isnot [string] -or $item -cnotmatch $script:SemVaultItemRx) { return 'The vault setting needs "item": the name of a Lazarette item (letters, digits, space and . _ @ : / -).' }
     if (-not $script:SemVaultRoles.ContainsKey($Provider)) { return "The $Provider provider does not use the vault." }
@@ -65,11 +66,22 @@ function Test-SemVaultBlock {
     return $null
 }
 
+function Get-SemRawVault {
+    # The vault block of a sources.json entry. "vaultItem": "name" is the short form of "vault": { "item": "name" }
+    # (the field name Lazarette's docs/FLEET-ITEMS.md gives for Semaphore). Both at once is refused by Test-SemVaultBlock.
+    param($Raw)
+    $block = Get-SemJsonProp $Raw 'vault'
+    $short = Get-SemJsonProp $Raw 'vaultItem'
+    if ($null -ne $block -and $null -ne $short) { return [pscustomobject]@{ item = $null; conflict = $true } }
+    if ($null -ne $short) { return [pscustomobject]@{ item = $short } }
+    return $block
+}
+
 function Get-SemSourceVault {
     # The validated vault block of a source from Get-SemSources, or $null.
     param($Source)
     if ($null -eq $Source -or $null -eq $Source.raw) { return $null }
-    return (Get-SemJsonProp $Source.raw 'vault')
+    return (Get-SemRawVault $Source.raw)
 }
 
 function Get-SemVaultNeeds {
