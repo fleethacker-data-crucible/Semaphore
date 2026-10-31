@@ -1,11 +1,14 @@
 // Share the page as one HTML file: every flag's answer as it stands, filters that still work, and
 // an optional passphrase. Says plainly what goes into the file.
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileDown, X } from 'lucide-react';
+import { useModal } from '../lib/modal.ts';
 import { IDLE, presentSave, runSave, type SaveStatus } from '../lib/save-status.ts';
 
 export function ShareDialog({ title, onSave, onClose }: { title: string; onSave: (passphrase: string) => Promise<string>; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, onClose);
   const [pass, setPass] = useState('');
   const [again, setAgain] = useState('');
   const [status, setStatus] = useState<SaveStatus>(IDLE);
@@ -15,7 +18,7 @@ export function ShareDialog({ title, onSave, onClose }: { title: string; onSave:
   const weak = pass.length > 0 && pass.length < 12;
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/30 pt-24" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section role="dialog" aria-label="Share as a report" className="w-[460px] max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Share as a report" className="w-[460px] max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <FileDown size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Share as a report</h2>
@@ -29,7 +32,7 @@ export function ShareDialog({ title, onSave, onClose }: { title: string; onSave:
           </p>
           <label className="block text-xs font-semibold">
             Passphrase (optional)
-            <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} className="mt-1 block w-full rounded-md border border-line bg-panel-2 px-2 py-1 text-sm font-normal" />
+            <input data-autofocus type="password" value={pass} onChange={(e) => setPass(e.target.value)} className="mt-1 block w-full rounded-md border border-line bg-panel-2 px-2 py-1 text-sm font-normal" />
           </label>
           {pass && (
             <label className="block text-xs font-semibold">

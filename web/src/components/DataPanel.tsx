@@ -2,13 +2,14 @@
 // this page, never uploaded), profile a server source into a proposed catalog, and rename
 // measures and fields or teach them more words. Every change is checked before it is used.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Database, FileSpreadsheet, Network, Plus, Trash2, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { profileTables, type ServerInfo } from '../lib/api.ts';
 import type { DataContext } from '../lib/data.ts';
 import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
+import { useModal } from '../lib/modal.ts';
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -33,10 +34,12 @@ export interface DataPanelProps {
 }
 
 export function DataPanel(p: DataPanelProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModal(dialogRef, p.onClose);
   const [tab, setTab] = useState<'sources' | 'measures' | 'fields' | 'clean' | 'relationships'>('sources');
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-ink/20" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
-      <aside role="dialog" aria-label="Data and catalog" className="flex h-full w-[520px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
+      <aside ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Data and catalog" className="flex h-full w-[520px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Database size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Data and catalog</h2>
