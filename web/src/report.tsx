@@ -5,12 +5,11 @@ import { StrictMode, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Lock, X } from 'lucide-react';
 import { indexCatalog } from '../../src/core/catalog.ts';
-import { applySelections, type Cell, type Selections } from '../../src/core/crossfilter.ts';
+import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 
 import { dimensionKey } from '../../src/core/hoist.ts';
-import type { FrozenFlag } from '../../src/core/reports.ts';
 import { FlagView, formatDim } from './components/FlagView.tsx';
-import type { FlagResult } from './lib/data.ts';
+import { reportView } from './lib/report-view.ts';
 import { deriveKey, type ReportPayload, type Sealed, unb64 } from './lib/share.ts';
 
 declare global {
@@ -54,20 +53,6 @@ function Unlock({ sealed, onOpen }: { sealed: Sealed; onOpen: (r: ReportPayload)
       </form>
     </main>
   );
-}
-
-function view(f: FrozenFlag, selections: Selections): { result: FlagResult | null; note?: string } {
-  const r = f.result as (FlagResult & { raw?: Array<Record<string, Cell>> }) | null;
-  if (!r) return { result: null };
-  const relevant: Selections = {};
-  for (const [k, v] of Object.entries(selections)) if (v.length && !f.flag.behavior.ignore.includes(k.split('@')[0]!)) relevant[k] = v;
-  if (!Object.keys(relevant).length) return { result: r };
-  if (!r.raw) return { result: r, note: 'Shown as it was saved: this flag is too large to filter in the file.' };
-  const display = applySelections(r.plan, r.raw, relevant, f.flag.behavior);
-  const note = display.live.length ? 'Some of the selection needs the database, so it is not applied here.' : undefined;
-  // Comparisons were computed for the whole page; they are not shown under a selection.
-  const { previous: _p, ...rest } = r;
-  return { result: { ...rest, display }, ...(note ? { note } : {}) };
 }
 
 function Report({ report }: { report: ReportPayload }) {
@@ -116,7 +101,7 @@ function Report({ report }: { report: ReportPayload }) {
       <main className="p-5">
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${report.cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
           {report.flags.map((f) => {
-            const v = view(f, selections);
+            const v = reportView(f, selections);
             return (
               <article key={f.flag.id} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${f.flag.layout.x + 1} / span ${f.flag.layout.w}`, gridRow: `${f.flag.layout.y + 1} / span ${f.flag.layout.h}` }}>
                 <h2 className="truncate px-1 text-[13px] font-semibold">{f.flag.title}</h2>

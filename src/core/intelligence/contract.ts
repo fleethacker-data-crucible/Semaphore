@@ -35,12 +35,41 @@ export function summarizeCatalog(catalog: Catalog): CatalogSummary {
   };
 }
 
+/**
+ * A reviewed playbook entry stripped down to what a provider may see as a worked example: the
+ * analyst's brief and the answer they accepted, as catalog keys and labels. Built only by
+ * selectExamples() (examples.ts), field by field. Never rows, snapshots, results, filter values,
+ * table or source names, or the names of the people who built or accepted the entry.
+ */
+export interface WorkedExample {
+  /** The question in the analyst's words, with people's names taken out and capped. */
+  brief: string;
+  kind: FlagKind;
+  metrics: Array<{ key: string; label: string }>;
+  dimensions: Array<{ key: string; label: string; grain?: string }>;
+  /** Which fields were filtered and how. Values are left out, except the length of a "last N" window. */
+  filters: Array<{ field: string; label: string; op: string; last?: { count: number; unit: string } }>;
+  /** The page window the entry was accepted under ("last 12 months"), when it had one. */
+  window?: { field: string; label: string; count: number; unit: string };
+  sort?: { by: string; dir: 'asc' | 'desc' };
+  limit?: number;
+  compare?: string;
+  share?: boolean;
+  thresholds?: Array<{ metric: string; op: string; value: number; tone: string }>;
+}
+
 export interface DraftFlagRequest {
   task: 'draft-flag';
   brief: EffectiveBrief;
   catalog: CatalogSummary;
   /** The team style card in plain sentences (src/core/style.ts), when there is one. */
   teamStyle?: string[];
+  /**
+   * Reviewed examples most like the brief, only when the analyst switched them on (examples.ts).
+   * Optional and additive: a provider that does not know the field ignores it, and contract
+   * version 1 is unchanged.
+   */
+  examples?: WorkedExample[];
 }
 
 export interface DraftHoistRequest {
@@ -48,6 +77,7 @@ export interface DraftHoistRequest {
   brief: string;
   catalog: CatalogSummary;
   teamStyle?: string[];
+  examples?: WorkedExample[];
 }
 
 export interface FlagDraft {

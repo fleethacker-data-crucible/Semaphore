@@ -33,10 +33,13 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
     try {
       const r: FlagResult = await computeFlag(hoist, flag, {}, ctx);
       const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index);
-      // Editions are read as they stand; a shared report keeps the pre-split rows to filter offline.
-      const { sql: _sql, raw, ...kept } = r;
+      // Editions are read as they stand; a shared report keeps the pre-split rows to filter offline,
+      // and for a comparing flag the earlier window's pre-split rows too, so the comparison can be
+      // lined up again under a selection. If either is too large the flag is shown as it stands.
+      const { sql: _sql, raw, previousRaw, ...kept } = r;
       const keep = options.keepRaw && raw && raw.length <= RAW_ROWS_MAX;
-      out.push({ flag, result: keep ? { ...kept, raw } : kept, insights });
+      const keepEarlier = keep && previousRaw && previousRaw.rows.length <= RAW_ROWS_MAX;
+      out.push({ flag, result: keep ? { ...kept, raw, ...(keepEarlier ? { previousRaw } : {}) } : kept, insights });
     } catch (e) {
       out.push({ flag, result: null, error: (e as Error).message.slice(0, 300), insights: [] });
     }

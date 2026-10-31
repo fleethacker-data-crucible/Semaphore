@@ -4,6 +4,7 @@
 
 import type { CatalogIndex } from './catalog.ts';
 import { type Filter, type Flag, type Hoist, dimensionKey } from './hoist.ts';
+import { planFlag } from './planner.ts';
 
 const KIND_NAMES: Record<Flag['kind'], string> = {
   kpi: 'A KPI showing',
@@ -67,7 +68,15 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
   }
   for (const f of b.filters) window.push(filterText(f, index));
   if (window.length) lines.push(`${cap(window.join('; '))}.`);
-  if (b.compare) lines.push(b.compare === 'previous-year' ? 'Compared with the same window a year earlier.' : 'Compared with the window just before.');
+  if (b.compare) {
+    lines.push(b.compare === 'previous-year' ? 'Compared with the same window a year earlier.' : 'Compared with the window just before.');
+    if (b.filters.some((f) => f.drill)) lines.push('The comparison follows the drill: the period you opened is compared with the same period in that earlier window.');
+  }
+
+  // A measure on the one side split or filtered by a many-side field: say how rows are counted.
+  const planned = planFlag(hoist ?? { version: 1, id: '', title: '', brief: '', grid: { cols: 12 }, filters: [], flags: [flag], updated: '' }, flag, index);
+  if (planned.ok && planned.plan.many) lines.push(...planned.plan.many.explain, ...planned.plan.many.warnings);
+  else if (!planned.ok && planned.reason === 'many-side') lines.push(planned.error);
 
   if (flag.kind !== 'filter') {
     if (flag.behavior.onClick === 'filter-page') lines.push('Clicking a value filters the whole page.');

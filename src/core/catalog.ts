@@ -4,8 +4,11 @@
 import type { CleaningStep } from './cleaning.ts';
 import type { Relationship } from './joins.ts';
 
-/** ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server. */
-export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'ansi'] as const;
+/**
+ * ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server 2022+.
+ * synapse is T-SQL without DATETRUNC (Azure Synapse pools). spark is Spark SQL with backtick names (Palantir Foundry, Databricks).
+ */
+export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'synapse', 'spark', 'ansi'] as const;
 export type Dialect = typeof SQL_DIALECTS[number];
 
 export function isSqlDialect(value: unknown): value is Dialect {
@@ -20,8 +23,15 @@ export type SourceKind =
   | 'aws-athena'
   | 'aws-redshift'
   | 'azure-sql'
+  | 'azure-synapse'
   | 'foundry'
   | 'other';
+
+/** The SQL profile a source kind uses; unknown kinds fall back to the ansi profile. */
+export function dialectForKind(kind: SourceKind): Dialect {
+  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark' };
+  return map[kind] ?? 'ansi';
+}
 
 export interface Source {
   id: string;
@@ -112,7 +122,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
-  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql' };
+  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', 'aws-redshift': 'ansi', foundry: 'spark' };
   for (const s of catalog.sources) {
     if (!isSqlDialect(s.dialect)) problems.push(`Source "${s.id}" uses an unsupported SQL dialect; supported profiles: ${SQL_DIALECTS.join(', ')}.`);
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);

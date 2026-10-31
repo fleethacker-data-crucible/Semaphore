@@ -160,8 +160,10 @@ function numberSql(x: string, dialect: Dialect): string {
   const bare = `REPLACE(REPLACE(${x}, ',', ''), '$', '')`;
   switch (dialect) {
     case 'ansi':
+    case 'spark':
       return `TRY_CAST(${bare} AS DOUBLE)`;
     case 'tsql':
+    case 'synapse':
       return `TRY_CAST(${bare} AS FLOAT)`;
     case 'oracle':
       return `TO_NUMBER(${bare} DEFAULT NULL ON CONVERSION ERROR)`;
