@@ -24,7 +24,7 @@ The playbook, snapshots and the leadership view are built (0.3); [PLAYBOOK.md](P
 ## Layers
 
 ```
-Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpListener on 127.0.0.1:8774-8776
+Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpListener on 127.0.0.1:8800-8802
                            ├─ static UI from web/dist (compiled JS/CSS only)
                            ├─ session token, Host/Origin checks, /__fleethacker/id and /shutdown
                            ├─ /api/heartbeat, /api/leaving, /api/end   lifecycle per TechStack

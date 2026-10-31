@@ -209,7 +209,7 @@ function Test-SemAiIdentity {
     <#
       Port authority (edge-ops PORTS.md, the same rule Lazarette uses): before the key is sent, the
       address must answer GET /__fleethacker/id as "fairlead". Ports can be taken by another tool when
-      Fairlead is down (Semaphore's own block reaches 8776), and the key must never go to it.
+      Fairlead is down (8776 is Fairlead's own port, outside Semaphore's block 8800-8802), and the key must never go to it.
       Returns $null when it is Fairlead, else @{ Code; Error }. The id request carries no key.
     #>
     param($Settings, [int]$TimeoutSec = 3)
