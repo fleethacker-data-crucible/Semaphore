@@ -83,8 +83,70 @@ function objectsOf(list: unknown): Array<Record<string, unknown>> | null {
   return Array.isArray(list) && list.length > 0 && list.every(isObject) ? (list as Array<Record<string, unknown>>) : null;
 }
 
-/** null when the file is not a JSON export; a CsvError when it is one and cannot be read. */
+// Halyard's backlog-health export (Halyard docs/SEMAPHORE-EXPORT.md, schema version 1): four CSV tables with fixed columns.
+// Columns only ever grow at the right-hand end, so a file is recognised by its first columns.
+export const HALYARD_TABLES: Readonly<Record<'health' | 'items' | 'features' | 'velocity', readonly string[]>> = {
+  health: ['generated_at', 'repository', 'total_items', 'needs_review', 'missing_parents', 'stories', 'stories_with_points', 'features', 'features_with_effort', 'features_active', 'features_on_track', 'average_velocity', 'ready_stories', 'ready_points', 'blockers'],
+  items: ['key', 'number', 'type', 'id', 'title', 'state', 'parent_id', 'parent_key', 'theme', 'area', 'points', 'effort', 'sprint', 'labels', 'needs_review', 'deficiencies', 'missing_meta', 'updated_at', 'url'],
+  features: ['id', 'title', 'epic', 'theme', 'owner', 'target', 'stories', 'stories_done', 'points', 'points_done', 'percent', 'blocked', 'status', 'reason'],
+  velocity: ['sprint', 'number', 'points_planned', 'points_done', 'stories_done', 'is_current'],
+};
+
+/** Which Halyard table a CSV header is, or null. The header may carry extra columns after the pinned ones. */
+export function halyardTableOf(headerLine: string): keyof typeof HALYARD_TABLES | null {
+  const cols = headerLine.replace(/^\ufeff/, '').replace(/[\r\n]+$/, '').split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+  for (const [name, pinned] of Object.entries(HALYARD_TABLES) as Array<[keyof typeof HALYARD_TABLES, readonly string[]]>) {
+    if (cols.length >= pinned.length && pinned.every((c, i) => cols[i] === c)) return name;
+  }
+  return null;
+}
+
+/**
+ * Halyard writes a text cell that starts with = + - @ or a tab with a leading apostrophe so a spreadsheet will not
+ * run it. Semaphore is not a spreadsheet and never runs a cell, so the apostrophe is taken off again; quoted cells,
+ * embedded commas and line breaks are respected.
+ */
+export function undefuseCells(csv: string): string {
+  let out = '';
+  let quoted = false;
+  let start = true; // at the start of a field
+  for (let i = 0; i < csv.length; i++) {
+    const ch = csv[i]!;
+    if (start && !quoted) {
+      let j = i;
+      if (csv[j] === '"') { out += '"'; j++; quoted = true; }
+      if (csv[j] === "'" && j + 1 < csv.length && '=+-@\t'.includes(csv[j + 1]!)) j++; // drop the apostrophe
+      start = false;
+      i = j - 1;
+      continue;
+    }
+    if (quoted) {
+      out += ch;
+      if (ch === '"') { if (csv[i + 1] === '"') { out += '"'; i++; } else quoted = false; }
+      continue;
+    }
+    out += ch;
+    if (ch === ',' || ch === '\n') start = true;
+  }
+  return out;
+}
+
+function halyardCsv(fileName: string, text: string): FleetExportCsv | null {
+  if (!/\.csv$/i.test(fileName)) return null;
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const table = halyardTableOf(body.slice(0, body.search(/\r?\n|$/)));
+  if (!table) return null;
+  return {
+    fileName: `halyard_${table}.csv`,
+    csv: undefuseCells(body),
+    origin: 'Halyard',
+    note: `${fileName}: Halyard backlog ${table} (schema 1). Text cells that Halyard protected with a leading apostrophe are read as plain text.`,
+  };
+}
+
+/** null when the file is not a Fleet export; a CsvError when it is one and cannot be read. */
 export function fleetExportToCsv(fileName: string, text: string): FleetExportCsv | null {
+  if (/\.csv$/i.test(fileName)) return halyardCsv(fileName, text);
   if (!/\.json$/i.test(fileName)) return null;
   if (text.length > CSV_LIMITS.bytes) throw new CsvError('That file is too large.');
   let data: unknown;
