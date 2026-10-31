@@ -26,7 +26,7 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
-import { aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, loadAiStatus, setAiWanted } from './lib/ai.ts';
+import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
 import { useHoistHistory } from './lib/history.ts';
@@ -112,6 +112,7 @@ export function App() {
   const [serverLost, setServerLost] = useState(false);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
+  const [useExamples, setUseExamples] = useState(aiExamplesWanted);
   const [files, setFiles] = useState<TableRows>({});
   // CSV files are kept in the CSV worker when there is one (lib/worker.ts); `files` is the fallback.
   const worker = useMemo(() => csvWorker(), []);
@@ -300,12 +301,15 @@ export function App() {
     [change],
   );
 
+  // Reviewed examples ride along with a draft only when the analyst switched them on (lib/ai.ts).
+  const aiExamples = useMemo(() => examplesFor(useExamples, ai, useAi, playbook.entries, user), [useExamples, ai, useAi, playbook.entries, user]);
+
   const draftSelected = useCallback(async () => {
     if (!selected) return;
     const provider = draftingProvider(index, ai, useAi);
     setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
     try {
-      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle });
+      const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
       // When Fairlead fell back to a local model, the draft names the model that really answered.
       const by = outcome.draft.answeredBy;
       const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
@@ -327,7 +331,7 @@ export function App() {
     } finally {
       setBusy(null);
     }
-  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle]);
+  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle, aiExamples]);
 
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
@@ -335,7 +339,7 @@ export function App() {
       setBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`);
       try {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
-        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle });
+        const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
         const draft = outcome ? outcome.draft : starterHoistLocally(index);
         const next = applyHoistDraft({ ...base, title: base.title }, draft, () => newId());
         change(next);
@@ -347,8 +351,15 @@ export function App() {
         setBusy(null);
       }
     },
-    [hoist, index, change, notify, ai, useAi, teamStyle],
+    [hoist, index, change, notify, ai, useAi, teamStyle, aiExamples],
   );
+
+  const toggleExamples = useCallback(() => {
+    const on = !useExamples;
+    setUseExamples(on);
+    setAiExamplesWanted(on);
+    notify(on ? 'Reviewed examples are on: drafts also send a few similar reviewed briefs with catalog keys and labels. Never rows, results or names.' : 'Reviewed examples are off: drafts send only the brief and the catalog.');
+  }, [useExamples, notify]);
 
   // The header's AI switch. Turning Fairlead on checks it, so a missing Fairlead or a refused key
   // shows up now rather than on the next draft.
@@ -991,6 +1002,21 @@ export function App() {
               title={ai.configured ? (useAi ? 'Drafts go through Fairlead. Click to draft with local rules only.' : 'Drafting with local rules only. Click to use Fairlead.') : (ai.problem ?? ai.setup)}
             >
               <Bot size={14} /> {ai.configured ? (useAi ? 'AI: Fairlead' : 'AI: off') : 'AI: local rules'}
+            </button>
+          )}
+          {server && ai?.configured && useAi && (
+            <button
+              type="button"
+              onClick={toggleExamples}
+              aria-pressed={useExamples}
+              className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:border-accent ${useExamples ? 'border-accent text-accent' : 'border-line text-ink-2'}`}
+              title={
+                useExamples
+                  ? `Drafts also send up to 3 similar reviewed briefs from the playbook, as catalog keys and labels only, never rows, results or names${ai.privacyLocal ? ' (kept on this computer by Fairlead)' : ''}. Click to stop.`
+                  : 'Off: drafts send only the brief and the catalog. Click to also send a few similar reviewed briefs from the playbook as worked examples.'
+              }
+            >
+              <BookOpen size={14} /> {useExamples ? 'Examples: on' : 'Examples: off'}
             </button>
           )}
           {!skinFixed && (

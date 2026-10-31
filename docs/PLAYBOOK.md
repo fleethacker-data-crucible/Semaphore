@@ -1,6 +1,6 @@
 # The playbook: learning from analysts, answering for leadership
 
-**Status: built in 0.3 (engineering preview)**, except the IT-approved refresher and the AI-gateway mode; see [Build order](#build-order). Code: `src/core/playbook.ts`, `src/core/snapshot.ts`, `web/src/components/AskView.tsx`, `web/src/components/PlaybookPanel.tsx`.
+**Status: built in 0.3 (engineering preview)**, except the IT-approved refresher; the AI-gateway mode (reviewed examples, opt-in) is built too and described in [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md#reviewed-examples-opt-in); see [Build order](#build-order). Code: `src/core/playbook.ts`, `src/core/snapshot.ts`, `web/src/components/AskView.tsx`, `web/src/components/PlaybookPanel.tsx`.
 
 ## The idea
 
@@ -66,7 +66,7 @@ Questions with the same words are compared case- and punctuation-blind.
 
 Because matching is deterministic, every answer can say which entry it used and why.
 
-When an approved AI gateway is configured (see [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)), reviewed examples are sent with the question as worked examples, so odd phrasings land better. Only briefs and catalog keys and labels are sent, never data rows, tables, columns or credentials, and the provider's output goes through the same validation as every draft.
+When an approved AI gateway is configured and the analyst switches **Examples** on (off by default; see [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md#reviewed-examples-opt-in)), the most similar active entries are sent with a draft request as worked examples, so odd phrasings land better. Only briefs and catalog keys and labels are sent, never data rows, tables, columns or credentials, and the provider's output goes through the same validation as every draft.
 
 ## Where it lives
 
@@ -136,4 +136,4 @@ Only with IT's approval, recorded as an exception to the suite's "no scheduled t
 5. Check `logs\Semaphore_*.log` on that machine after the first run: one "Snapshots refreshed: n done" line per run, and a "Snapshot failed" line for each failure.
 
 Anyone who can read the shared folder can read the snapshots, so its Windows permissions are the access control.
-6. Optional AI-gateway mode, which needs the server-side relay (the page's content security policy only allows the loopback server).
+6. Optional AI-gateway mode (reviewed examples, off by default), which goes through the server-side relay (the page's content security policy only allows the loopback server).
