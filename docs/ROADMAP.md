@@ -16,10 +16,10 @@ Done:
 - The canvas: flag palette, drag, resize, keyboard, undo; hoist brief → drafted page; flag brief → draft, accept; flip a flag over for its plain-English readback, notes and SQL; ECharts rendering, thresholds, cross-filter clicks, live re-query indicator.
 - Intelligence without a model: live brief highlighting, did-you-mean that teaches the catalog, chart choice from the data's shape, questions, comparisons, shares, a starter page, insights.
 
-Still to do from the original v0.2 list:
+From the original v0.2 list, now built:
 
-- Secrets from the Lazarette vault via the bridge Halyard uses (today: DSN or integrated authentication only).
-- Redshift, Azure SQL/Synapse and Palantir Foundry connectors beyond what ODBC reaches. Athena (the S3 data lake) is done: see "Where the data lives" below.
+- **Done:** secrets from the Lazarette vault through the same in-process contract Halyard uses ([VAULT.md](VAULT.md)): database passwords and AWS sessions. Tested against a fake Lazarette that follows its documented contract; a real vault is for Anthony to check.
+- **Done, tested against simulated services only:** Redshift (Data API), Azure Synapse/SQL (ODBC with Entra sign-in) and Palantir Foundry (SQL queries API) connectors ([CONNECTORS.md](CONNECTORS.md)). Athena (the S3 data lake) is done too: see "Where the data lives" below.
 - ~~Remote intelligence providers from the UI~~: done, through Fairlead and the server-side relay (`/api/ai`, [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)).
 - ~~Restyle to the unified UI~~: done, Fleet UI v0.2 as the default skin, with skins for last-minute changes ([SKINS.md](SKINS.md)).
 
@@ -32,7 +32,7 @@ Semaphore learns from analysts' reviewed work, so leadership can simply ask, and
 - Question-to-entry matching: same words, same binding, re-addable from an entry or its snapshot; deterministic and explainable.
 - Leadership view: one question box, answer cards labelled reviewed / drafted, not reviewed / can't answer yet, follow-up chips.
 - Analyst stand-in: headline numbers and what changed, question queue with "Build the answer", coverage report.
-- **To do (optional):** reviewed examples sent to an approved AI gateway, through the server-side relay.
+- **Done:** reviewed examples sent to the AI as worked examples, opt-in and off by default, briefs and catalog names only ([INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)).
 
 ## AI-first: the AI does the heavy lifting, the rules engine is the safety net
 
@@ -55,7 +55,9 @@ Semaphore is meant to be an AI tool that still works without AI: the model draft
 - CSV in the page (large files in a Web Worker), Access through ACE, Postgres (including Postgres on AWS), Oracle and SQL Server through ODBC.
 - **Done:** the lake engine (`server/Lake.ps1`, from the Sounding Line proposal): Athena with SigV4 signing (BCL only), a cost guard (every table a query reads is sized, partition-filter warning, approval above a threshold, daily per-user limit), result cache, usage records, free profiling from Glue; tested against a simulated AWS, not yet against real AWS.
 - **Done:** the SQL desk: analysts write their own SELECT against any server source, the lake included, with the same guard, cost guard and cache; CSV download.
-- **Next:** AWS sessions brokered through Lazarette, so analysts hold no AWS keys; database secrets from the Lazarette vault.
+- **Done:** AWS sessions and database secrets from a named Lazarette item, so analysts hold no AWS keys ([VAULT.md](VAULT.md)).
+- **Done:** Redshift, Synapse and Foundry ([CONNECTORS.md](CONNECTORS.md)).
+- **Tested for real:** ODBC and OLE DB drivers, through the Access Text and ACE drivers on a CSV folder (binding, types, row cap, errors). **Not yet tested:** a database server over ODBC/OLE DB, real AWS (Athena, Redshift), Synapse, Foundry, a real Lazarette vault, a real Databricks workspace. The checklists are in CONNECTORS.md, VAULT.md and DATABRICKS.md.
 
 **Porting from Qlik:** **done**: Data > Import from Qlik reads a load script and chart expressions, profiles the tables and uses Qlik's names; mapping loads (ApplyMap) become cleaning steps; associations become relationships the data confirms; expressions Semaphore cannot read can be read by the AI, validated against the catalog and added only when the analyst says so.
 
@@ -70,9 +72,14 @@ Semaphore is meant to be an AI tool that still works without AI: the model draft
 
 - **Done:** Share as a report: one self-contained HTML file with every flag's answers, working filters from the pre-split results, no network (its own CSP), and optional AES-256-GCM encryption with a passphrase.
 
-## Later
+## Later, now built
 
-- Databricks serving endpoint provider.
-- Flag kits: saved flag sets that remap to a new catalog.
-- Comparisons under a drill and in shared reports (today they show at the top level only).
-- Joins one-to-many (a measure on the one side split by the many side) with distinct handling.
+- **Done (simulated endpoint only):** Databricks serving endpoint provider ([DATABRICKS.md](DATABRICKS.md)).
+- **Done:** flag kits, saved flag sets that remap to a new catalog ([FLAG_KITS.md](FLAG_KITS.md)).
+- **Done, with one gap:** comparisons under a drill and in shared reports ([DRILL_COMPARISONS.md](DRILL_COMPARISONS.md)). Shared reports carry the top level only, so a drilled comparison does not exist in the file.
+- **Done:** joins one-to-many with distinct handling ([ONE_TO_MANY_JOINS.md](ONE_TO_MANY_JOINS.md)). Drafting from plain English and the lineage view do not follow many-side links yet.
+
+## Still open
+
+- Drill levels inside shared reports.
+- Real-service validation of every connector above, and of the vault bridge.

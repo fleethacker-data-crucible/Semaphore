@@ -83,9 +83,12 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 | **Import from Qlik** | Paste a load script and chart expressions: tables, Qlik's field names, measures, mapping loads (as cleaning) and associations (as joins) come across for you to check. |
 | **SQL desk** | Write your own SELECT against a source on this computer, the lake included, under the same guard and cost guard. |
 | **Regular reports and briefings** | A page you open every Monday keeps coming while you are away, for leadership to read; "Brief me" says what a page shows in a few sentences, each linked to its flag. |
+| **Flag kits** | Save a set of flags as a kit and fly it on another catalog: each metric and field is matched by key, then label, then synonym, and anything that does not match arrives as an empty draft with a reason ([docs/FLAG_KITS.md](docs/FLAG_KITS.md)). |
+| **Comparisons that follow a drill** | A flag set to compare keeps its comparison as you drill (2026 Q3 against 2025 Q3), and shared reports carry the earlier window too ([docs/DRILL_COMPARISONS.md](docs/DRILL_COMPARISONS.md)). |
+| **One-to-many joins** | Split or filter a measure on the "one" side by a field on the "many" side without double counting; overlapping groups are flagged and given no grand total ([docs/ONE_TO_MANY_JOINS.md](docs/ONE_TO_MANY_JOINS.md)). |
 | **Lineage and sharing** | See which flags read which measures, fields and tables. Share a page as one HTML file that keeps its filters, optionally locked with a passphrase. |
 
-Everything above runs with no AI model. With Fairlead the AI drafts flags and pages, suggests cleaning, reads hard Qlik expressions and writes briefings; Semaphore checks every answer before using it ([docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md)).
+Everything above runs with no AI model. With Fairlead the AI drafts flags and pages, suggests cleaning, reads hard Qlik expressions and writes briefings; Semaphore checks every answer before using it ([docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md)). Optionally (off by default, per browser) a few reviewed playbook entries go along as worked examples, with briefs and catalog names only. A Databricks serving-endpoint provider exists but has only been tested against a simulated endpoint ([docs/DATABRICKS.md](docs/DATABRICKS.md)).
 
 ## Databases
 
@@ -100,6 +103,12 @@ List them in `sources.json` in your Semaphore folder (`%USERPROFILE%\Semaphore`,
 
 Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database driver/provider, matching the PowerShell process architecture, must already be installed; Semaphore does not install it. Then open **Data**, pick the table and choose **Profile and add**.
 
+**Secrets come from Lazarette, not from files.** Add `"vault": { "item": "maint-db" }` to a source and Semaphore reads the password (and optional `Username` field) from that Lazarette item when you start it with `Launch-Semaphore.bat --console` and unlock the vault there. AWS sessions work the same way. Nothing secret is written to `sources.json`, logged or sent to the browser ([docs/VAULT.md](docs/VAULT.md)).
+
+**More connectors.** `redshift-data` (Amazon Redshift Data API), `synapse` (Azure Synapse and Azure SQL through ODBC Driver 17/18 with Entra sign-in) and `foundry` (Palantir Foundry SQL). Examples, limits and what has and has not been validated against real services are in [docs/CONNECTORS.md](docs/CONNECTORS.md).
+
+> **What has been tested for real.** ODBC and OLE DB run through the real Microsoft Access Text and ACE drivers in the Pester suite (binding, types, errors), but not against a Postgres, Oracle, SQL Server or Access `.accdb` server. Athena, Redshift and Foundry are tested against simulated services only. Real-service checks are listed for Anthony in [docs/CONNECTORS.md](docs/CONNECTORS.md) and [docs/VAULT.md](docs/VAULT.md).
+
 **The S3 data lake (Athena).** A lake source needs no driver: Semaphore signs its own requests to Athena, Glue and S3.
 
 ```json
@@ -110,7 +119,7 @@ Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database d
 - **Cost guard:** before a flag's query runs, Semaphore estimates the table size on S3 and the potential scan cost; above `approveAboveGB` the flag asks before running, a partitioned table queried without a partition filter is warned about, and `dailyLimitGB` caps each analyst's scans per day. What Athena actually read is recorded per query. These are application estimates and controls, not a guarantee of the final AWS bill.
 - **Result cache:** the same query within `cacheHours` is answered from `<home>\lakecache`, free.
 - **Adding a lake table** reads the Glue catalog only: no scan, no cost.
-- **AWS keys never go in sources.json** (they are refused). Semaphore uses a short AWS session from the environment that starts it (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`); a session brokered through Lazarette is next.
+- **AWS keys never go in sources.json** (they are refused). Semaphore uses a short AWS session from the environment that starts it (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`); or a Lazarette item named by a `vault` block, so analysts hold no AWS keys.
 
 The lake engine and the SQL desk are implemented on this development branch. Live AWS access needs valid session credentials, service permissions and a configured Athena workgroup; it is not part of the offline sample demo.
 
@@ -137,6 +146,8 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
+- [docs/VAULT.md](docs/VAULT.md): the Lazarette bridge for database secrets and AWS sessions
+- [docs/CONNECTORS.md](docs/CONNECTORS.md): Redshift, Synapse, Foundry, and how each connector is tested
 - [SQL languages and compatibility](docs/SQL-LANGUAGES.md): the full dialect name under a flipped card, syntax and parameter explanations, and the implemented profiles and their limits.
 - [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots with workflow captions. Its images are embedded, so only the HTML file is needed.
 - [Semaphore, Qlik and Data Noodler comparison (PDF)](docs/Semaphore-Qlik-DataNoodler-Comparison.pdf): capability tables, architecture and the screenshot walkthrough.
