@@ -7,7 +7,8 @@
 
 import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
 import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
-import { type PlannedJoin, planJoins, reachable } from './joins.ts';
+import { type PlannedJoin, planJoins } from './joins.ts';
+import { type ManyJoin, ManyScope, buildManyJoin } from './manyjoin.ts';
 
 export const DEFAULT_ROW_CAP = 50_000;
 
@@ -42,6 +43,11 @@ export interface QueryPlan {
   table: string;
   /** Related tables joined in for fields to group or filter by (many-to-one only). */
   joins?: PlannedJoin[];
+  /**
+   * Set when a measure on the one side is split or filtered by a many-side field (manyjoin.ts):
+   * the many side is reduced to distinct (key, group) pairs first, so no row is counted twice.
+   */
+  many?: ManyJoin;
   /** Read fields as stored, without the catalog's cleaning steps (data-quality profiling). */
   raw?: boolean;
   /** The flag's own dimensions, then the slice dimensions. */
@@ -75,7 +81,8 @@ export interface QueryPlan {
   share?: boolean;
 }
 
-export type PlanResult = { ok: true; plan: QueryPlan } | { ok: false; error: string };
+/** `reason` is set when the refusal is about a one-to-many join (ambiguous path, unsafe share). */
+export type PlanResult = { ok: true; plan: QueryPlan } | { ok: false; error: string; reason?: 'many-side' };
 
 export interface PlanOptions {
   rowCap?: number;
@@ -122,17 +129,32 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   if (!source || !table) return { ok: false, error: 'This flag binds nothing that can be queried.' };
   const base = table;
   const joined = new Set<string>();
+  const manyTables = new Set<string>();
+  // The many side of the base (opposite direction to joins.ts) is only searched when the base
+  // holds the flag's measures: a measure on the one side, split by a many-side field.
+  const scope = new ManyScope(index, source, base, b.metrics.length > 0);
 
   /** Whether a field can be read in this flag's query: its base table, or a table related to it. */
   const inScope = (fieldKey: string): boolean => {
     const f = index.field(fieldKey);
-    return !!f && f.source === source && (f.table === base || reachable(index, source!, base, f.table));
+    return !!f && f.source === source && ['base', 'forward', 'many'].includes(scope.reach(f.table).kind);
+  };
+  const isMany = (fieldKey: string): boolean => {
+    const f = index.field(fieldKey);
+    return !!f && f.source === source && scope.isMany(f.table);
   };
   const use = (fieldKey: string): void => {
     const t = index.field(fieldKey)!.table;
-    if (t !== base) joined.add(t);
+    if (isMany(fieldKey)) manyTables.add(t);
+    else if (t !== base) joined.add(t);
+  };
+  const refused = (fieldKey: string): PlanResult | null => {
+    const error = scope.ambiguity(fieldKey);
+    return error ? { ok: false, error, reason: 'many-side' } : null;
   };
   for (const d of b.dimensions) {
+    const no = refused(d.field);
+    if (no) return no;
     if (!inScope(d.field)) {
       return { ok: false, error: `"${labelOf(index, d.field)}" is in a table not related to ${base}. Add a relationship under Data > Relationships.` };
     }
@@ -144,12 +166,16 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   const filters: Filter[] = [];
   for (const f of hoist.filters) {
     if (flag.behavior.ignore.includes(f.field)) continue;
+    const no = refused(f.field);
+    if (no) return no;
     if (inScope(f.field)) {
       filters.push(f);
       use(f.field);
     } else notes.push(`Page filter on "${labelOf(index, f.field)}" does not apply: it is in a table not related to this one.`);
   }
   for (const f of b.filters) {
+    const no = refused(f.field);
+    if (no) return no;
     if (!inScope(f.field)) return { ok: false, error: `Filter on "${labelOf(index, f.field)}" is in a table not related to ${base}.` };
     filters.push(f);
     use(f.field);
@@ -194,7 +220,19 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     const key = dimensionKey(d);
     if (own.includes(key)) continue;
     if (flag.behavior.ignore.includes(d.field)) continue;
+    if (scope.ambiguity(d.field)) {
+      notes.push(`Selections on ${labelOf(index, d.field)} do not reach this flag: it relates to ${base} in more than one way.`);
+      continue;
+    }
     if (!inScope(d.field)) continue; // Selections on unrelated tables do not reach this flag.
+    if (isMany(d.field)) {
+      // A one-side row can sit in several many-side groups, so adding groups back up locally would
+      // count it twice. Selections on a many-side field go back to the source as a filter instead.
+      live.push(key);
+      const note = `Selections on ${labelOf(index, d.field)} re-query the source (a row can appear in several of its groups, so they cannot be re-added locally).`;
+      if (!notes.includes(note)) notes.push(note);
+      continue;
+    }
     if (!reaggregable) {
       live.push(key);
       continue;
@@ -250,6 +288,24 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     notes,
   };
   if (joined.size) plan.joins = planJoins(index, source, base, joined);
+  if (manyTables.size) {
+    const label = (k: string) => labelOf(index, k);
+    const splitBy = [...new Set(dimensions.filter((d) => isMany(d.field)).map((d) => label(d.field)))];
+    const built = buildManyJoin(index, source, base, [...manyTables], {
+      splitBy,
+      filterBy: [...new Set(filters.filter((f) => isMany(f.field)).map((f) => label(f.field)))],
+    });
+    if (!built.ok) return { ok: false, error: built.error, reason: 'many-side' };
+    if (b.share && built.many.overlap) {
+      return {
+        ok: false,
+        reason: 'many-side',
+        error: `A share of the total cannot be shown when splitting by ${splitBy.join(', ')}: a row can appear in several groups, so the groups do not add up to a true total. Show the values instead, or filter rather than split.`,
+      };
+    }
+    plan.many = built.many;
+    notes.push(...built.many.warnings);
+  }
   if (b.sort) plan.sort = b.sort;
   if (b.share) plan.share = true;
   if (b.compare) {

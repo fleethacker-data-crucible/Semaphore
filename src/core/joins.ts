@@ -3,7 +3,8 @@
 // A relationship is many-to-one: each row of `from` (jobs) points at one row of `to` (ships) by a
 // key column. A flag's measures stay on one table, its base; fields it groups or filters by may
 // come from any table the base reaches by following relationships forward. Following them only
-// from many to one means a join never repeats a base row, so totals stay right.
+// from many to one means a join never repeats a base row, so totals stay right. The opposite
+// direction (a measure on the one side, split by the many side) is manyjoin.ts.
 
 import type { CatalogIndex } from './catalog.ts';
 

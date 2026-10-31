@@ -8,7 +8,7 @@
 # Providers: odbc (System.Data.Odbc) and oledb (System.Data.OleDb, e.g. Access through the ACE
 # provider already on the machine). Both ship with .NET Framework: no third-party DLLs.
 # A connection string with PWD= or Password= is refused: credentials belong in the DSN, integrated
-# authentication or (later) the Lazarette vault. Connection strings are never logged or returned.
+# authentication or the Lazarette vault (a "vault" block names an item; see Vault.ps1). Connection strings are never logged or returned.
 #
 # SQL comes from Semaphore's own planner; the guard below is defence in depth: one SELECT, no ';',
 # '--' or '/*', at most 100 KB and 2000 parameters. Values are always bound ('?' placeholders).
@@ -27,7 +27,7 @@ function Test-SemConnectionString {
     param([string]$Connection)
     if ([string]::IsNullOrWhiteSpace($Connection)) { return 'The source has no connection string.' }
     if ($Connection -match '(?i)(^|;)\s*(PWD|Password)\s*=') {
-        return 'The connection string contains a password (PWD= or Password=). Semaphore refuses it: keep credentials in the ODBC DSN, use integrated authentication, or (later) the Lazarette vault.'
+        return 'The connection string contains a password (PWD= or Password=). Semaphore refuses it: keep credentials in the ODBC DSN, use integrated authentication, or name a Lazarette item with a "vault" block (docs/VAULT.md).'
     }
     return $null
 }
@@ -47,13 +47,23 @@ function Get-SemSources {
         if ($id -cnotmatch '\A[A-Za-z0-9_-]{1,64}\z') { Write-SemLog 'WARN' 'sources.json: skipping a source with an invalid id'; continue }
         if ($seen.ContainsKey($id)) { Write-SemLog 'WARN' "sources.json: duplicate source id '$id' skipped"; continue }
         $provider = ([string]$s.provider).ToLowerInvariant()
-        if (@('odbc', 'oledb', 'athena') -notcontains $provider) { Write-SemLog 'WARN' "sources.json: source '$id' has an unknown provider (use odbc, oledb or athena)"; continue }
+        $raw = $provider
+        if (@('odbc', 'oledb', 'athena', 'redshift-data', 'foundry', 'synapse') -notcontains $provider) { Write-SemLog 'WARN' "sources.json: source '$id' has an unknown provider (use odbc, oledb, athena, redshift-data, foundry or synapse)"; continue }
         if ($provider -eq 'athena') { try { [void](Get-SemLakeSettings $s) } catch { Write-SemLog 'WARN' ("sources.json: lake source '$id' skipped: " + $_.Exception.Message); continue } }
+        $connection = [string]$s.connection
+        try {
+            if ($provider -eq 'redshift-data') { [void](Get-SemRedshiftSettings $s) }
+            elseif ($provider -eq 'foundry') { [void](Get-SemFoundrySettings $s) }
+            elseif ($provider -eq 'synapse') { $connection = New-SemSynapseConnection $s; $provider = 'odbc' }   # an ODBC source from here on
+        } catch { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $_.Exception.Message); continue }
+        $badVault = Test-SemVaultBlock -Vault (Get-SemRawVault $s) -Provider $provider
+        if ($badVault) { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $badVault); continue }
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
+        if ($raw -eq 'synapse' -and $kind -eq 'other') { $kind = 'azure-synapse' }
         $seen[$id] = $true
         # raw keeps the entry for providers with their own settings (athena); it is never sent to the browser.
-        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = [string]$s.connection; raw = $s })
+        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = $connection; raw = $s })
     }
     return $out.ToArray()
 }
@@ -166,7 +176,7 @@ function Get-SemSafeMessage {
     # A driver message with the connection string (and anything password-like) removed.
     param([string]$Message, $Source)
     if (-not $Message) { return 'The source reported an error.' }
-    $m = $Message
+    $m = Get-SemVaultSafeText $Message
     if ($Source -and $Source.connection) { $m = $m.Replace([string]$Source.connection, '<connection>') }
     $m = [regex]::Replace($m, '(?i)(PWD|Password|UID|User ID)\s*=\s*[^;\s]*', '$1=***')
     $m = $m.Trim()
@@ -425,21 +435,38 @@ function Write-SemReaderResult {
 # ---------------------------------------------------------------------------
 # Connections and commands
 # ---------------------------------------------------------------------------
+function Get-SemEffectiveConnectionString {
+    # The string handed to the driver: sources.json's connection (never a password), read-only flags, and the
+    # vault's user and password when the source names an item. Lives in memory for the call; never logged or returned.
+    param([Parameter(Mandatory = $true)]$Source)
+    $cs = [string]$Source.connection
+    if ($Source.provider -eq 'odbc') {
+        if ($Source.kind -eq 'access' -and $cs -notmatch '(?i)(^|;)\s*ReadOnly\s*=') { $cs = $cs.TrimEnd(';') + ';ReadOnly=1' }
+    } elseif ($Source.provider -eq 'oledb') {
+        if ($cs -notmatch '(?i)(^|;)\s*Mode\s*=') { $cs = $cs.TrimEnd(';') + ';Mode=Read' }
+    }
+    $vals = $null
+    if ($null -ne $script:SemVaultRequest) { $vals = $script:SemVaultRequest.Values }
+    if ($null -ne (Get-SemSourceVault $Source)) {
+        if ($null -eq $vals) { throw 'vault-locked: the vault secrets for this source were not resolved.' }
+        $cs = Add-SemVaultToConnectionString -ConnectionString $cs -Provider ([string]$Source.provider) -Values $vals
+    }
+    return $cs
+}
+
 function New-SemConnection {
     # An open, read-only-where-possible connection. Throws 'provider-unavailable:' when the provider type is missing.
     param([Parameter(Mandatory = $true)]$Source, [int]$TimeoutSec = 30)
-    $cs = [string]$Source.connection
+    $cs = Get-SemEffectiveConnectionString -Source $Source
     $conn = $null
     if ($Source.provider -eq 'odbc') {
         if (-not ('System.Data.Odbc.OdbcConnection' -as [type])) { try { Add-Type -AssemblyName System.Data } catch { } }
         if (-not ('System.Data.Odbc.OdbcConnection' -as [type])) { throw 'provider-unavailable: System.Data.Odbc is not available in this PowerShell.' }
-        if ($Source.kind -eq 'access' -and $cs -notmatch '(?i)(^|;)\s*ReadOnly\s*=') { $cs = $cs.TrimEnd(';') + ';ReadOnly=1' }
         $conn = New-Object System.Data.Odbc.OdbcConnection $cs
         try { $conn.ConnectionTimeout = [Math]::Min(60, $TimeoutSec) } catch { }
     } else {
         if (-not ('System.Data.OleDb.OleDbConnection' -as [type])) { try { Add-Type -AssemblyName System.Data } catch { } }
         if (-not ('System.Data.OleDb.OleDbConnection' -as [type])) { throw 'provider-unavailable: System.Data.OleDb is not available in this PowerShell.' }
-        if ($cs -notmatch '(?i)(^|;)\s*Mode\s*=') { $cs = $cs.TrimEnd(';') + ';Mode=Read' }
         $conn = New-Object System.Data.OleDb.OleDbConnection $cs
     }
     $conn.Open()
@@ -663,7 +690,10 @@ function Invoke-SemQueryRequest {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $plan = Get-SemQueryPlan -Body $Req.Json -HomeDir $HomeDir
     if ($plan.ContainsKey('Error')) { Send-SemError $plan.Error.Status $plan.Error.Code $plan.Error.Message; return }
+    $vaultError = Get-SemVaultError
+    if ($vaultError) { Send-SemError $vaultError.Status $vaultError.Code $vaultError.Message; return }
     if ($plan.Source.provider -eq 'athena') { Invoke-SemLakeRequest -Req $Req -Plan $plan -HomeDir $HomeDir; return }
+    if (@('redshift-data', 'foundry') -contains $plan.Source.provider) { Invoke-SemConnectorQueryRequest -Plan $plan; return }
     $conn = $null
     try { $conn = New-SemConnection -Source $plan.Source -TimeoutSec $plan.TimeoutSec }
     catch { $e = Get-SemQueryError -Exception $_.Exception -Source $plan.Source -Stage 'connect'; Write-SemLog 'WARN' ("Query on '{0}': {1}" -f $plan.Source.id, $e.Code); Send-SemError $e.Status $e.Code $e.Message; return }
@@ -686,6 +716,8 @@ function Invoke-SemProfileRequest {
     if ($null -eq $src) { Send-SemError 404 'unknown-source' "Unknown source '$sourceId'."; return }
     $bad = Test-SemConnectionString -Connection $src.connection
     if ($bad) { Send-SemError 400 'credentials-in-connection' $bad; return }
+    $vaultError = Get-SemVaultError
+    if ($vaultError) { Send-SemError $vaultError.Status $vaultError.Code $vaultError.Message; return }
     $table = Get-SemJsonProp $Req.Json 'table'
     if ($null -ne $table -and ($table -isnot [string] -or -not (Test-SemIdentifier $table))) { Send-SemError 400 'bad-identifier' 'The table name is not a valid identifier.'; return }
     if ($src.provider -eq 'athena') {
@@ -693,6 +725,7 @@ function Invoke-SemProfileRequest {
         catch { Send-SemError 502 'lake-profile' (Get-SemLakeSafeText $_.Exception.Message) }
         return
     }
+    if (@('redshift-data', 'foundry') -contains $src.provider) { Invoke-SemConnectorProfileRequest -Source $src -Table ([string]$table); return }
     $conn = $null
     try { $conn = New-SemConnection -Source $src -TimeoutSec 30 }
     catch { $e = Get-SemQueryError -Exception $_.Exception -Source $src -Stage 'connect'; Send-SemError $e.Status $e.Code $e.Message; return }
@@ -718,7 +751,10 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.QueryPath
     . $Ctx.IntelligencePath
     . $Ctx.LakePath
+    . $Ctx.VaultPath
+    . $Ctx.ConnectorsPath
 }
+Set-SemVaultRequest $Ctx.Vault
 $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
 $script:Sem.Port = $Ctx.Port
@@ -750,7 +786,7 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
-        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); Root = (Split-Path -Parent $here)
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
         Port = 0
     }
@@ -760,6 +796,9 @@ function Start-SemWorkerRequest {
     param($Req)
     $ctx = $script:Sem.WorkerContext.Clone()
     $ctx.Port = $script:Sem.Port
+    # The vault is open only in this (main) runspace: resolve this request's secrets here and hand them over.
+    $ctx.Vault = $null
+    if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { $ctx.Vault = Get-SemVaultForRequest -Req $Req -HomeDir $script:Sem.Home }
     $ps = [powershell]::Create()
     $ps.RunspacePool = $script:Sem.Pool
     [void]$ps.AddScript($script:SemWorkerScript).AddArgument($Req.Client).AddArgument($Req).AddArgument($ctx)

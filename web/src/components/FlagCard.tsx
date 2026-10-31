@@ -199,7 +199,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
                 <button type="button" onClick={() => setDrill([])} className="rounded px-1 hover:bg-panel-2 hover:text-ink">
                   All
                 </button>
-                <span className="truncate">› {drillLabel(drill)}{view.detail ? ' · rows' : ''}</span>
+                <span className="truncate">› {drillLabel(drill)}{view.detail ? ' · rows' : ''}{result.previous && flag.binding?.compare ? ` · vs ${flag.binding.compare === 'previous-year' ? 'a year earlier' : 'the previous period'}, same selection` : ''}</span>
               </nav>
             )}
             <div className="min-h-0 flex-1">

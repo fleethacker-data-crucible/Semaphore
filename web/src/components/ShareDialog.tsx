@@ -2,16 +2,18 @@
 // an optional passphrase. Says plainly what goes into the file.
 
 import { useRef, useState } from 'react';
-import { FileDown, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileDown, X } from 'lucide-react';
 import { useModal } from '../lib/modal.ts';
+import { IDLE, presentSave, runSave, type SaveStatus } from '../lib/save-status.ts';
 
 export function ShareDialog({ title, onSave, onClose }: { title: string; onSave: (passphrase: string) => Promise<string>; onClose: () => void }) {
   const dialogRef = useRef<HTMLElement>(null);
   useModal(dialogRef, onClose);
   const [pass, setPass] = useState('');
   const [again, setAgain] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<string | null>(null);
+  const [status, setStatus] = useState<SaveStatus>(IDLE);
+  const busy = status.kind === 'saving';
+  const result = presentSave(status);
   const mismatch = pass !== again;
   const weak = pass.length > 0 && pass.length < 12;
   return (
@@ -42,21 +44,26 @@ export function ShareDialog({ title, onSave, onClose }: { title: string; onSave:
             With a passphrase the data in the file is encrypted (AES-256-GCM) and the file asks for it before showing anything. Semaphore does not keep the passphrase: if it is lost, the file cannot be opened. Share it separately from the file.
           </p>
           {weak && <p className="text-[11px] text-warn">Use at least 12 characters; a few words together work well.</p>}
-          {done && <p className="text-xs text-good">{done}</p>}
+          {result && (
+            <p role={result.role} className={`flex items-start gap-1.5 text-xs ${result.tone}`}>
+              {result.mark === 'ok' ? <CheckCircle2 size={14} aria-hidden="true" className="mt-px shrink-0" /> : <AlertTriangle size={14} aria-hidden="true" className="mt-px shrink-0" />}
+              <span>
+                <span className="font-semibold">{result.label}:</span> {result.message}
+              </span>
+            </p>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
               disabled={busy || (!!pass && (mismatch || weak))}
               onClick={() => {
-                setBusy(true);
-                onSave(pass).then(
-                  (name) => setDone(`Saved ${name}${pass ? ', locked with your passphrase' : ''}.`),
-                  (e: Error) => setDone(`Could not save: ${e.message}`),
-                ).finally(() => setBusy(false));
+                // The passphrase and its repeat stay as typed, so a retry needs nothing re-entered.
+                setStatus({ kind: 'saving' });
+                void runSave(() => onSave(pass), (name) => `${name}${pass ? ', locked with your passphrase' : ''}.`).then(setStatus);
               }}
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-panel disabled:opacity-40"
             >
-              {busy ? 'Saving…' : 'Save the file'}
+              {busy ? 'Saving…' : result?.retry ? 'Try again' : 'Save the file'}
             </button>
             {pass && mismatch && again && <span className="self-center text-[11px] text-bad">The two do not match.</span>}
           </div>

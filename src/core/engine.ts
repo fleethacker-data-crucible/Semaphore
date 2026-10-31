@@ -9,6 +9,7 @@ import type { QueryPlan } from './planner.ts';
 import type { Cell, ResultRow } from './crossfilter.ts';
 import { cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
+import { type ManyRows, prepareManyRows } from './manyjoin.ts';
 import { periodStart } from './sql.ts';
 
 /** Rows per table, keyed by the catalog's table name. Values are keyed by column name. */
@@ -67,8 +68,14 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
     return { get: steps.length ? (row) => cleanValue(steps, read(row)) : read, type: plan.raw ? f.type : cleanType(index, fieldKey) };
   };
 
-  const tests = plan.filters.map((f) => filterTest(f, col(f.field), today));
-  const dims = plan.dimensions.map((d) => ({ alias: d.alias, get: col(d.field).get, grain: d.grain }));
+  // A one-to-many split: each one-side row expands to the distinct many-side groups it belongs to
+  // (manyjoin.ts), and filters on the many side are applied while those groups are built.
+  const many: ManyRows | null = plan.many ? prepareManyRows(plan, index, tables, today, joins.length + 1, { filterTest, truncateDate, EngineError }) : null;
+  const tests = plan.filters.filter((f) => !many?.owns(f.field)).map((f) => filterTest(f, col(f.field), today));
+  const dims = plan.dimensions.map((d) => {
+    const fromMany = many?.dim(d);
+    return fromMany ? { alias: d.alias, get: fromMany, grain: undefined } : { alias: d.alias, get: col(d.field).get, grain: d.grain };
+  });
   const aggs = plan.aggregates.map((a) => ({ alias: a.alias, fn: a.fn, get: a.field === null ? null : col(a.field).get }));
 
   interface Group {
@@ -77,8 +84,14 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
     distinct: Record<string, Set<string>>;
   }
   const groups = new Map<string, Group>();
-  for (const base of source) {
-    const row = joinRow(base);
+  const joinedRows = function* () {
+    for (const base of source) {
+      const row = joinRow(base);
+      if (many) yield* many.expand(row);
+      else yield row;
+    }
+  };
+  for (const row of joinedRows()) {
     if (!tests.every((t) => t(row))) continue;
     const values = dims.map((d) => {
       const v = d.get(row);
@@ -143,7 +156,7 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
   return { rows, truncated, ms: Date.now() - started };
 }
 
-function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: FieldType }, today: Date): (row: R) => boolean {
+export function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: FieldType }, today: Date): (row: R) => boolean {
   const get = c.get;
   if (c.type === 'date') {
     const day = (v: unknown) => String(v).slice(0, 10);
