@@ -121,7 +121,7 @@ function Sources(p: DataPanelProps) {
           <Plus size={15} className="text-accent" />
           <span>
             <span className="font-medium">CSV files and Fleet exports</span>
-            <span className="block text-[11px] text-ink-3">CSV, or the JSON exports of PacketRat and Eight Bells (or any list of records). Read in this page and kept in this browser. Semaphore proposes measures and fields for you to check.</span>
+            <span className="block text-[11px] text-ink-3">CSV, Halyard's backlog-health files, or the JSON exports of PacketRat and Eight Bells (or any list of records). Read in this page and kept in this browser. Semaphore proposes measures and fields for you to check.</span>
           </span>
           <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && p.onAddCsv(e.target.files)} />
         </label>
