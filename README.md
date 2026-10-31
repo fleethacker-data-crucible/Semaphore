@@ -137,6 +137,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 
 ## Documentation
 
+- [docs/DEMO-WALKTHROUGH.md](docs/DEMO-WALKTHROUGH.md): a shot-by-shot script for a five-minute demo video on the synthetic example
 - [SQL languages and compatibility](docs/SQL-LANGUAGES.md): the full dialect name under a flipped card, syntax and parameter explanations, and the implemented profiles and their limits.
 - [Illustrated analyst guide](docs/semaphore-for-analysts.html): seven actual screenshots with workflow captions. Its images are embedded, so only the HTML file is needed.
 - [Semaphore, Qlik and Data Noodler comparison (PDF)](docs/Semaphore-Qlik-DataNoodler-Comparison.pdf): capability tables, architecture and the screenshot walkthrough.
