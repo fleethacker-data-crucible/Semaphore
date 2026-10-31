@@ -148,9 +148,13 @@ The same warning is in the plan notes the flag card and inspector already show.
 
 * Many-to-many through a shared lookup (customers <- orders -> products <- other_orders) is never
   searched: a path must go down, then only up.
-* Drafting from plain English (`local-rules.ts`) and the lineage view (`lineage.ts`) still only follow
-  many-to-one hops, so they do not yet suggest or draw many-side fields. A flag written by hand or
-  edited in the inspector can use them.
+* The lineage view (`lineage.ts`) draws the join path to a many-side field, every hop (customers, orders,
+  order lines, products), and marks a flag that reads a field reachable in more than one way.
+* Drafting from plain English (`local-rules.ts`) splits by a many-side field: "credit limit by order status"
+  gives that flag, with a note that each customer is counted once in every group it appears in. It uses the
+  same reach rule as the planner: a field reachable in more than one way is not guessed, a second many-side
+  table in the same brief is left out with a note, and an unrelated table is refused as before. A model draft
+  goes through the same validation as before.
 * Access nested joins with bound parameters inside the derived table follow the same bracket rules as
   the existing joins but have not been run against a live Access engine, nor Oracle, SQL Server or
   PostgreSQL: only the text is tested for them, plus SQLite for the `ansi` text.
