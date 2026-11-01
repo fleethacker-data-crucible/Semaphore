@@ -1,10 +1,11 @@
 // Recurring reports on screen: leadership's shelf of editions and the edition itself (frozen
 // answers, read like the page), and the analyst's offer to keep a page coming while away.
 
-import { useRef, useState } from 'react';
-import { CalendarClock, Newspaper, ScrollText, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { CalendarClock, Newspaper, ScrollText, Square, Volume2, X } from 'lucide-react';
 import type { Briefing } from '../../../src/core/briefing.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import { pickLocalVoice, speechText } from '../../../src/core/voice.ts';
 import { type Cadence, describeCadence, type Edition, type FrozenFlag, latestEditions, type ReportSchedule } from '../../../src/core/reports.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
@@ -87,6 +88,42 @@ export function BriefingList({ briefing, flags, onFlag }: { briefing: Briefing; 
   );
 }
 
+/** Reads the briefing aloud with a voice installed on this PC. Off until clicked; never a cloud voice. */
+function ReadAloud({ briefing }: { briefing: Briefing }) {
+  const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
+  const [speaking, setSpeaking] = useState(false);
+  const [problem, setProblem] = useState('');
+  useEffect(() => () => synth?.cancel(), [synth]);
+  if (!synth) return null;
+  const stop = () => {
+    synth.cancel();
+    setSpeaking(false);
+  };
+  const start = () => {
+    const text = speechText(briefing);
+    const voice = pickLocalVoice(synth.getVoices(), document.documentElement.lang || navigator.language || 'en-US');
+    if (!text) return setProblem('There is nothing to read.');
+    if (!voice) return setProblem('No voice installed on this PC was found, so nothing is read (online voices are never used).');
+    setProblem('');
+    const u = new SpeechSynthesisUtterance(text);
+    u.voice = synth.getVoices().find((v) => v.name === voice.name && v.lang === voice.lang) ?? null;
+    u.onend = () => setSpeaking(false);
+    u.onerror = () => setSpeaking(false);
+    synth.cancel();
+    setSpeaking(true);
+    synth.speak(u);
+  };
+  return (
+    <div className="flex items-center gap-2 px-2 pb-1">
+      <button type="button" onClick={speaking ? stop : start} className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs hover:border-accent">
+        {speaking ? <Square size={12} /> : <Volume2 size={12} />}
+        {speaking ? 'Stop reading' : 'Read aloud'}
+      </button>
+      {problem && <span role="status" className="text-[11px] text-ink-3">{problem}</span>}
+    </div>
+  );
+}
+
 /** The analyst's "Brief me": the page's briefing as leadership would read it. */
 export function BriefingPanel({ briefing, flags, onFlag, onClose }: { briefing: Briefing | 'loading'; flags: ReadonlyArray<{ id: string; title: string }>; onFlag: (id: string) => void; onClose: () => void }) {
   return (
@@ -96,6 +133,7 @@ export function BriefingPanel({ briefing, flags, onFlag, onClose }: { briefing: 
           <X size={14} />
         </button>
       </div>
+      {briefing !== 'loading' && briefing.sentences.length > 0 && <ReadAloud briefing={briefing} />}
       <div className="px-2 pb-2">{briefing === 'loading' ? <p className="px-2 pb-2 text-sm text-ink-2">Reading the page…</p> : <BriefingList briefing={briefing} flags={flags} onFlag={onFlag} />}</div>
     </div>
   );

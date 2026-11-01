@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Read a briefing aloud** ("Brief me" > Read aloud, [docs/VOICE.md](docs/VOICE.md)): speaks with a voice installed on this PC, never an online voice; silent with a message when there is none. Off until clicked.
 - **Plain-English drafting can split by many-side fields** ("credit limit by order status"): same reach rule as the planner, one many-side table per flag, a note that groups can add up to more than the total.
 - **Lineage follows one-to-many joins**: Data > Lineage draws every hop to a field on the many side of a flag's base table, and notes a flag that reads a field reachable in more than one way.
 - **CLI and API parity** (`Semaphore-CLI.bat`, `server/Commands.ps1`, [docs/CLI.md](docs/CLI.md)): every headless action is a `semaphore <noun> <verb>` command with `--json` (versioned schema), `--out`, `--yes`, `--dry-run` and exit codes 0/1/2; the registry is served at `GET /api/commands`. A parity test fails when a server route or a UI `/api` path has neither a command nor a stated browser-only reason. Headless only: documents, sources, AI status, snapshot refresh and stopping a running copy.
