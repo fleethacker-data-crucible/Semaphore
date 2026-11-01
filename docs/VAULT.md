@@ -30,7 +30,7 @@ Lazarette keeps one table of the vault item each Fleet app reads (its `docs/FLEE
 | Each ODBC or OLE DB data source | none: named per source | `vault.item` or `vaultItem` of that source in `sources.json` | the item's secret becomes the password (`PWD=` / `Password=`), its field `Username` the user, both in memory for one request |
 | Each Athena or Redshift source | none: named per source | the same | fields `AccessKeyId`, `SecretAccessKey` and optional `SessionToken` become the AWS session that signs the request |
 | Each Foundry source | none: named per source | the same | the item's secret is the bearer token |
-| Fairlead client key (AI drafting) | **not a Lazarette item**: Windows Credential Manager target `Semaphore/FairleadClientKey` | `Set-SemaphoreAiKey.bat`, or `SEMAPHORE_AI_KEY` for CI | sent only to Fairlead on 127.0.0.1:8776, after it answers as Fairlead |
+| Fairlead client key (AI drafting) | **not a Lazarette item**: Windows Credential Manager target `Fairlead/Semaphore`, written by Fairlead | Fairlead > Clients (install for Semaphore); `Set-SemaphoreAiKey.bat` is a manual fallback, and `SEMAPHORE_AI_KEY` is for CI | sent only to Fairlead on 127.0.0.1:8776, after it answers as Fairlead |
 
 The Fairlead key is the one place the Fleet's "one vault" contract is not yet followed: Semaphore keeps it in Credential Manager, not Lazarette, because the server reads it at every draft without anyone unlocking a vault. Moving it is a decision for the team, not done here.
 
@@ -43,7 +43,7 @@ The Fairlead key is the one place the Fleet's "one vault" contract is not yet fo
 
 ## How it works
 
-- Lazarette's contract (its `docs/INTEGRATION.md`): `lib\Arc.ps1` is loaded once per process and `Get-ArcSecret` reads the item. Semaphore finds it through `ARC_PATH`/`ARC_ROOT`/`ARC_HOME`, a `Lazarette` (or `arc`) folder next to the Semaphore folder, or `%USERPROFILE%\Projects\Lazarette`.
+- Lazarette's contract (its `docs/INTEGRATION.md`): `lib\Lazarette.ps1` is loaded once per process and `Get-LazaretteSecret` reads the item. Semaphore finds it through `LAZARETTE_PATH`, a `Lazarette` folder next to the Semaphore folder, or `%USERPROFILE%\Projects\Lazarette`.
 - Unlocking is interactive by design. Start with `Launch-Semaphore.bat --console`; Lazarette asks for the passphrase and authenticator code in that console, never in the browser. Started hidden, vault sources answer `423 vault-locked` and say how to unlock.
 - The vault is open only in the main runspace, so the main loop reads the secrets for the one source a request names and hands them to the worker with that request. They exist in memory for that request, are never logged, returned or written, and are scrubbed from driver and AWS error text.
 - The connection string is built in memory: ODBC `UID={..};PWD={..}` (`}` doubled), OLE DB `User ID="..";Password=".."` (`"` doubled). Values with control characters are refused.
@@ -57,6 +57,6 @@ Tested against a fake Lazarette that follows the contract: finding it, locked an
 Not tested, for Anthony to check on the target machine:
 
 1. A real Lazarette vault: `Launch-Semaphore.bat --console`, unlock, run a query on a vault source.
-2. That `Get-ArcSecret -Service <item> -Field <name>` returns custom fields as Lazarette 5 documents (the fake follows the docs).
+2. That `Get-LazaretteSecret -Service <item> -Field <name>` returns custom fields as Lazarette 5 documents (the fake follows the docs).
 3. A real AWS session held in a vault item against real Athena.
 4. Lazarette does not broker short-lived AWS sessions by itself: the item holds whatever session IT put there. Renewing it is a vault edit.

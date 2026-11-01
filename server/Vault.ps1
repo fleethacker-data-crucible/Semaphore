@@ -13,9 +13,9 @@
 #   odbc / oledb : password = the item's secret; user = field "Username" (optional; used when the connection has no UID)
 #   athena       : accessKeyId = "AccessKeyId", secretAccessKey = "SecretAccessKey", sessionToken = "SessionToken" (optional)
 #
-# Lazarette contract (Lazarette docs/INTEGRATION.md): lib\Arc.ps1 is dot-sourced once per process (by Start-Semaphore, only
+# Lazarette contract (Lazarette docs/INTEGRATION.md): lib\Lazarette.ps1 is dot-sourced once per process (by Start-Semaphore, only
 # when a source uses the vault) and
-# Get-ArcSecret reads the item. Unlocking is interactive by design, so a source that uses the vault
+# Get-LazaretteSecret reads the item. Unlocking is interactive by design, so a source that uses the vault
 # needs `Launch-Semaphore.bat --console` (the passphrase is asked in that console, never in the
 # browser). The vault is open only in the main runspace, so the main loop resolves the secrets for
 # the one source a request names and hands the values to the worker with that request. They live in
@@ -102,25 +102,26 @@ function Get-SemVaultNeeds {
 # ---------------------------------------------------------------------------
 # Finding and opening Lazarette (main runspace)
 # ---------------------------------------------------------------------------
-function Find-SemArcRoot {
-    # Lazarette's own search order (docs/INTEGRATION.md), plus the folder name it ships under.
+function Find-SemLazaretteRoot {
+    # The one discovery rule (Lazarette docs/INTEGRATION.md): LAZARETTE_PATH, a Lazarette folder next to the Semaphore folder,
+    # then %USERPROFILE%\Projects\Lazarette. The folder must contain lib\Lazarette.ps1.
     param([string]$Root = '')
     $cands = New-Object System.Collections.Generic.List[string]
-    foreach ($n in 'ARC_PATH', 'ARC_ROOT', 'ARC_HOME') { $v = [Environment]::GetEnvironmentVariable($n); if ($v) { $cands.Add($v) } }
-    if ($Root) { $parent = Split-Path -Parent $Root; foreach ($n in 'Lazarette', 'arc') { $cands.Add((Join-Path $parent $n)) } }
-    if ($env:USERPROFILE) { foreach ($n in 'Lazarette', 'arc') { $cands.Add((Join-Path (Join-Path $env:USERPROFILE 'Projects') $n)) } }
+    $v = [Environment]::GetEnvironmentVariable('LAZARETTE_PATH'); if ($v) { $cands.Add($v) }
+    if ($Root) { $cands.Add((Join-Path (Split-Path -Parent $Root) 'Lazarette')) }
+    if ($env:USERPROFILE) { $cands.Add((Join-Path (Join-Path $env:USERPROFILE 'Projects') 'Lazarette')) }
     foreach ($c in $cands) {
-        if ($c -and [IO.File]::Exists([IO.Path]::Combine($c, 'lib', 'Arc.ps1'))) { return [IO.Path]::GetFullPath($c) }
+        if ($c -and [IO.File]::Exists([IO.Path]::Combine($c, 'lib', 'Lazarette.ps1'))) { return [IO.Path]::GetFullPath($c) }
     }
     return $null
 }
 
-function Get-SemArcLibPath {
-    # Path of Lazarette's lib\Arc.ps1, or $null. The caller dot-sources it at script scope (a function cannot:
-    # what a function dot-sources disappears when it returns):  $lib = Get-SemArcLibPath -Root $root; if ($lib) { . $lib }
+function Get-SemLazaretteLibPath {
+    # Path of Lazarette's lib\Lazarette.ps1, or $null. The caller dot-sources it at script scope (a function cannot:
+    # what a function dot-sources disappears when it returns):  $lib = Get-SemLazaretteLibPath -Root $root; if ($lib) { . $lib }
     param([string]$Root = '')
-    $arc = Find-SemArcRoot -Root $Root
-    if ($arc) { return [IO.Path]::Combine($arc, 'lib', 'Arc.ps1') }
+    $found = Find-SemLazaretteRoot -Root $Root
+    if ($found) { return [IO.Path]::Combine($found, 'lib', 'Lazarette.ps1') }
     return $null
 }
 
@@ -128,17 +129,17 @@ function Initialize-SemVault {
     # Records whether Lazarette's functions are loaded in this runspace. Returns the state.
     param([string]$Root = '')
     $st = $script:SemVaultState
-    if (Get-Command Get-ArcSecret -ErrorAction SilentlyContinue) { $st.Loaded = $true; $st.Problem = $null; return $st }
+    if (Get-Command Get-LazaretteSecret -ErrorAction SilentlyContinue) { $st.Loaded = $true; $st.Problem = $null; return $st }
     $st.Loaded = $false
-    if (Get-SemArcLibPath -Root $Root) { $st.Problem = 'Lazarette was found but is not loaded in this Semaphore process.' }
-    else { $st.Problem = 'Lazarette was not found. Set ARC_PATH to the Lazarette folder (the one with lib\Arc.ps1), or keep it next to the Semaphore folder.' }
+    if (Get-SemLazaretteLibPath -Root $Root) { $st.Problem = 'Lazarette was found but is not loaded in this Semaphore process.' }
+    else { $st.Problem = 'Lazarette was not found. Set LAZARETTE_PATH to the Lazarette folder (the one with lib\Lazarette.ps1), or keep it next to the Semaphore folder.' }
     return $st
 }
 
 function Test-SemVaultOpen {
     $st = $script:SemVaultState
     if (-not $st.Loaded) { return $false }
-    try { return [bool](Test-ArcVaultUnlocked) } catch { return $false }
+    try { return [bool](Test-LazaretteVaultUnlocked) } catch { return $false }
 }
 
 function Request-SemVaultUnlock {
@@ -149,7 +150,7 @@ function Request-SemVaultUnlock {
     if (-not $st.Loaded) { return $false }
     if (Test-SemVaultOpen) { return $true }
     if (-not $Interactive) { return $false }
-    try { $ok = [bool](Unlock-ArcVaultInteractive) } catch { $ok = $false }
+    try { $ok = [bool](Unlock-LazaretteVaultInteractive) } catch { $ok = $false }
     return $ok
 }
 
@@ -182,7 +183,7 @@ function Resolve-SemVaultSecrets {
     $values = @{}
     foreach ($r in $needs.Roles) {
         try {
-            if ($r.Field) { $v = Get-ArcSecret -Service $needs.Item -Field $r.Field } else { $v = Get-ArcSecret -Service $needs.Item }
+            if ($r.Field) { $v = Get-LazaretteSecret -Service $needs.Item -Field $r.Field } else { $v = Get-LazaretteSecret -Service $needs.Item }
         } catch {
             if ($r.Optional) { continue }
             return @{ Error = @{ Status = 424; Code = 'vault-item'; Message = ("Lazarette could not give '{0}' for source '{1}': {2}" -f $needs.Item, $Source.id, (Get-SemVaultSafeText ([string]$_.Exception.Message) @())) } }

@@ -3,8 +3,9 @@
  .SYNOPSIS
   Stores the Fairlead client key Semaphore uses for AI drafting, encrypted for this Windows account.
  .DESCRIPTION
-  Create the key in Fairlead > Clients (it starts with fl-). This script asks for it without showing
-  it, then stores it in Windows Credential Manager as Semaphore/FairleadClientKey.
+  Normally Fairlead installs the key itself (Fairlead > Clients, install for Semaphore). Use this script as a
+  manual fallback: create the key in Fairlead > Clients (it starts with fl-); this script asks for it without
+  showing it, then stores it in Windows Credential Manager as Fairlead/Semaphore.
   The credential belongs to the current Windows account. The key is never printed or logged.
   Afterwards it asks Fairlead whether the key works. A running Semaphore picks the key up on the
   next draft; no restart is needed.
@@ -37,7 +38,7 @@ if (-not $Check) {
     if ($secure.Length -eq 0) { Write-Host 'Nothing entered; the stored key is unchanged.'; return }
     try { Save-SemAiCredential -Key $secure }
     catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }
-    Write-Host 'Stored in Windows Credential Manager: Semaphore/FairleadClientKey' -ForegroundColor Green
+    Write-Host 'Saved to Windows Credential Manager as Fairlead/Semaphore' -ForegroundColor Green
 }
 
 $s = Get-SemAiSettings -Root (Get-SemRoot)

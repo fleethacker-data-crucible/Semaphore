@@ -118,7 +118,7 @@ function Get-SemAiStatus {
         privacyLocal = [bool]$Settings.PrivacyLocal
         keySource    = $Settings.KeySource
         problem      = $Settings.Problem
-        setup        = 'Create a client key in Fairlead > Clients, then run Set-SemaphoreAiKey.bat. Until then, local rules draft every flag.'
+        setup        = 'Open Fairlead > Clients and install a key for Semaphore (or run Set-SemaphoreAiKey.bat as a fallback). Until then, local rules draft every flag.'
     }
 }
 
@@ -147,6 +147,7 @@ function Invoke-SemAiForward {
     $req.Accept = 'application/json'
     $req.UserAgent = 'Semaphore'
     $req.Headers.Add('Authorization', 'Bearer ' + $Settings.Key)
+    $req.Headers.Add('X-Fairlead-Label', 'Semaphore')
     if ($Settings.PrivacyLocal) { $req.Headers.Add('X-Fairlead-Privacy', 'local') }
     $resp = $null
     try {

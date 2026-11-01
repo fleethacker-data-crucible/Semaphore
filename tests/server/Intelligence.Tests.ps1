@@ -162,7 +162,7 @@ Context 'Key file (DPAPI)' -Skip:($env:OS -ne 'Windows_NT') {
 
 Context 'Windows Credential Manager selection' {
     It 'round-trips a synthetic credential under a unique test target' -Skip:($env:OS -ne 'Windows_NT') {
-        $target = 'Semaphore/Test/' + [guid]::NewGuid().ToString('N')
+        $target = 'Fairlead/Semaphore-test-' + [guid]::NewGuid().ToString('N')
         try {
             Save-SemAiCredential -Key (ConvertTo-SecureString $script:Key -AsPlainText -Force) -Target $target
             [SemaphoreAiCredential]::Read($target) | Should -Be $script:Key

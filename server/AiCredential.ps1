@@ -28,8 +28,14 @@ public static class SemaphoreAiCredential {
     [DllImport("advapi32.dll", EntryPoint="CredFree")]
     private static extern void FreeNative(IntPtr credential);
     private static void Validate(string target) {
-        if (String.IsNullOrEmpty(target) || !target.StartsWith("Semaphore/", StringComparison.Ordinal))
-            throw new ArgumentException("Credential target must start with Semaphore/.");
+        // Fairlead/Semaphore, or Fairlead/Semaphore-<suffix> (the tests use a unique suffix); never another app's credential.
+        if (String.IsNullOrEmpty(target) || !System.Text.RegularExpressions.Regex.IsMatch(target, "^Fairlead/Semaphore(-[A-Za-z0-9-]{1,64})?$"))
+            throw new ArgumentException("Credential target must be Fairlead/Semaphore.");
+    }
+    private static bool IsPrintable(string s) {
+        if (String.IsNullOrEmpty(s)) return false;
+        foreach (char ch in s) { if (ch<0x20 || ch>0x7E) return false; }
+        return true;
     }
     public static string Read(string target) {
         Validate(target);
@@ -41,7 +47,14 @@ public static class SemaphoreAiCredential {
         }
         try {
             Credential c=(Credential)Marshal.PtrToStructure(ptr, typeof(Credential));
-            return c.CredentialBlob==IntPtr.Zero ? null : Marshal.PtrToStringUni(c.CredentialBlob, checked((int)c.CredentialBlobSize/2));
+            if (c.CredentialBlob==IntPtr.Zero || c.CredentialBlobSize==0) return null;
+            byte[] raw=new byte[checked((int)c.CredentialBlobSize)];
+            Marshal.Copy(c.CredentialBlob, raw, 0, raw.Length);
+            // Fairlead writes the key as UTF-16 text; accept UTF-8 text too when the UTF-16 reading is not printable.
+            string text=System.Text.Encoding.Unicode.GetString(raw).Trim('\0');
+            if (IsPrintable(text)) return text;
+            text=System.Text.Encoding.UTF8.GetString(raw).Trim('\0');
+            return IsPrintable(text) ? text : null;
         } finally { FreeNative(ptr); }
     }
     public static void Write(string target, SecureString key) {
@@ -66,12 +79,12 @@ public static class SemaphoreAiCredential {
 '@
 }
 function Read-SemAiCredential {
-    param([string]$Target = 'Semaphore/FairleadClientKey')
+    param([string]$Target = 'Fairlead/Semaphore')
     Initialize-SemAiCredentialStore
     return [SemaphoreAiCredential]::Read($Target)
 }
 function Save-SemAiCredential {
-    param([Security.SecureString]$Key, [string]$Target = 'Semaphore/FairleadClientKey')
+    param([Security.SecureString]$Key, [string]$Target = 'Fairlead/Semaphore')
     $ptr = [IntPtr]::Zero
     try {
         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Key)
@@ -81,7 +94,7 @@ function Save-SemAiCredential {
     [SemaphoreAiCredential]::Write($Target, $Key)
 }
 function Remove-SemAiCredential {
-    param([string]$Target = 'Semaphore/FairleadClientKey')
+    param([string]$Target = 'Fairlead/Semaphore')
     Initialize-SemAiCredentialStore
     [SemaphoreAiCredential]::Delete($Target)
 }
