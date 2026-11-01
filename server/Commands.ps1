@@ -145,7 +145,7 @@ function Invoke-SemCommand {
             }
             'VaultStatus' {
                 $uses = @(Get-SemSources -HomeDir $HomeDir | ForEach-Object { $n = Get-SemVaultNeeds $_; if ($n) { '{0} -> {1}' -f $_.id, $n.Item } })
-                return (& $r $true ([ordered]@{ lazarette = [bool](Get-SemArcLibPath -Root $Root); unlocked = $false; sources = $uses; note = 'A command-line run never unlocks the vault; unlock it in the console that starts Semaphore.' }) '' '' $false)
+                return (& $r $true ([ordered]@{ lazarette = [bool](Get-SemLazaretteLibPath -Root $Root); unlocked = $false; sources = $uses; note = 'A command-line run never unlocks the vault; unlock it in the console that starts Semaphore.' }) '' '' $false)
             }
             'AiStatus' { return (& $r $true (Get-SemAiStatus) '' '' $false) }
             'RefreshRun' {

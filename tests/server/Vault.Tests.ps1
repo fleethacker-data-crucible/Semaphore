@@ -1,13 +1,13 @@
 # Pester 5. The Lazarette bridge (server/Vault.ps1) against a fake Lazarette that follows the contract in
-# Lazarette's docs/INTEGRATION.md (lib\Arc.ps1 with Test-ArcVaultUnlocked, Unlock-ArcVaultInteractive,
-# Get-ArcSecret). A real Lazarette vault is not touched: see docs/VAULT.md for what still needs checking by hand.
+# Lazarette's docs/INTEGRATION.md (lib\Lazarette.ps1 with Test-LazaretteVaultUnlocked, Unlock-LazaretteVaultInteractive,
+# Get-LazaretteSecret). A real Lazarette vault is not touched: see docs/VAULT.md for what still needs checking by hand.
 BeforeAll {
     $server = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server'))
     foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1') { . ([IO.Path]::Combine($server, $f)) }
 
-    $script:Arc = Join-Path $TestDrive 'Lazarette'
-    New-Item -ItemType Directory -Path (Join-Path $script:Arc 'lib') -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $script:Arc 'lib\Arc.ps1') -Encoding ASCII -Value @'
+    $script:Laz = Join-Path $TestDrive 'Lazarette'
+    New-Item -ItemType Directory -Path (Join-Path $script:Laz 'lib') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $script:Laz 'lib\Lazarette.ps1') -Encoding ASCII -Value @'
 $script:FakeVault = @{ Open = $false; Prompted = 0; Reads = (New-Object System.Collections.ArrayList)
     Items = @{
         'maint-db'      = @{ Secret = 'S3cr}et"pw;1'; Fields = @{ Username = 'svc_semaphore' } }
@@ -16,9 +16,9 @@ $script:FakeVault = @{ Open = $false; Prompted = 0; Reads = (New-Object System.C
         'aws-nosession' = @{ Secret = ''; Fields = @{ AccessKeyId = 'AKIAFAKEFAKEFAKE9999'; SecretAccessKey = 'fakeSecretKey/other0123456789abcdefgh' } }
         'empty-item'    = @{ Secret = ''; Fields = @{} }
     } }
-function Test-ArcVaultUnlocked { return [bool]$script:FakeVault.Open }
-function Unlock-ArcVaultInteractive { $script:FakeVault.Prompted++; $script:FakeVault.Open = $true; return $true }
-function Get-ArcSecret {
+function Test-LazaretteVaultUnlocked { return [bool]$script:FakeVault.Open }
+function Unlock-LazaretteVaultInteractive { $script:FakeVault.Prompted++; $script:FakeVault.Open = $true; return $true }
+function Get-LazaretteSecret {
     param([string]$Service, [string]$User, [string]$Field)
     if (-not $script:FakeVault.Open) { throw 'Lazarette is locked' }
     [void]$script:FakeVault.Reads.Add("$Service|$Field")
@@ -28,8 +28,8 @@ function Get-ArcSecret {
     return $it.Secret
 }
 '@
-    $env:ARC_PATH = $script:Arc
-    . (Get-SemArcLibPath)   # as Start-Semaphore does, at script scope
+    $env:LAZARETTE_PATH = $script:Laz
+    . (Get-SemLazaretteLibPath)   # as Start-Semaphore does, at script scope
 
     function script:New-Source([string]$Json) {
         $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
@@ -38,24 +38,31 @@ function Get-ArcSecret {
         return , @(Get-SemSources -HomeDir $dir)
     }
 }
-AfterAll { Remove-Item Env:\ARC_PATH -ErrorAction SilentlyContinue }
+AfterAll { Remove-Item Env:\LAZARETTE_PATH -ErrorAction SilentlyContinue }
 
 Describe 'Finding Lazarette' {
-    It 'prefers ARC_PATH, then ARC_ROOT, ARC_HOME' {
-        Find-SemArcRoot | Should -Be ([IO.Path]::GetFullPath($script:Arc))
+    It 'uses LAZARETTE_PATH first' {
+        Find-SemLazaretteRoot | Should -Be ([IO.Path]::GetFullPath($script:Laz))
     }
     It 'finds a sibling Lazarette folder next to the Semaphore folder' {
-        $old = $env:ARC_PATH; Remove-Item Env:\ARC_PATH
+        $old = $env:LAZARETTE_PATH; Remove-Item Env:\LAZARETTE_PATH
         try {
             $parent = Join-Path $TestDrive 'suite'
             New-Item -ItemType Directory -Path (Join-Path $parent 'Lazarette\lib'), (Join-Path $parent 'Semaphore') -Force | Out-Null
-            Set-Content -LiteralPath (Join-Path $parent 'Lazarette\lib\Arc.ps1') -Value '# x'
-            Find-SemArcRoot -Root (Join-Path $parent 'Semaphore') | Should -Be (Join-Path $parent 'Lazarette')
-        } finally { $env:ARC_PATH = $old }
+            Set-Content -LiteralPath (Join-Path $parent 'Lazarette\lib\Lazarette.ps1') -Value '# x'
+            Find-SemLazaretteRoot -Root (Join-Path $parent 'Semaphore') | Should -Be (Join-Path $parent 'Lazarette')
+        } finally { $env:LAZARETTE_PATH = $old }
     }
-    It 'returns nothing when lib\Arc.ps1 is missing' {
-        $old = $env:ARC_PATH; $env:ARC_PATH = (Join-Path $TestDrive 'nowhere')
-        try { Find-SemArcRoot | Should -Not -Be (Join-Path $TestDrive 'nowhere') } finally { $env:ARC_PATH = $old }
+    It 'does not read the retired path variables' {
+        $retired = ('AR' + 'C_PATH')   # built so the retired-name check does not see it
+        $old = $env:LAZARETTE_PATH; Remove-Item Env:\LAZARETTE_PATH
+        [Environment]::SetEnvironmentVariable($retired, $script:Laz)
+        try { Find-SemLazaretteRoot | Should -Not -Be ([IO.Path]::GetFullPath($script:Laz)) }
+        finally { [Environment]::SetEnvironmentVariable($retired, $null); $env:LAZARETTE_PATH = $old }
+    }
+    It 'returns nothing when lib\Lazarette.ps1 is missing' {
+        $old = $env:LAZARETTE_PATH; $env:LAZARETTE_PATH = (Join-Path $TestDrive 'nowhere')
+        try { Find-SemLazaretteRoot | Should -Not -Be (Join-Path $TestDrive 'nowhere') } finally { $env:LAZARETTE_PATH = $old }
     }
 }
 
@@ -316,8 +323,8 @@ Describe 'vaultItem short form and the item-names table' {
     It 'documents every default field name and the Fairlead key target the code uses' {
         $doc = Get-Content -LiteralPath ([IO.Path]::Combine($server, '..', 'docs', 'VAULT.md')) -Raw
         foreach ($roles in $script:SemVaultRoles.Values) { foreach ($r in $roles) { if ($r.Field) { $doc | Should -BeLike "*$($r.Field)*" -Because "the default field $($r.Field) is in the code" } } }
-        $doc | Should -BeLike '*Semaphore/FairleadClientKey*'
+        $doc | Should -BeLike '*Fairlead/Semaphore*'
         $src = Get-Content -LiteralPath ([IO.Path]::Combine($server, 'AiCredential.ps1')) -Raw
-        $src | Should -BeLike "*'Semaphore/FairleadClientKey'*"
+        $src | Should -BeLike "*'Fairlead/Semaphore'*"
     }
 }

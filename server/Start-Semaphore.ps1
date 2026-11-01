@@ -231,8 +231,8 @@ if ($Refresh) {
 # ---- Lazarette vault (only when a source names an item) ---------------------------
 $vaultSources = @(Get-SemSources -HomeDir $homeDir | Where-Object { Get-SemSourceVault $_ })
 if ($vaultSources.Count -gt 0 -and -not $CheckOnly) {
-    $arcLib = Get-SemArcLibPath -Root $root
-    if ($arcLib) { . $arcLib }   # script scope: the main loop reads the secrets, workers get them with each request
+    $lazaretteLib = Get-SemLazaretteLibPath -Root $root
+    if ($lazaretteLib) { . $lazaretteLib }   # script scope: the main loop reads the secrets, workers get them with each request
     $open = Request-SemVaultUnlock -Root $root -Interactive ([bool]$ShowConsole)
     if ($open) { Write-SemLog 'INFO' ('Lazarette is open for {0} source(s)' -f $vaultSources.Count) }
     else { Write-SemLog 'WARN' ('Lazarette is locked or missing; {0} source(s) that use it will say so (start with --console to unlock)' -f $vaultSources.Count) }
