@@ -43,7 +43,7 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 
 ## Run it
 
-**Just want to run it?** Download `Semaphore-<version>.zip` from the [latest prebuilt release](https://github.com/fleethacker-data-crucible/Semaphore/releases/latest) (not "Source code (zip)", which has no built UI). Right-click the zip, choose Properties and Unblock if shown, then Extract All and double-click **`Launch-Semaphore.bat`**. Nothing to install or build. A clone of this repo does not run until it is built (steps below), because `web\dist` is not in git.
+**Just want to run it?** Download `Semaphore-<version>.zip` from the [latest prebuilt release](https://github.com/fleethacker-data-crucible/Semaphore/releases/latest) (not "Source code (zip)", which has no built UI). Right-click the zip, choose Properties and Unblock if shown, then Extract All and double-click **`Launch-Semaphore.bat`**. Nothing to install or build. A clone of this repo does not run until it is built (steps below), because `web\dist` is not in git. If the zip will not extract, or Semaphore does not open, double-click [`tools\env-check\Check-Environment.bat`](tools/env-check): it tests that workstation (zip handling, launch, loopback ports, browser) and writes a log you can compare between machines.
 
 To build it yourself:
 
