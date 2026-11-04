@@ -43,6 +43,10 @@ Leadership opens it with **`Ask-Semaphore.bat`**. How it works and what is still
 
 ## Run it
 
+**Just want to run it?** Download `Semaphore-<version>.zip` from the [latest prebuilt release](https://github.com/fleethacker-data-crucible/Semaphore/releases/latest) (not "Source code (zip)", which has no built UI). Right-click the zip, choose Properties and Unblock if shown, then Extract All and double-click **`Launch-Semaphore.bat`**. Nothing to install or build. A clone of this repo does not run until it is built (steps below), because `web\dist` is not in git.
+
+To build it yourself:
+
 1. On a build machine, run `npm ci` then `npm run build` once. This writes the page to `web\dist` (the workstation never builds anything).
 2. Copy the folder to the workstation and double-click **`Launch-Semaphore.bat`**. It needs Windows PowerShell 5.1 and Edge or Chrome. The built sample/CSV application runs offline without Node.js, admin rights or runtime installation. Configured databases, AWS services, a shared network folder or a remote AI route require the corresponding network access.
 3. Semaphore opens on the fleet-maintenance example with generated sample data. Click **New hoist** for an empty page, or **Data** to add CSV files or a database.
