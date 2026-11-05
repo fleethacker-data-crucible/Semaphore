@@ -14,6 +14,7 @@ jobs:
   windows:
     # Self-hosted Windows workstation runner: the server runs on the Windows PowerShell 5.1 the
     # workstation has (team directive 12), and the core and UI build with Node.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, windows, powershell51, headless]
     timeout-minutes: 15
     steps:
