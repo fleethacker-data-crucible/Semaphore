@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 440" width="880" height="440" font-family="Segoe UI, Arial, sans-serif">
+  <title>Semaphore dependencies: required, to build, and optional</title>
+  <rect width="880" height="440" rx="16" fill="#f8fafc"/>
+  <text x="440" y="36" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">What Semaphore depends on</text>
+  <text x="440" y="56" text-anchor="middle" font-size="12" fill="#475569">Each line names the file that shows it. Paths are relative to the Semaphore folder.</text>
+
+  <!-- Required to run -->
+  <rect x="30" y="72" width="400" height="168" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="50" y="98" font-size="15" font-weight="700" fill="#065f46">Required to run</text>
+  <text x="50" y="122" font-size="12" fill="#064e3b">Windows PowerShell 5.1 (not 7)</text>
+  <text x="50" y="138" font-size="10" fill="#047857">server/Start-Semaphore.ps1 line 1: #requires -Version 5.1</text>
+  <text x="50" y="162" font-size="12" fill="#064e3b">Microsoft Edge or Google Chrome</text>
+  <text x="50" y="178" font-size="10" fill="#047857">server/Start-Semaphore.ps1, Find-SemBrowser; README "Run it"</text>
+  <text x="50" y="202" font-size="12" fill="#064e3b">web/dist built once (web/dist is not in git)</text>
+  <text x="50" y="218" font-size="10" fill="#047857">web/build.mjs; .gitignore; README step 1</text>
+  <text x="50" y="242" font-size="12" fill="#064e3b">Database driver, for ODBC and OLE DB sources</text>
+  <text x="50" y="258" font-size="10" fill="#047857">docs/CONNECTORS.md; README "Databases" (not installed by Semaphore)</text>
+
+  <!-- Required to build -->
+  <rect x="450" y="72" width="400" height="168" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="470" y="98" font-size="15" font-weight="700" fill="#312e81">Required to build (not to run)</text>
+  <text x="470" y="122" font-size="12" fill="#1e1b4b">Node.js 22.18 or later</text>
+  <text x="470" y="138" font-size="10" fill="#3730a3">package.json engines.node; the repo's CI uses node 22</text>
+  <text x="470" y="162" font-size="12" fill="#1e1b4b">npm ci, then the build tools</text>
+  <text x="470" y="178" font-size="10" fill="#3730a3">esbuild, tailwindcss, react, echarts, typescript (package.json)</text>
+  <text x="470" y="202" font-size="12" fill="#1e1b4b">The repo's own commands</text>
+  <text x="470" y="218" font-size="10" fill="#3730a3">npm test, npm run typecheck, npm run build (package.json scripts)</text>
+  <text x="470" y="242" font-size="12" fill="#1e1b4b">Pester 5.7.1 for server tests</text>
+  <text x="470" y="258" font-size="10" fill="#3730a3">.github/workflows/ci.yml; README "Build and test"</text>
+
+  <!-- Optional -->
+  <rect x="30" y="256" width="820" height="170" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="50" y="282" font-size="15" font-weight="700" fill="#334155">Optional: each one is used only when a source or setting names it</text>
+
+  <rect x="50" y="296" width="250" height="60" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="62" y="316" font-size="12" font-weight="700" fill="#334155">Lazarette vault</text>
+  <text x="62" y="332" font-size="10" fill="#475569">server/Vault.ps1; LAZARETTE_PATH</text>
+  <text x="62" y="346" font-size="10" fill="#475569">docs/VAULT.md</text>
+
+  <rect x="315" y="296" width="250" height="60" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="327" y="316" font-size="12" font-weight="700" fill="#334155">Fairlead on 127.0.0.1:8776</text>
+  <text x="327" y="332" font-size="10" fill="#475569">server/Intelligence.ps1 line 25</text>
+  <text x="327" y="346" font-size="10" fill="#475569">Local rules run without it</text>
+
+  <rect x="580" y="296" width="250" height="60" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="592" y="316" font-size="12" font-weight="700" fill="#334155">AWS session (Athena, Redshift)</text>
+  <text x="592" y="332" font-size="10" fill="#475569">server/Lake.ps1; server/Connectors.ps1</text>
+  <text x="592" y="346" font-size="10" fill="#475569">Environment or a vault item</text>
+
+  <rect x="50" y="364" width="250" height="48" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="62" y="384" font-size="12" font-weight="700" fill="#334155">Palantir Foundry</text>
+  <text x="62" y="400" font-size="10" fill="#475569">server/Connectors.ps1 (token: vault or env)</text>
+
+  <rect x="315" y="364" width="250" height="48" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="327" y="384" font-size="12" font-weight="700" fill="#334155">Azure Synapse / SQL</text>
+  <text x="327" y="400" font-size="10" fill="#475569">server/Connectors.ps1; ODBC Driver 17/18</text>
+
+  <rect x="580" y="364" width="250" height="48" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="592" y="384" font-size="12" font-weight="700" fill="#334155">Fleet exports (files)</text>
+  <text x="592" y="400" font-size="10" fill="#475569">src/core/fleet-exports.ts: Halyard, PacketRat</text>
+</svg>
