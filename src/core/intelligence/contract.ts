@@ -21,18 +21,28 @@ import {
 export const CONTRACT_VERSION = 1;
 
 export interface CatalogSummary {
-  /** `set` numbers the sources (1, 2, ...) without naming them: a flag reads from one set. */
-  metrics: Array<{ key: string; label: string; agg: string; set: number; synonyms?: string[] }>;
-  fields: Array<{ key: string; label: string; type: string; set: number; synonyms?: string[] }>;
+  /** `set` numbers the sources (1, 2, ...) without naming them: a flag reads from one set. `table` numbers the tables the same way, so a metric can be paired with fields of its own table without a table or column name leaving the machine. */
+  metrics: Array<{ key: string; label: string; agg: string; set: number; table?: number; synonyms?: string[] }>;
+  fields: Array<{ key: string; label: string; type: string; set: number; table?: number; synonyms?: string[] }>;
 }
 
 /** Strip a catalog down to what a provider may see: keys, labels, types, synonyms and set numbers. */
 export function summarizeCatalog(catalog: Catalog): CatalogSummary {
   const set = (source: string) => catalog.sources.findIndex((s) => s.id === source) + 1;
-  return {
-    metrics: catalog.metrics.map((m) => ({ key: m.key, label: m.label, agg: m.agg, set: set(m.source), ...(m.synonyms?.length ? { synonyms: m.synonyms } : {}) })),
-    fields: catalog.fields.map((f) => ({ key: f.key, label: f.label, type: f.type, set: set(f.source), ...(f.synonyms?.length ? { synonyms: f.synonyms } : {}) })),
+  const tables = new Map<string, number>();
+  const tableNo = (source: string, table: string | undefined): number | undefined => {
+    if (!table) return undefined;
+    const id = `${source}|${table}`;
+    if (!tables.has(id)) tables.set(id, tables.size + 1);
+    return tables.get(id);
   };
+  const fieldByKey = new Map(catalog.fields.map((f) => [f.key, f]));
+  const fields = catalog.fields.map((f) => ({ key: f.key, label: f.label, type: f.type, set: set(f.source), ...(tableNo(f.source, f.table) ? { table: tableNo(f.source, f.table) } : {}), ...(f.synonyms?.length ? { synonyms: f.synonyms } : {}) }));
+  const metrics = catalog.metrics.map((m) => {
+    const t = tableNo(m.source, m.table ?? (m.field ? fieldByKey.get(m.field)?.table : undefined));
+    return { key: m.key, label: m.label, agg: m.agg, set: set(m.source), ...(t ? { table: t } : {}), ...(m.synonyms?.length ? { synonyms: m.synonyms } : {}) };
+  });
+  return { metrics, fields };
 }
 
 /**
@@ -150,6 +160,10 @@ export function validateFlagDraft(raw: unknown, index: CatalogIndex, fallbackKin
   const warnings: string[] = [];
   const kind = FLAG_KINDS.includes(raw.kind as FlagKind) ? (raw.kind as FlagKind) : fallbackKind;
   let binding = raw.binding === null || raw.binding === undefined ? null : parseBinding(raw.binding, index, warnings, 'Draft');
+  if (raw.binding === null || raw.binding === undefined) {
+    const loose = looseBinding(raw);
+    if (loose) binding = parseBinding(loose, index, warnings, 'Draft');
+  }
   let behavior = parseBehavior(raw.behavior, index, warnings, 'Draft');
   let confidence = typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
   if (options.remote) confidence = Math.min(confidence, MODEL_CONFIDENCE_CAP);
@@ -308,6 +322,20 @@ export function validateHoistDraft(raw: unknown, index: CatalogIndex, options: V
     notes: capWarnings([...strings(raw.notes, 10, 400), ...warnings]),
     ...(by ? { answeredBy: by } : {}),
   };
+}
+
+/**
+ * Models sometimes put metrics, dimensions, filters and sort beside the flag instead of inside "binding",
+ * and give a dimension as a bare field key. Read that shape too: it means the same thing. Returns null when the flag
+ * names no metric or field at all (a text flag, say).
+ */
+function looseBinding(raw: Record<string, unknown>): unknown {
+  if (!Array.isArray(raw.metrics) && !Array.isArray(raw.dimensions)) return null;
+  const dimensions = (Array.isArray(raw.dimensions) ? raw.dimensions : []).map((d) => (typeof d === 'string' ? { field: d } : d));
+  const out: Record<string, unknown> = { metrics: Array.isArray(raw.metrics) ? raw.metrics : [], dimensions, filters: Array.isArray(raw.filters) ? raw.filters : [] };
+  if (isObject(raw.sort)) out.sort = raw.sort;
+  if (typeof raw.limit === 'number') out.limit = raw.limit;
+  return out;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
