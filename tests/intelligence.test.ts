@@ -317,3 +317,31 @@ test("when Fairlead's local fallback answers, the draft names the model that rea
   const direct = await draftFlag(p, hoist, flag(hoist, 'kpi-orders'), index);
   assert.equal(direct.draft.answeredBy, undefined, 'the model asked for answered: nothing to say');
 });
+
+test('a model that puts metrics and dimensions beside the flag instead of inside "binding" is still understood', () => {
+  const d = validateFlagDraft(
+    { kind: 'bar', title: 'Labor cost by region', metrics: ['labor_cost'], dimensions: ['jobs.region'], filters: [], sort: ['labor_cost@sum'], confidence: 1, notes: [] },
+    index,
+    'bar',
+    { remote: true },
+  );
+  assert.deepEqual(d.binding?.metrics, ['labor_cost']);
+  assert.deepEqual(d.binding?.dimensions, [{ field: 'jobs.region' }]);
+  assert.ok(d.confidence <= MODEL_CONFIDENCE_CAP);
+  assert.ok(!d.notes.some((n) => /binding is not an object/.test(n)));
+});
+
+test('a text flag with no metrics or fields gives no binding warning', () => {
+  const d = validateFlagDraft({ kind: 'text', title: 'Notes', text: 'hello' }, index, 'text');
+  assert.equal(d.binding, null);
+  assert.ok(!d.notes.some((n) => /binding is not an object/.test(n)));
+});
+
+test('the catalog summary numbers tables so a metric can be paired with its own table, without naming them', () => {
+  const s = summarizeCatalog(index.catalog);
+  const wo = s.metrics.find((m) => m.key === 'work_orders');
+  const region = s.fields.find((f) => f.key === 'jobs.region');
+  assert.equal(typeof wo?.table, 'number');
+  assert.equal(wo?.table, region?.table);
+  assert.ok(!JSON.stringify(s).includes('ops.work_orders'));
+});
