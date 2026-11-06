@@ -2,15 +2,15 @@
 # =============================================================================
 # Semaphore's lake engine: the S3 data lake through Amazon Athena, with a cost guard and a result
 # cache. It folds in the "Sounding Line" proposal (comms repo, proposals/sounding-line): the same
-# engine serves the raw-SQL desk, and AWS sessions can be brokered through Lazarette (Vault.ps1).
+# engine serves the raw-SQL desk, and AWS sessions can come from Lazarette (Vault.ps1).
 #
 # A lake source in <home>\sources.json:
 #   { "id": "lake", "label": "Data lake", "kind": "aws-athena", "provider": "athena",
 #     "region": "us-gov-west-1", "workgroup": "semaphore", "database": "maintenance",
 #     "priceUsdPerTB": 5, "approveAboveGB": 10, "dailyLimitGB": 200, "cacheHours": 12 }
 # Optional "endpoint" (http(s) base, e.g. a simulator on 127.0.0.1) replaces the AWS endpoints.
-# AWS keys are never written in sources.json (refused). A "vault": { "item": "name" } block takes them from
-# a Lazarette item (fields AccessKeyId, SecretAccessKey, SessionToken), so analysts hold no AWS keys; without
+# AWS keys are never written in sources.json (refused). A "vault" block names the shares Lazarette gives
+# Semaphore ("accessKeyId", "secretAccessKey", optional "sessionToken"), so analysts hold no AWS keys; without
 # one they come from the environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN), a short
 # session the analyst or IT sets. Keys are never logged or returned.
 #
@@ -109,7 +109,7 @@ function Get-SemLakeSettings {
         $endpoint = $endpoint.TrimEnd('/')
     }
     foreach ($forbidden in @('accessKey', 'accessKeyId', 'secretKey', 'secretAccessKey', 'sessionToken', 'aws_access_key_id', 'aws_secret_access_key')) {
-        if ($Raw.PSObject.Properties[$forbidden]) { throw 'AWS keys do not belong in sources.json. Remove them; Name a Lazarette item with a "vault" block, or set a short session in the environment.' }
+        if ($Raw.PSObject.Properties[$forbidden]) { throw 'AWS keys do not belong in sources.json. Remove them; share them from Lazarette with a "vault" block, or set a short session in the environment.' }
     }
     $num = { param($v, $d, $min, $max) $x = 0.0; if ($null -ne $v -and [double]::TryParse([string]$v, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$x) -and $x -ge $min -and $x -le $max) { $x } else { $d } }
     return @{
@@ -119,11 +119,11 @@ function Get-SemLakeSettings {
     }
 }
 function Get-SemAwsCredentials {
-    # The Lazarette item's session when the request carries one (Vault.ps1), else the environment. Throws a readable message when there are none.
+    # The session Lazarette shared when the request carries one (Vault.ps1), else the environment. Throws a readable message when there are none.
     $va = Get-SemVaultValue 'accessKeyId'; $vs = Get-SemVaultValue 'secretAccessKey'
     if ($va -and $vs) { return @{ AccessKey = $va; SecretKey = $vs; SessionToken = [string](Get-SemVaultValue 'sessionToken') } }
     $ak = [Environment]::GetEnvironmentVariable('AWS_ACCESS_KEY_ID'); $sk = [Environment]::GetEnvironmentVariable('AWS_SECRET_ACCESS_KEY')
-    if (-not $ak -or -not $sk) { throw 'No AWS session: the lake needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (a short session) in the environment that started Semaphore, or a "vault" block naming a Lazarette item.' }
+    if (-not $ak -or -not $sk) { throw 'No AWS session: the lake needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (a short session) in the environment that started Semaphore, or a "vault" block naming the Lazarette shares that hold them.' }
     return @{ AccessKey = $ak; SecretKey = $sk; SessionToken = [string][Environment]::GetEnvironmentVariable('AWS_SESSION_TOKEN') }
 }
 function Get-SemLakeSafeText {
