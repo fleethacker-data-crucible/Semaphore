@@ -107,7 +107,7 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 - **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
 - **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
 - **CSV files** are read in the page and kept in IndexedDB so they come back after a reload. They are never uploaded.
-- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may name a Lazarette vault item for through the Lazarette tool route (docs/VAULT.md).
+- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may instead name Lazarette shares for its password, user or keys, read over the Lazarette tool route (docs/VAULT.md).
 
 ## Sharing
 
