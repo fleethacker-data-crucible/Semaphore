@@ -66,6 +66,7 @@ if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
 New-Item -ItemType Directory -Force $bundle | Out-Null
 
 Copy-Item (Join-Path $root 'server') (Join-Path $bundle 'server') -Recurse
+New-Item -ItemType Directory -Force (Join-Path $bundle 'web') | Out-Null
 Copy-Item (Join-Path $root 'web\dist') (Join-Path $bundle 'web\dist') -Recurse
 New-Item -ItemType Directory -Force (Join-Path $bundle 'config') | Out-Null
 Copy-Item (Join-Path $root 'config\settings.json') (Join-Path $bundle 'config')
@@ -74,6 +75,20 @@ Copy-Item (Join-Path $root 'docs') (Join-Path $bundle 'docs') -Recurse
 foreach ($f in @('Launch-Semaphore.bat', 'Ask-Semaphore.bat', 'Semaphore-CLI.bat', 'Set-SemaphoreAiKey.bat', 'README.md', 'LICENSE', 'CHANGELOG.md', 'VERSION')) {
     Copy-Item (Join-Path $root $f) $bundle
 }
+
+# The UI is split ES modules (web\build.mjs): the entry, its chunks, the CSS, the CSV worker and the
+# shared-report reader must all be in the bundle, or the page breaks on first use of a lazy panel.
+$srcDist = Join-Path $root 'web\dist'
+$dstDist = Join-Path $bundle 'web\dist'
+$manifest = Get-Content -LiteralPath (Join-Path $dstDist 'build.json') -Raw | ConvertFrom-Json
+if (-not $manifest.entry) { throw 'web\dist\build.json names no app entry; rebuild the UI.' }
+foreach ($rel in (@($manifest.entry, $manifest.css, $manifest.worker, $manifest.report) + @($manifest.chunks) + @($manifest.preload))) {
+    if (-not $rel) { continue }
+    if (-not (Test-Path -LiteralPath (Join-Path $dstDist (([string]$rel).Replace('/', '\'))))) { throw ('The bundle is missing web\dist\' + $rel + ', which web\dist\build.json names.') }
+}
+$srcCount = @(Get-ChildItem -LiteralPath $srcDist -Recurse -File).Count
+$dstCount = @(Get-ChildItem -LiteralPath $dstDist -Recurse -File).Count
+if ($srcCount -ne $dstCount) { throw ('web\dist has ' + $srcCount + ' files but the bundle has ' + $dstCount + '.') }
 
 # Nothing to install: the bundle must hold no binaries and no build tools.
 $bad = @(Get-ChildItem -LiteralPath $bundle -Recurse -File | Where-Object { $_.Extension -in @('.dll', '.exe', '.pdb', '.msi') })
