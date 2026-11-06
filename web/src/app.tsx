@@ -55,6 +55,11 @@ import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
 import { Welcome } from './components/Welcome.tsx';
+import { Shakedown, ShakedownAskMark } from './components/Shakedown.tsx';
+import { announcedByAccept, type NotifyOptions, useAccept } from './lib/accept.ts';
+import { useFlagKeys } from './lib/flag-keys.ts';
+import { scrollBehavior } from './lib/motion.ts';
+import { withBriefFlag } from './lib/onboarding.ts';
 
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
@@ -63,6 +68,7 @@ const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'sema
 const SKINS = [
   { id: 'fleet', label: 'Fleet' },
   { id: 'classic', label: 'Classic' },
+  { id: 'safe', label: 'Colour-blind safe' },
 ];
 
 type View = 'builder' | 'ask' | 'refresh';
@@ -128,7 +134,7 @@ export function App() {
   const [selections, setSelections] = useState<Selections>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ text: string; opts?: NotifyOptions } | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
@@ -173,9 +179,11 @@ export function App() {
     if (!server?.skin) writeLocal(K.skin, skin);
   }, [skin, server]);
 
-  const notify = useCallback((text: string) => {
-    setToast(text);
-    window.setTimeout(() => setToast((t) => (t === text ? null : t)), 6000);
+  const notify = useCallback((text: string, opts?: NotifyOptions) => {
+    const next = { text, ...(opts ? { opts } : {}) };
+    setToast(next);
+    // Errors stay until dismissed (UNIFIED-UI 6); the rest go after a few seconds.
+    if (opts?.tone !== 'error') window.setTimeout(() => setToast((t) => (t === next ? null : t)), 6000);
   }, []);
 
   // The server, when there is one: its sources, and the heartbeat that keeps it alive while
@@ -694,7 +702,7 @@ export function App() {
       playbook.saveEntries(learnt).then(
         () => {
           const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
-          if (fresh.length) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`);
+          if (fresh.length && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`);
           const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
           for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
         },
@@ -836,6 +844,9 @@ export function App() {
     [change],
   );
 
+  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
+  const flagKey = useFlagKeys({ selectedId, selectedStatus: selected?.status, onAccept: onAcceptFlag, onDuplicate: duplicateFlag });
+
   // Keyboard: undo/redo, delete, arrows to nudge, Escape to deselect, / to ask.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -853,6 +864,7 @@ export function App() {
         history.redo();
         return;
       }
+      if (flagKey(e)) return;
       if (typing) return;
       if (e.key === '/') {
         e.preventDefault();
@@ -873,7 +885,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [history, selectedId, selected, removeFlag, onLayout, hoist, currentView]);
+  }, [history, selectedId, selected, removeFlag, onLayout, hoist, currentView, flagKey]);
 
   const selectionChips = Object.entries(selections).flatMap(([key, values]) => {
     const [field, grain] = key.split('@');
@@ -897,6 +909,7 @@ export function App() {
     return (
       <>
         <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+        <ShakedownAskMark />
         {serverLost && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
             <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
@@ -1187,6 +1200,7 @@ export function App() {
             />
           )}
           <div className="mx-auto max-w-[1400px] p-4">
+            <Shakedown catalog={catalog} onAsk={() => setView('ask')} onTypeForMe={(brief) => { const id = newId(); change((h) => withBriefFlag(h, id, brief)); setAutoKinds((a) => ({ ...a, [id]: true })); setSelectedId(id); }} />
             <Canvas
               hoist={hoist}
               ctx={ctx}
@@ -1196,7 +1210,7 @@ export function App() {
               themeKey={themeKey}
               onSelectFlag={setSelectedId}
               onSelectValue={onSelectValue}
-              onAccept={(id) => updateFlag(id, { status: 'ready' })}
+              onAccept={onAcceptFlag}
               onLayout={onLayout}
               onDropKind={addFlag}
               empty={<EmptyHoist examples={examples} onExample={(b) => change((h) => ({ ...h, brief: b }))} onStarter={() => draftPage('starter')} hasCatalog={catalog.metrics.length > 0} onData={() => setDataOpen(true)} />}
@@ -1216,7 +1230,8 @@ export function App() {
             onAutoKind={(on) => setAutoKinds((a) => ({ ...a, [selected.id]: on }))}
             onChange={(patch, group) => updateFlag(selected.id, patch, group)}
             onDraft={draftSelected}
-            onAccept={() => updateFlag(selected.id, { status: 'ready' })}
+            onAccept={() => onAcceptFlag(selected.id)}
+            onSeeAsLeadership={() => setView('ask')}
             onDuplicate={() => duplicateFlag(selected.id)}
             onDelete={() => removeFlag(selected.id)}
             onClose={() => setSelectedId(null)}
@@ -1283,7 +1298,7 @@ export function App() {
           flags={hoist.flags}
           onFlag={(id) => {
             setSelectedId(id);
-            document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
           }}
           onClose={() => setBriefing(null)}
         />
@@ -1347,7 +1362,16 @@ export function App() {
       )}
 
       <div aria-live="polite" className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2">
-        {(toast || busy) && <div className="rounded-lg bg-ink px-4 py-2 text-sm text-panel shadow-lg">{busy ?? toast}</div>}
+        {(toast || busy) && (
+          <div className="pointer-events-auto flex max-w-[min(640px,calc(100vw-2rem))] items-center gap-3 rounded-lg bg-ink px-4 py-2 text-sm text-panel shadow-lg">
+            <span>{busy ?? toast?.text}</span>
+            {!busy && toast?.opts?.action && (
+              <button type="button" onClick={() => { toast.opts!.action!.run(); }} className="flex h-8 shrink-0 items-center rounded-md px-2 font-semibold underline underline-offset-2 hover:bg-panel/10">
+                {toast.opts.action.label}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
