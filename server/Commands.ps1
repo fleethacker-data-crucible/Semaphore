@@ -49,7 +49,9 @@ function Get-SemCommandRegistry {
     }
     & $add 'refresh run' '(starts Start-Semaphore.ps1 --refresh)' 'POST' 'Refresh every playbook snapshot headless and stop (the same run as --refresh). Needs a machine that can reach the sources; it refuses when Semaphore is already open.' @() $false 'RefreshRun'
     & $add 'refresh report' '/api/refresh-report' 'GET' 'The report of the last snapshot refresh.' @() $false 'RefreshReport'
-    & $add 'vault status' '/api/vault' 'GET' 'Whether Lazarette is found for sources that name a vault item, and which source names which item. Never a secret. (A running Semaphore also says whether the vault is unlocked.)' @() $false 'VaultStatus'
+    & $add 'vault status' '/api/vault' 'GET' 'Whether Semaphore is paired with Lazarette, whether Lazarette is running and unlocked, which source reads which share, and which shares Lazarette has for Semaphore. Names only, never a secret.' @() $false 'VaultStatus'
+    & $add 'vault pair' '(asks for the pairing code)' 'POST' 'Pair Semaphore with Lazarette: paste the code from Lazarette (Settings > Tools > Pair tool). It is read without echo and kept DPAPI-protected for this Windows account.' @() $false 'VaultPair'
+    & $add 'vault unpair' '(removes the pairing file)' 'POST' 'Forget the Lazarette pairing on this computer (pair again with "vault pair"). Remove Semaphore in Lazarette (Settings > Tools) too.' @() $false 'VaultUnpair'
     & $add 'ai status' '/api/ai' 'GET' 'Whether drafting goes through Fairlead, the address and which key source is used. Never prints the key.' @() $false 'AiStatus'
     & $add 'session stop' '(runs Stop-Semaphore.ps1)' 'POST' 'Stop every running copy of Semaphore on this computer.' @() $true 'SessionStop'
     return $list.ToArray()
@@ -145,9 +147,17 @@ function Invoke-SemCommand {
                 if (-not [IO.File]::Exists($file)) { return (& $r $false $null 'No refresh has run yet.' '' $false) }
                 return (& $r $true ([IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json) '' '' $false)
             }
-            'VaultStatus' {
-                $uses = @(Get-SemSources -HomeDir $HomeDir | ForEach-Object { $n = Get-SemVaultNeeds $_; if ($n) { '{0} -> {1}' -f $_.id, $n.Item } })
-                return (& $r $true ([ordered]@{ lazarette = [bool](Get-SemLazaretteLibPath -Root $Root); unlocked = $false; sources = $uses; note = 'A command-line run never unlocks the vault; unlock it in the console that starts Semaphore.' }) '' '' $false)
+            'VaultStatus' { return (& $r $true (Get-SemVaultStatus -HomeDir $HomeDir) '' '' $false) }
+            'VaultPair' {
+                # Read-Host -AsSecureString: the code is not echoed and never reaches a transcript, a log or the output.
+                $code = Read-Host -Prompt 'Pairing code from Lazarette (Settings > Tools > Pair tool)' -AsSecureString
+                if ($null -eq $code -or $code.Length -eq 0) { return (& $r $false $null 'No pairing code was entered.' '' $false) }
+                try { $path = Register-SemVaultPairing -Code $code } finally { $code.Dispose() }
+                return (& $r $true ([ordered]@{ paired = $true; file = $path }) '' ('Semaphore is paired with Lazarette. Now share each item a source names with Semaphore in Lazarette (Settings > Tools), then run: Semaphore-CLI.bat vault status') $false)
+            }
+            'VaultUnpair' {
+                $gone = Unregister-SemVaultPairing
+                return (& $r $true ([ordered]@{ removed = $gone }) '' $(if ($gone) { 'The Lazarette pairing is removed from this computer.' } else { 'There was no Lazarette pairing on this computer.' }) $false)
             }
             'AiStatus' { return (& $r $true (Get-SemAiStatus) '' '' $false) }
             'RefreshRun' {

@@ -69,7 +69,7 @@ Describe 'Synapse connection string' {
         { New-SemSynapseConnection (Raw $J) } | Should -Throw
     }
     It 'becomes an ODBC azure-synapse source, and takes its sign-in from the vault' {
-        $s = (New-SourceList '[{"id":"syn","provider":"synapse","server":"ws.sql.azuresynapse.net","database":"d","authentication":"ActiveDirectoryPassword","vault":{"item":"syn-login"}}]')[0]
+        $s = (New-SourceList '[{"id":"syn","provider":"synapse","server":"ws.sql.azuresynapse.net","database":"d","authentication":"ActiveDirectoryPassword","vault":{"user":"SYN_USER","password":"SYN_PASSWORD"}}]')[0]
         $s.provider | Should -Be 'odbc'
         $s.kind | Should -Be 'azure-synapse'
         Set-SemVaultRequest @{ Values = @{ user = 'svc@contoso.com'; password = 'p}w' } }

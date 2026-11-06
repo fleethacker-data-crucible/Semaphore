@@ -228,14 +228,12 @@ if ($Refresh) {
     }
 }
 
-# ---- Lazarette vault (only when a source names an item) ---------------------------
+# ---- Lazarette (only when a source takes secrets from it) ------------------------
+# Nothing of Lazarette loads here: each request reads its shares over loopback (Vault.ps1, Lazarette.Client.ps1).
 $vaultSources = @(Get-SemSources -HomeDir $homeDir | Where-Object { Get-SemSourceVault $_ })
 if ($vaultSources.Count -gt 0 -and -not $CheckOnly) {
-    $lazaretteLib = Get-SemLazaretteLibPath -Root $root
-    if ($lazaretteLib) { . $lazaretteLib }   # script scope: the main loop reads the secrets, workers get them with each request
-    $open = Request-SemVaultUnlock -Root $root -Interactive ([bool]$ShowConsole)
-    if ($open) { Write-SemLog 'INFO' ('Lazarette is open for {0} source(s)' -f $vaultSources.Count) }
-    else { Write-SemLog 'WARN' ('Lazarette is locked or missing; {0} source(s) that use it will say so (start with --console to unlock)' -f $vaultSources.Count) }
+    if (Test-SemVaultPaired) { Write-SemLog 'INFO' ('{0} source(s) read their secrets from Lazarette over loopback' -f $vaultSources.Count) }
+    else { Write-SemLog 'WARN' ('{0} source(s) take secrets from Lazarette, but Semaphore is not paired with it: run Semaphore-CLI.bat vault pair' -f $vaultSources.Count) }
 }
 
 # ---- One instance -----------------------------------------------------------
