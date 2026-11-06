@@ -23,6 +23,7 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/profile'                   = 'Profiles a source for the page''s catalog editor.'
     '/api/ai/check'                  = 'Checks the Fairlead key from the page; "ai status" reports the same without sending the key.'
     '/api/ai/v1/chat/completions'    = 'Relay for the page''s drafting requests: needs the browser session token.'
+    '/api/client-log'                = 'The page reports its own script errors to the server log; a CLI reports its errors itself.'
 }
 
 function New-SemCommandInput {

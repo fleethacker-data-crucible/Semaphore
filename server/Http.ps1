@@ -15,11 +15,25 @@
 #     read from a query string: launch links carry a single-use code that /api/launch trades for it.
 #   * /api/query and /api/profile run on a small runspace pool (Query.ps1), so a slow database never
 #     blocks heartbeats, static files or other flags' queries.
-#   * Presence (TechStack "Lifecycle rules"): stop 20 s after the last heartbeat, or 5 s after a
-#     leaving signal with no new heartbeat; never while a query or save is running.
+#   * Presence (TechStack "Lifecycle rules"): stop 90 s after the last heartbeat (settings
+#     heartbeatTimeoutSec; long enough for a throttled background tab), or 5 s after a leaving
+#     signal with no new heartbeat; never while a query or save is running.
+#   * Caching: index.html and every API answer no-store; hashed files under /assets/ immutable for a
+#     year; other static files no-cache.
 # =============================================================================
 
-$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+# Content-Security-Policy (issue #90; Lazarette lib/server/Http.ps1 is the reference). No inline
+# script anywhere. Styles: style sheets and <style> elements only from 'self'; style ATTRIBUTES stay
+# allowed ('unsafe-inline' in style-src-attr only) because ECharts' HTML tooltip
+# (TooltipHTMLContent.setContent) writes innerHTML with style="..." on its markers and rows: a
+# Playwright run of the example dashboard against "style-src 'self'" showed one style-src-attr
+# violation per tooltip, and none with this policy. React's style={} goes through the CSSOM and
+# needs nothing. worker-src: the CSV worker is a same-origin file (blob: kept for worker builds).
+$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+$script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
+# Hashed build outputs under /assets/ (contract 4, issue #78): a hash segment of 8+ letters/digits.
+$script:SemHashedAsset = '[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$'
+$script:SemImmutable = 'public, max-age=31536000, immutable'
 $script:SemMaxBody = 8388608          # 8 MB
 $script:SemMaxHeader = 32768
 
@@ -31,7 +45,7 @@ if ($null -eq $script:Sem) {
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
         Workers = $null; Pool = $null; WorkerContext = $null
         OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
-        Presence = @{ AutoStop = $false; TimeoutSec = 20; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
+        Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
     }
 }
 
@@ -133,27 +147,40 @@ function Get-SemHttpReason {
     switch ($Status) {
         200 { 'OK' } 202 { 'Accepted' } 204 { 'No Content' } 400 { 'Bad Request' } 401 { 'Unauthorized' }
         403 { 'Forbidden' } 404 { 'Not Found' } 405 { 'Method Not Allowed' } 408 { 'Request Timeout' }
-        409 { 'Conflict' } 413 { 'Payload Too Large' } 422 { 'Unprocessable Entity' } 500 { 'Internal Server Error' }
+        409 { 'Conflict' } 413 { 'Payload Too Large' } 422 { 'Unprocessable Entity' } 429 { 'Too Many Requests' } 500 { 'Internal Server Error' }
         501 { 'Not Implemented' } 502 { 'Bad Gateway' } 503 { 'Service Unavailable' } 504 { 'Gateway Timeout' }
         default { 'Error' }
     }
 }
 
 function Get-SemSecurityHeaders {
-    param([bool]$NoStore = $true)
+    # The same set on every response. CacheControl, when given, replaces the no-store / no-cache choice.
+    param([bool]$NoStore = $true, [string]$CacheControl = '', [string]$Csp = '')
+    if (-not $Csp) { $Csp = $script:SemCsp }
     $h = @(
-        ('Content-Security-Policy: ' + $script:SemCsp),
+        ('Content-Security-Policy: ' + $Csp),
         'X-Content-Type-Options: nosniff',
         'Referrer-Policy: no-referrer',
         'X-Frame-Options: DENY',
-        'Cross-Origin-Resource-Policy: same-origin'
+        'Cross-Origin-Resource-Policy: same-origin',
+        'Cross-Origin-Opener-Policy: same-origin',
+        ('Permissions-Policy: ' + $script:SemPermissionsPolicy)
     )
-    if ($NoStore) { $h += 'Cache-Control: no-store' } else { $h += 'Cache-Control: no-cache' }
+    if ($CacheControl) { $h += ('Cache-Control: ' + $CacheControl) }
+    elseif ($NoStore) { $h += 'Cache-Control: no-store' } else { $h += 'Cache-Control: no-cache' }
     return $h
 }
 
+function Get-SemStaticCacheControl {
+    # index.html (and any .html) no-store; a hashed file under /assets/ immutable; anything else no-cache.
+    param([string]$UrlPath, [string]$File)
+    if ($File -and $File.EndsWith('.html', [StringComparison]::OrdinalIgnoreCase)) { return 'no-store' }
+    if ($UrlPath -cmatch '\A/assets/' -and ($UrlPath.Split('/')[-1]) -cmatch $script:SemHashedAsset) { return $script:SemImmutable }
+    return 'no-cache'
+}
+
 function Send-SemBytes {
-    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly)
+    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '')
     $stream = $script:Sem.Stream
     if ($null -eq $stream) { return }
     if ($null -eq $Bytes) { $Bytes = New-Object byte[] 0 }
@@ -161,7 +188,7 @@ function Send-SemBytes {
     if ($ContentType) { $lines += "Content-Type: $ContentType" }
     $lines += "Content-Length: $($Bytes.Length)"
     $lines += 'Connection: close'
-    $lines += (Get-SemSecurityHeaders -NoStore $NoStore)
+    $lines += (Get-SemSecurityHeaders -NoStore $NoStore -CacheControl $CacheControl -Csp $Csp)
     $lines += $ExtraHeaders
     $head = [Text.Encoding]::ASCII.GetBytes(($lines -join "`r`n") + "`r`n`r`n")
     $stream.Write($head, 0, $head.Length)
@@ -316,12 +343,22 @@ function Get-SemMimeType {
     }
 }
 
+# The "not built" page's one <style> element, allowed by its hash (the CSP has no 'unsafe-inline' for elements).
+$script:SemNotBuiltStyle = 'body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#1b2430;background:#fff}code{background:#eef1f5;padding:0 .3em;border-radius:3px}'
+
+function Get-SemNotBuiltCsp {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [Convert]::ToBase64String($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($script:SemNotBuiltStyle))) } finally { $sha.Dispose() }
+    return $script:SemCsp.Replace("style-src 'self';", ("style-src 'self' 'sha256-" + $hash + "';"))
+}
+
 function Get-SemNotBuiltPage {
     $v = $script:Sem.Version
+    $style = $script:SemNotBuiltStyle
     return @"
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Semaphore</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#1b2430;background:#fff}code{background:#eef1f5;padding:0 .3em;border-radius:3px}</style>
+<style>$style</style>
 </head><body>
 <h1>Semaphore $v</h1>
 <p>This copy of Semaphore has no browser interface: <code>web\dist\index.html</code> is missing. That happens with a copy of the source code (a git clone, or GitHub's <b>Code &gt; Download ZIP</b> / "Source code (zip)"). The interface is built off the workstation; nothing needs to be installed here.</p>
@@ -354,19 +391,18 @@ function Send-SemStatic {
     $head = ($Req.Method -eq 'HEAD')
     if ($Req.Path -eq '/skin.css') {
         $skin = Get-SemSkinFile
-        if ($skin) { Send-SemBytes -Status 200 -ContentType 'text/css; charset=utf-8' -Bytes ([IO.File]::ReadAllBytes($skin)) -NoStore $true -HeadOnly:$head; return }
+        if ($skin) { Send-SemBytes -Status 200 -ContentType 'text/css; charset=utf-8' -Bytes ([IO.File]::ReadAllBytes($skin)) -CacheControl 'no-store' -HeadOnly:$head; return }
     }
     $r = Resolve-SemStaticFile -WebRoot $script:Sem.WebRoot -Path $Req.Path
     switch ($r.Kind) {
         'refused' { Send-SemError 404 'not-found' 'Not found.'; return }
         'missing' { Send-SemError 404 'not-found' 'Not found.'; return }
         'notbuilt' {
-            Send-SemBytes -Status 200 -ContentType 'text/html; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes((Get-SemNotBuiltPage))) -HeadOnly:$head
+            Send-SemBytes -Status 200 -ContentType 'text/html; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes((Get-SemNotBuiltPage))) -Csp (Get-SemNotBuiltCsp) -HeadOnly:$head
             return
         }
         default {
-            $isHtml = $r.File.EndsWith('.html', [StringComparison]::OrdinalIgnoreCase)
-            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -NoStore $isHtml -HeadOnly:$head
+            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head
         }
     }
 }
@@ -375,7 +411,7 @@ function Send-SemStatic {
 # Presence: the tab owns the server
 # ---------------------------------------------------------------------------
 function Initialize-SemPresence {
-    param([bool]$AutoStop = $true, [int]$TimeoutSec = 20, [int]$GraceSec = 5, [int]$FirstSec = 120, [datetime]$Now = (Get-Date))
+    param([bool]$AutoStop = $true, [int]$TimeoutSec = 90, [int]$GraceSec = 5, [int]$FirstSec = 120, [datetime]$Now = (Get-Date))
     $script:Sem.Presence = @{ AutoStop = $AutoStop; TimeoutSec = $TimeoutSec; GraceSec = $GraceSec; FirstSec = $FirstSec; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false; Started = $Now }
 }
 

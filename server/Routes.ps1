@@ -9,12 +9,16 @@
 #   POST   /api/leaving     { token, tab} (Http.ps1: token in the body, sendBeacon)
 #   POST   /api/end                       responds, then stops cleanly
 #   GET    /api/hoists | /api/catalogs              [{ id, title, updated }]
-#   GET    /api/hoists/<id>                         the file's JSON verbatim
-#   PUT    /api/hoists/<id>   hoist JSON            atomic write -> { ok: true }
+#   GET    /api/hoists/<id>                         the file's JSON verbatim, header ETag: "<sha256 hex of the file>"
+#   PUT    /api/hoists/<id>   hoist JSON            atomic write -> { ok: true, etag }
+#          With If-Match: "<hex>" and a stored file of another hash: 409 { code: "version", etag } and
+#          nothing is written (someone else saved since). No If-Match: written (CLI, first save).
 #   DELETE /api/hoists/<id>                         moved to .trash with a timestamp suffix
 #   The same four routes serve /api/team (style overrides, away notices), /api/playbook (accepted answers), /api/snapshots (their saved
 #   results) and /api/questions (leadership's question queue). GET /api/<kind>?full=1 returns
 #   the documents themselves instead of { id, title, updated } (playbook and questions only).
+#   POST   /api/client-log { level, message, stack?, view? }   a browser error, one log line -> 204
+#          (4 KB at most, 20 a minute, then 429; only message, stack and view are written)
 #   POST   /api/refresh-report { refreshed, skipped, failed: [{ id, title, error }] }
 #          logged and kept as <home>\snapshots\.last-refresh.json; GET returns it (404 before the first)
 #   POST   /api/query    { source, sql, params, rowCap, timeoutSec }   (Query.ps1, worker pool)
@@ -26,6 +30,9 @@
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
+$script:SemClientLogMaxBytes = 4096   # one browser error report
+$script:SemClientLogPerMinute = 20
+$script:SemClientLogTimes = New-Object System.Collections.Generic.List[datetime]
 
 function Get-SemJsonProp {
     param($Json, [string]$Name)
@@ -118,15 +125,53 @@ function Test-SemDocBody {
     return $null
 }
 
+function Get-SemSha256Hex {
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes) { $Bytes = New-Object byte[] 0 }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $h = $sha.ComputeHash($Bytes) } finally { $sha.Dispose() }
+    return ([BitConverter]::ToString($h).Replace('-', '').ToLowerInvariant())
+}
+
+function Get-SemDocEtag {
+    # The sha256 hex of the stored file's bytes, or $null when there is no file.
+    param([string]$Dir, [string]$Id)
+    $f = Join-Path $Dir ($Id + '.json')
+    if (-not [IO.File]::Exists($f)) { return $null }
+    return (Get-SemSha256Hex ([IO.File]::ReadAllBytes($f)))
+}
+
+function Get-SemIfMatch {
+    # The entity tag of an If-Match header without quotes or W/, '*' for any, or $null without one.
+    param($Headers)
+    if ($null -eq $Headers -or -not $Headers.ContainsKey('If-Match')) { return $null }
+    $v = ([string]$Headers['If-Match']).Trim()
+    if ($v.StartsWith('W/')) { $v = $v.Substring(2) }
+    return $v.Trim('"')
+}
+
 function Save-SemDoc {
-    # Atomic write: temp file in the same folder, then replace.
+    <#
+      Atomic write: the bytes go to a temp file in the same folder, which then replaces the document
+      ([IO.File]::Replace), so a reader or a crash never sees half a file. Where Replace is refused
+      (some network shares), the old file is moved aside, the temp file moved in, and the old one
+      deleted; when the move in fails the old file is put back.
+    #>
     param([string]$Dir, [string]$Id, [byte[]]$Bytes)
     $f = Join-Path $Dir ($Id + '.json')
     $tmp = Join-Path $Dir ('.' + $Id + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
     [IO.File]::WriteAllBytes($tmp, $Bytes)
     try {
-        if ([IO.File]::Exists($f)) { [IO.File]::Replace($tmp, $f, [NullString]::Value) }
-        else { [IO.File]::Move($tmp, $f) }
+        if (-not [IO.File]::Exists($f)) { [IO.File]::Move($tmp, $f); return }
+        $replaced = $false
+        try { [IO.File]::Replace($tmp, $f, [NullString]::Value); $replaced = $true } catch { $replaced = $false }
+        if ($replaced) { return }
+        if (-not [IO.File]::Exists($f)) { [IO.File]::Move($tmp, $f); return }   # Replace failed after moving the old file away
+        $old = Join-Path $Dir ('.' + $Id + '.' + [guid]::NewGuid().ToString('N') + '.old')
+        [IO.File]::Move($f, $old)
+        try { [IO.File]::Move($tmp, $f) }
+        catch { [IO.File]::Move($old, $f); throw }
+        try { [IO.File]::Delete($old) } catch { }
     } finally {
         if ([IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch { } }
     }
@@ -163,18 +208,31 @@ function Invoke-SemDocRoute {
     if (-not (Test-SemDocId $Id)) { Send-SemError 400 'bad-id' ('Invalid ' + $noun + ' id: use 1 to 64 letters, digits, _ or -.'); return }
     switch ($Req.Method) {
         'GET' {
-            $text = Read-SemDoc -Dir $dir -Id $Id
-            if ($null -eq $text) { Send-SemError 404 'not-found' ("No $noun '$Id'."); return }
-            Send-SemJsonText 200 $text
+            $f = Join-Path $dir ($Id + '.json')
+            if (-not [IO.File]::Exists($f)) { Send-SemError 404 'not-found' ("No $noun '$Id'."); return }
+            $bytes = [IO.File]::ReadAllBytes($f)
+            $text = (New-Object Text.UTF8Encoding $false).GetString($bytes).TrimStart([char]0xFEFF)
+            Send-SemBytes -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($text)) -ExtraHeaders @('ETag: "' + (Get-SemSha256Hex $bytes) + '"')
         }
         'PUT' {
             $problem = Test-SemDocBody -Bytes $Req.Body
             if ($problem -eq 'too-large') { Send-SemError 413 'too-large' ("A $noun may be at most 2 MB."); return }
             if ($problem) { Send-SemError 400 'invalid' $problem; return }
+            # Optimistic concurrency (#88): the main loop serves one request at a time, so nothing in
+            # this process can save between the check and the write.
+            $want = Get-SemIfMatch $Req.Headers
+            if ($null -ne $want -and $want -ne '*') {
+                $current = Get-SemDocEtag -Dir $dir -Id $Id
+                if ($null -ne $current -and -not $current.Equals($want, [StringComparison]::OrdinalIgnoreCase)) {
+                    Write-SemLog 'INFO' "Did not save $noun ${Id}: it changed since this copy was opened"
+                    Send-SemJson 409 ([ordered]@{ error = ("Someone else saved this $noun after you opened it. Load their version, or save yours as a copy."); code = 'version'; etag = $current })
+                    return
+                }
+            }
             $script:Sem.SyncBusy = $true
             try { Save-SemDoc -Dir $dir -Id $Id -Bytes $Req.Body } finally { $script:Sem.SyncBusy = $false }
             Write-SemLog 'INFO' "Saved $noun $Id ($($Req.Body.Length) bytes)"
-            Send-SemJson 200 ([ordered]@{ ok = $true })
+            Send-SemJson 200 ([ordered]@{ ok = $true; etag = (Get-SemSha256Hex $Req.Body) })
         }
         'DELETE' {
             $script:Sem.SyncBusy = $true
@@ -185,6 +243,51 @@ function Invoke-SemDocRoute {
         }
         default { Send-SemError 405 'method' 'Method not allowed.' }
     }
+}
+
+# ---------------------------------------------------------------------------
+# Client error log (#89): the page reports its own errors; one line each in the server log.
+# ---------------------------------------------------------------------------
+function ConvertTo-SemLogText {
+    # One log-safe line: CR, LF and every other control or line-separator character become a space
+    # (a stack's line breaks become " | "), so a message can never start a forged log line.
+    param($Value, [int]$Max)
+    if ($Value -isnot [string]) { return '' }
+    $t = [regex]::Replace($Value, '\s*(\r\n|\r|\n|\u2028|\u2029|\u0085)\s*', ' | ')
+    $t = [regex]::Replace($t, '[\x00-\x1F\x7F-\x9F\u2028\u2029]', ' ').Trim()
+    if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max) + '...' }
+    return $t
+}
+
+function Test-SemClientLogRate {
+    # $true while fewer than 20 reports arrived in the last minute (the report is then counted).
+    param([datetime]$Now = (Get-Date))
+    $times = $script:SemClientLogTimes
+    while ($times.Count -gt 0 -and ($Now - $times[0]).TotalSeconds -ge 60) { $times.RemoveAt(0) }
+    if ($times.Count -ge $script:SemClientLogPerMinute) { return $false }
+    $times.Add($Now)
+    return $true
+}
+
+function Invoke-SemClientLog {
+    # POST /api/client-log { level: "error"|"warn", message, stack?, view? } -> 204. Only those three
+    # texts reach the log, never the rest of the body.
+    param($Req)
+    if ($Req.Body.Length -gt $script:SemClientLogMaxBytes) { Send-SemError 413 'too-large' 'An error report may be at most 4 KB.'; return }
+    if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
+    $level = Get-SemJsonProp $Req.Json 'level'
+    if ($level -cne 'error' -and $level -cne 'warn') { Send-SemError 400 'invalid' 'level must be "error" or "warn".'; return }
+    $message = ConvertTo-SemLogText (Get-SemJsonProp $Req.Json 'message') 500
+    if (-not $message) { Send-SemError 400 'invalid' 'message must be a non-empty string.'; return }
+    if (-not (Test-SemClientLogRate)) { Send-SemError 429 'rate' 'Too many error reports from the page; the next ones are kept after a minute.'; return }
+    $line = 'Page ' + $level + ': ' + $message
+    $view = ConvertTo-SemLogText (Get-SemJsonProp $Req.Json 'view') 64
+    if ($view) { $line += ' (view: ' + $view + ')' }
+    $stack = ConvertTo-SemLogText (Get-SemJsonProp $Req.Json 'stack') 2000
+    if ($stack) { $line += ' stack: ' + $stack }
+    $logLevel = 'WARN'; if ($level -ceq 'error') { $logLevel = 'ERROR' }
+    Write-SemLog $logLevel $line
+    Send-SemNoContent
 }
 
 # ---------------------------------------------------------------------------
@@ -234,6 +337,11 @@ function Invoke-SemRoute {
         $kind = $Matches[1]; $id = $null
         if ($p -ne "/api/$kind") { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
         Invoke-SemDocRoute -Req $Req -Kind $kind -Id $id
+        return
+    }
+    if ($p -eq '/api/client-log') {
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Invoke-SemClientLog -Req $Req
         return
     }
     if ($p -eq '/api/refresh-report') {
