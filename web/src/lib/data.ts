@@ -123,12 +123,25 @@ async function run(plan: QueryPlan, ctx: DataContext) {
   }
 }
 
+/** A selected value that can be sent to the source as an "in" filter value. */
+function expressible(v: unknown): v is string | number {
+  return typeof v === 'string' || typeof v === 'number';
+}
+
+/**
+ * Selections the plan cannot answer locally and the source can be asked for: not a period picked
+ * on another flag, and only string or number values (a blank or true/false pick has no "in" value,
+ * so it stays reported as not applied rather than silently showing the unfiltered total).
+ */
+function requeryable(keys: readonly string[], selections: Selections): string[] {
+  return keys.filter((k) => !k.includes('@') && (selections[k] ?? []).length > 0 && (selections[k] ?? []).every(expressible));
+}
+
 /** Selections the plan cannot answer locally, turned into filters on the flag itself. */
 function withSelectionFilters(flag: Flag, keys: string[], selections: Selections): Flag {
   const extra: Filter[] = [];
   for (const k of keys) {
-    if (k.includes('@')) continue; // a period picked on another flag; not expressible as a filter here
-    const values = (selections[k] ?? []).filter((v): v is string | number => typeof v === 'string' || typeof v === 'number');
+    const values = (selections[k] ?? []).filter(expressible);
     if (values.length) extra.push({ field: k, op: 'in', values });
   }
   return { ...flag, binding: { ...flag.binding!, filters: [...flag.binding!.filters, ...extra] } };
@@ -143,7 +156,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
   const requeried: string[] = [];
   if (display.live.length) {
     // Ask the source again with those selections as filters. The rest still apply locally.
-    const keys = display.live.filter((k) => !k.includes('@'));
+    const keys = requeryable(display.live, selections);
     if (keys.length) {
       const narrowed = withSelectionFilters(flag, keys, selections);
       const again = planFlag(hoist, narrowed, ctx.index);
@@ -151,7 +164,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
         plan = again.plan;
         ran = await run(plan, ctx);
         const rest: Selections = Object.fromEntries(Object.entries(selections).filter(([k]) => !keys.includes(k)));
-        display = { ...applySelections(plan, ran.result.rows, rest, flag.behavior), live: [] };
+        display = { ...applySelections(plan, ran.result.rows, rest, flag.behavior), live: display.live.filter((k) => !keys.includes(k)) };
         requeried.push(...keys);
       }
     }

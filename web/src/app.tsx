@@ -25,6 +25,7 @@ import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
+import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, startSession, type StoredItem } from './lib/api.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
@@ -137,7 +138,15 @@ export function App() {
   const [autoKinds, setAutoKinds] = useState<Record<string, boolean>>({});
   const [theme, setTheme] = useState<'light' | 'dark'>(() => readLocal<'light' | 'dark'>(K.theme) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   const askRef = useRef<HTMLInputElement>(null);
-  const today = useMemo(() => new Date(), []);
+  // The local calendar day (the core reads dates in UTC), moved on at local midnight so a tab left
+  // open overnight does not keep yesterday's windows.
+  const [today, setToday] = useState(() => calendarToday());
+  useEffect(() => {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+    const timer = setTimeout(() => setToday(calendarToday()), midnight - now.getTime() + 1000);
+    return () => clearTimeout(timer);
+  }, [today]);
 
   // The playbook, and the team style card learnt from it: drafts are finished the way the team builds.
   const playbook = usePlaybook(server, serverChecked);

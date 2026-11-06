@@ -128,6 +128,11 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
             <RefreshCcw size={12} />
           </span>
         ) : null}
+        {result && result.display.live.some((k) => !k.includes('@')) ? (
+          <span title="A blank or true/false selection on another flag could not be applied to this one; it shows its numbers without that selection" className="text-warn">
+            <AlertTriangle size={13} />
+          </span>
+        ) : null}
         {result?.display.truncated && (
           <span title="The result hit the row cap, so totals may be incomplete" className="text-warn">
             <AlertTriangle size={13} />

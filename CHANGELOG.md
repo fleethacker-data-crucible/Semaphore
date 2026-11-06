@@ -4,6 +4,11 @@
 
 - **The session token stays off command lines and transcripts.** Launch links (the browser window, the headless `--refresh` browser, the `--no-browser` and "could not open the browser" console lines) carry a single-use launch code, valid 10 minutes, instead of the session token; the page trades it once with `POST /api/launch` and keeps the token in the tab. Process-creation auditing and PowerShell transcription, both on at the workstation, recorded the old `?session=` link.
 - **"UI not built" page says what to do on a workstation** (#56): it explains that a source-code copy has no interface and gives the three steps to the prebuilt `Semaphore-<version>.zip` on the Releases page (download, Unblock, Extract All).
+- Fixes from a second code review:
+  - A field with more than one cleaning step (for example a map, then blank-as, then number) wrote its column more than once but bound its values once, so with positional `?` markers (every server source) the driver got too few parameters or values in the wrong places. The expression and its values are now written together each time.
+  - Spark SQL (Foundry, Databricks) now ends in `LIMIT`, like the other dialects, so a top-N flag is cut at the source instead of downloading the whole result.
+  - "Today" is the local calendar day and moves on at midnight. In the evening west of Greenwich it was already tomorrow (UTC), which emptied "last 1 month" and dropped today from "last 1 day".
+  - A blank or true/false selection that must be asked of the source is no longer claimed as applied while the flag shows its unfiltered total; the card shows a warning instead.
 - Fixes: an error reading the Fairlead key from Credential Manager no longer stops the legacy DPAPI key file being tried, and is reported as the AI problem when neither works; `Set-SemaphoreAiKey -Clear` said "No Fairlead key was stored" after removing one from Credential Manager.
 - **Read a briefing aloud** ("Brief me" > Read aloud, [docs/VOICE.md](docs/VOICE.md)): speaks with a voice installed on this PC, never an online voice; silent with a message when there is none. Off until clicked.
 - **Plain-English drafting can split by many-side fields** ("credit limit by order status"): same reach rule as the planner, one many-side table per flag, a note that groups can add up to more than the total.

@@ -124,28 +124,32 @@ export function toIsoDate(v: Cell, order: 'mdy' | 'dmy' | 'ymd'): string | null 
  * bound parameters, like every other value Semaphore sends.
  */
 export function cleanSql(steps: readonly CleaningStep[], col: string, dialect: Dialect, bind: (value: string | number, type: 'string' | 'number') => string): string {
-  let x = col;
+  // Several steps write the incoming expression more than once (CASE x … ELSE x, IIf(x …, x)). The
+  // expression is rebuilt, and its values bound again, each time it is written, so with positional
+  // "?" placeholders the parameters stay in the order the markers appear in the text.
+  let x: () => string = () => col;
   for (const s of steps) {
+    const prev = x;
     switch (s.kind) {
       case 'trim':
-        x = `TRIM(${x})`;
+        x = () => `TRIM(${prev()})`;
         break;
       case 'map': {
         const pairs = Object.entries(s.map ?? {}).slice(0, MAP_MAX);
         if (!pairs.length) break;
-        if (dialect === 'access') x = `Switch(${pairs.map(([from, to]) => `${x} = ${bind(from, 'string')}, ${bind(to, 'string')}`).join(', ')}, True, ${x})`;
-        else x = `CASE ${x} ${pairs.map(([from, to]) => `WHEN ${bind(from, 'string')} THEN ${bind(to, 'string')}`).join(' ')} ELSE ${x} END`;
+        if (dialect === 'access') x = () => `Switch(${pairs.map(([from, to]) => `${prev()} = ${bind(from, 'string')}, ${bind(to, 'string')}`).join(', ')}, True, ${prev()})`;
+        else x = () => `CASE ${prev()} ${pairs.map(([from, to]) => `WHEN ${bind(from, 'string')} THEN ${bind(to, 'string')}`).join(' ')} ELSE ${prev()} END`;
         break;
       }
       case 'blank-as': {
         const value = s.value ?? '';
         const type = typeof value === 'number' ? 'number' : 'string';
-        if (dialect === 'access') x = type === 'number' ? `IIf(${x} Is Null, ${bind(value, type)}, ${x})` : `IIf(${x} Is Null Or ${x} = '', ${bind(value, type)}, ${x})`;
-        else x = type === 'number' ? `COALESCE(${x}, ${bind(value, type)})` : `COALESCE(NULLIF(${x}, ''), ${bind(value, type)})`;
+        if (dialect === 'access') x = type === 'number' ? () => `IIf(${prev()} Is Null, ${bind(value, type)}, ${prev()})` : () => `IIf(${prev()} Is Null Or ${prev()} = '', ${bind(value, type)}, ${prev()})`;
+        else x = type === 'number' ? () => `COALESCE(${prev()}, ${bind(value, type)})` : () => `COALESCE(NULLIF(${prev()}, ''), ${bind(value, type)})`;
         break;
       }
       case 'number':
-        x = numberSql(x, dialect);
+        x = () => numberSql(prev, dialect);
         break;
       case 'date':
         throw new CleaningError('Mixed date formats are cleaned in data held in the page only; ask for the column to be fixed at the source.');
@@ -153,23 +157,23 @@ export function cleanSql(steps: readonly CleaningStep[], col: string, dialect: D
         break;
     }
   }
-  return x;
+  return x();
 }
 
-function numberSql(x: string, dialect: Dialect): string {
-  const bare = `REPLACE(REPLACE(${x}, ',', ''), '$', '')`;
+function numberSql(x: () => string, dialect: Dialect): string {
+  const bare = (): string => `REPLACE(REPLACE(${x()}, ',', ''), '$', '')`;
   switch (dialect) {
     case 'ansi':
     case 'spark':
-      return `TRY_CAST(${bare} AS DOUBLE)`;
+      return `TRY_CAST(${bare()} AS DOUBLE)`;
     case 'tsql':
     case 'synapse':
-      return `TRY_CAST(${bare} AS FLOAT)`;
+      return `TRY_CAST(${bare()} AS FLOAT)`;
     case 'oracle':
-      return `TO_NUMBER(${bare} DEFAULT NULL ON CONVERSION ERROR)`;
+      return `TO_NUMBER(${bare()} DEFAULT NULL ON CONVERSION ERROR)`;
     case 'access':
-      return `IIf(IsNumeric(${bare}), CDbl(${bare}), Null)`;
+      return `IIf(IsNumeric(${bare()}), CDbl(${bare()}), Null)`;
     case 'postgres':
-      return `CASE WHEN ${bare} ~ '^\\s*-?[0-9]*\\.?[0-9]+\\s*$' THEN CAST(${bare} AS DOUBLE PRECISION) END`;
+      return `CASE WHEN ${bare()} ~ '^\\s*-?[0-9]*\\.?[0-9]+\\s*$' THEN CAST(${bare()} AS DOUBLE PRECISION) END`;
   }
 }
