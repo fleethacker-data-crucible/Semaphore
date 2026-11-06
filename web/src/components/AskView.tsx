@@ -4,7 +4,7 @@
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, BadgeCheck, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
 import { ReportsShelf } from './Reports.tsx';
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
@@ -290,6 +290,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                 <button key={g.title} type="button" onClick={() => void ask(g.question)} className="rounded-2xl border border-line bg-panel p-4 text-left shadow-sm hover:border-accent">
                   <span className="block text-xs text-ink-3">{g.title}</span>
                   <span className={`mt-1 block text-2xl font-semibold tabular-nums ${g.tone === 'bad' ? 'text-bad' : g.tone === 'warn' ? 'text-warn' : g.tone === 'good' ? 'text-good' : 'text-ink'}`}>{formatNumber(g.value, g.format)}</span>
+                  {g.tone && <ToneWord tone={g.tone} />}
                   {typeof g.value === 'number' && typeof g.before === 'number' && g.before !== 0 && (
                     <span className="text-xs text-ink-2">
                       {g.value >= g.before ? '▲' : '▼'} {Math.abs(Math.round(((g.value - g.before) / Math.abs(g.before)) * 100))}% on before
@@ -321,7 +322,13 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                 {briefing.map((b, i) => (
                   <li key={i}>
                     <button type="button" onClick={() => void ask(b.question)} className="group flex w-full items-start gap-3 py-2.5 text-left">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${b.insight.tone === 'bad' ? 'bg-bad' : b.insight.tone === 'warn' ? 'bg-warn' : 'bg-accent'}`} />
+                      {b.insight.tone === 'bad' ? (
+                        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-bad" aria-label="Needs attention" />
+                      ) : b.insight.tone === 'warn' ? (
+                        <AlertCircle size={15} className="mt-0.5 shrink-0 text-warn" aria-label="Worth a look" />
+                      ) : (
+                        <Info size={15} className="mt-0.5 shrink-0 text-accent" aria-label="For information" />
+                      )}
                       <span className="flex-1">
                         <span className="block text-sm text-ink">{b.insight.text}</span>
                         <span className="text-xs text-ink-3">{b.title}</span>
@@ -473,4 +480,12 @@ function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index
       )}
     </article>
   );
+}
+
+/** A tile's status in an icon and a word, never colour alone (WCAG 1.4.1). */
+function ToneWord({ tone }: { tone: string }) {
+  if (tone === 'bad') return <span className="flex items-center gap-1 text-xs font-semibold text-bad"><AlertTriangle size={12} aria-hidden="true" /> Breaks its red rule</span>;
+  if (tone === 'warn') return <span className="flex items-center gap-1 text-xs font-semibold text-warn"><AlertCircle size={12} aria-hidden="true" /> In its amber band</span>;
+  if (tone === 'good') return <span className="flex items-center gap-1 text-xs font-semibold text-good"><CheckCircle2 size={12} aria-hidden="true" /> Within its rule</span>;
+  return null;
 }
