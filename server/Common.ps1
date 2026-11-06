@@ -56,7 +56,7 @@ function Write-SemLog {
 function Get-SemDefaultSettings {
     return @{
         home = ''; port = 0; browser = 'auto'; appWindow = $true
-        heartbeatTimeoutSec = 20; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
+        heartbeatTimeoutSec = 90; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
         view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30; skin = ''
     }
 }

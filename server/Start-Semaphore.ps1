@@ -4,7 +4,7 @@
   Starts Semaphore: the local server on 127.0.0.1 (port block 8800-8802) and the browser.
   Launch-Semaphore.bat calls this. Windows PowerShell 5.1 only. ASCII only.
 .DESCRIPTION
-  Lifecycle (TechStack "Lifecycle rules"): the server stops 20 s after the last heartbeat of its
+  Lifecycle (TechStack "Lifecycle rules"): the server stops 90 s after the last heartbeat of its
   browser tab, 5 s after a leaving signal with no new heartbeat, from End session in the browser,
   or with Stop-Semaphore.ps1. One copy runs at a time:
     - a running copy of the same version that no tab is using: the browser is opened on it (reuse);

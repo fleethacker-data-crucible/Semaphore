@@ -3,7 +3,7 @@
     "port": 0,
     "browser": "auto",
     "appWindow": true,
-    "heartbeatTimeoutSec": 20,
+    "heartbeatTimeoutSec": 90,
     "leavingGraceSec": 5,
     "firstHeartbeatSec": 120,
     "queryWorkers": 4,
