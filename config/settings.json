@@ -9,5 +9,10 @@
     "queryWorkers": 4,
     "view": "builder",
     "playbookReviewer": "",
-    "refreshTimeoutMin": 30
+    "refreshTimeoutMin": 30,
+    "signalBook": true,
+    "impact": true,
+    "teamLog": true,
+    "showAskers": true,
+    "bz": true
 }

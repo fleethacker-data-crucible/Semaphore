@@ -3,7 +3,7 @@
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { BookMarked, BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -42,6 +42,7 @@ import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../s
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { AskView } from './components/AskView.tsx';
 import { PlaybookPanel } from './components/PlaybookPanel.tsx';
+import { SignalBook } from './components/SignalBook.tsx';
 import { KitsPanel } from './components/KitsPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
@@ -114,6 +115,7 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [kitsOpen, setKitsOpen] = useState(false);
+  const [signalOpen, setSignalOpen] = useState(false);
   // Why the page cannot reach its server any more: it stopped (or the session ended), or this tab's
   // launch link was already used or has expired.
   const [serverLost, setServerLost] = useState<null | 'stopped' | 'link'>(null);
@@ -1027,8 +1029,9 @@ export function App() {
           </IconButton>
           <button type="button" onClick={() => setPlaybookOpen(true)} className="relative ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="What leadership can ask for, their questions, and what needs review">
             <BookOpen size={14} className="text-brass" /> Playbook
-            {waiting > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-bad px-1.5 text-[10px] font-bold text-panel">{waiting}</span>}
+            {waiting > 0 && <span className="rounded-full bg-accent-soft px-1.5 text-[11px] font-semibold text-accent">{waiting} waiting</span>}
           </button>
+          {playbook.social.signalBook && <IconButton label="Signal Book: your private flags for what you have tried, and your watch log" onClick={() => setSignalOpen(true)}><BookMarked size={16} /></IconButton>}
           <button type="button" onClick={() => setView('ask')} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="The leadership view: ask a question, get an answer">
             <MessagesSquare size={14} className="text-brass" /> Ask view
           </button>
@@ -1238,6 +1241,17 @@ export function App() {
             setPlaybookTab(undefined);
           }}
           onAnswer={answerQuestionItem}
+        />
+      )}
+
+      {signalOpen && (
+        <SignalBook hoist={hoist} catalog={catalog} playbook={playbook} user={user} onClose={() => setSignalOpen(false)}
+          onTry={(t) => {
+            setSignalOpen(false);
+            if (t.kind === 'brief') addBriefFlag(t.title, t.brief);
+            else if (t.panel === 'playbook' || t.panel === 'away') (setPlaybookTab(t.panel === 'away' ? 'away' : undefined), setPlaybookOpen(true));
+            else ({ data: setDataOpen, qlik: setQlikOpen, kits: setKitsOpen, lineage: setLineageOpen })[t.panel](true);
+          }}
         />
       )}
 
