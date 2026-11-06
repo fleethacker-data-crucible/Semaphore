@@ -11,7 +11,8 @@
 #     present) the same origin; otherwise 403.
 #   * /api/*: header X-Semaphore-Session must equal the session token (constant-time compare),
 #     else 401. /api/leaving alone takes the token in its JSON body (sendBeacon cannot set headers).
-#     The token is never logged, never put in the runtime file and never read from a query string.
+#     The token is never logged, never put in the runtime file, never on a command line and never
+#     read from a query string: launch links carry a single-use code that /api/launch trades for it.
 #   * /api/query and /api/profile run on a small runspace pool (Query.ps1), so a slow database never
 #     blocks heartbeats, static files or other flags' queries.
 #   * Presence (TechStack "Lifecycle rules"): stop 20 s after the last heartbeat, or 5 s after a
@@ -29,7 +30,7 @@ if ($null -eq $script:Sem) {
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
         Workers = $null; Pool = $null; WorkerContext = $null
-        OnOpenBrowser = $null; OpenRequested = $false
+        OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
         Presence = @{ AutoStop = $false; TimeoutSec = 20; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
     }
 }
@@ -58,6 +59,35 @@ function Test-SemStringsEqual {
 function Test-SemSessionToken {
     param([string]$Candidate)
     return (Test-SemStringsEqual $Candidate $script:Sem.Token)
+}
+
+# Launch codes: the browser's command line, the headless refresh and a --no-browser console line
+# carry a launch code, never the session token. Process-creation auditing and PowerShell
+# transcription can record those, so each code is single use and expires; the page trades it for
+# the token with POST /api/launch { code } and keeps the token in sessionStorage.
+$script:SemLaunchCodeTtlSec = 600
+
+function New-SemLaunchCode {
+    if ($null -eq $script:Sem.LaunchCodes) { $script:Sem.LaunchCodes = @{} }
+    $code = New-SemToken
+    $script:Sem.LaunchCodes[$code] = (Get-Date).ToUniversalTime().AddSeconds($script:SemLaunchCodeTtlSec)
+    return $code
+}
+
+function Use-SemLaunchCode {
+    # $true once for a live code; the code is spent either way. Expired codes are dropped.
+    param([string]$Candidate)
+    $codes = $script:Sem.LaunchCodes
+    if ($null -eq $codes -or $codes.Count -eq 0) { return $false }
+    $now = (Get-Date).ToUniversalTime()
+    $hit = $null
+    foreach ($k in @($codes.Keys)) {
+        if ($codes[$k] -le $now) { $codes.Remove($k); continue }
+        if (Test-SemStringsEqual $Candidate $k) { $hit = $k }
+    }
+    if ($null -eq $hit) { return $false }
+    $codes.Remove($hit)
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -294,9 +324,16 @@ function Get-SemNotBuiltPage {
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#1b2430;background:#fff}code{background:#eef1f5;padding:0 .3em;border-radius:3px}</style>
 </head><body>
 <h1>Semaphore $v</h1>
-<p>The local server is running, but the browser interface has not been built: <code>web\dist\index.html</code> is missing.</p>
-<p>On a build machine, run <code>npm ci &amp;&amp; npm run build</code> in the Semaphore folder and copy <code>web\dist</code> here, or install Semaphore from a release zip.</p>
-<p>Stop the server with <code>server\Stop-Semaphore.ps1</code>; it also stops by itself after a short while.</p>
+<p>This copy of Semaphore has no browser interface: <code>web\dist\index.html</code> is missing. That happens with a copy of the source code (a git clone, or GitHub's <b>Code &gt; Download ZIP</b> / "Source code (zip)"). The interface is built off the workstation; nothing needs to be installed here.</p>
+<h2>Get the ready-to-run copy</h2>
+<ol>
+<li>Open <a href="https://github.com/fleethacker-data-crucible/Semaphore/releases/latest">github.com/fleethacker-data-crucible/Semaphore/releases/latest</a> and download <b>Semaphore-$v.zip</b> (or the newest <code>Semaphore-&lt;version&gt;.zip</code>) under <b>Assets</b>. Not "Source code (zip)".</li>
+<li>Right-click the zip, choose <b>Properties</b>, tick <b>Unblock</b> if it is there, then <b>Extract All</b>.</li>
+<li>Close this tab and double-click <code>Launch-Semaphore.bat</code> in the extracted folder.</li>
+</ol>
+<p>Your hoists and catalog live in your Semaphore folder, not in this copy, so nothing is lost when you switch.</p>
+<p>Developers: on a build machine run <code>npm ci</code> then <code>npm run build</code> and copy <code>web\dist</code> here.</p>
+<p>This server stops by itself when you close the tab (or run <code>server\Stop-Semaphore.ps1</code>).</p>
 </body></html>
 "@
 }
@@ -461,6 +498,7 @@ function Invoke-SemRequest {
             catch { Send-SemError 400 'bad-json' 'Request body is not valid JSON.'; return }
         }
         if ($path -eq '/api/leaving') { Invoke-SemLeaving -Req $Req; return }
+        if ($path -eq '/api/launch') { Invoke-SemLaunch -Req $Req; return }
         $tok = ''
         if ($Req.Headers.ContainsKey('X-Semaphore-Session')) { $tok = [string]$Req.Headers['X-Semaphore-Session'] }
         if (-not (Test-SemSessionToken $tok)) { Send-SemError 401 'session' 'Missing or wrong session token. Relaunch Semaphore.'; return }
@@ -469,6 +507,24 @@ function Invoke-SemRequest {
     }
     if ($Req.Method -ne 'GET' -and $Req.Method -ne 'HEAD') { Send-SemError 405 'method' 'Method not allowed.'; return }
     Send-SemStatic -Req $Req
+}
+
+function Invoke-SemLaunch {
+    # POST /api/launch { code }: trades a single-use launch code for the session token. The code
+    # comes from the launch link; the token goes back in the body only (no-store), never logged.
+    param($Req)
+    if ($Req.Method -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+    $code = ''
+    $j = $Req.Json
+    if ($j -is [Management.Automation.PSCustomObject]) {
+        $v = $j.PSObject.Properties['code']; if ($null -ne $v -and $v.Value -is [string]) { $code = $v.Value }
+    }
+    if (-not (Use-SemLaunchCode $code)) {
+        Write-SemLog 'WARN' 'Refused a launch code that was unknown, used or expired'
+        Send-SemError 401 'launch' 'This launch link has already been used or has expired. Relaunch Semaphore.'
+        return
+    }
+    Send-SemJson -Status 200 -Object ([ordered]@{ token = $script:Sem.Token })
 }
 
 function Invoke-SemLeaving {

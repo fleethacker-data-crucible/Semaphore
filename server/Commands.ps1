@@ -17,6 +17,7 @@ $script:SemDocKinds = [ordered]@{ hoist = 'hoists'; catalog = 'catalogs'; playbo
 $script:SemUiOnlyRoutes = [ordered]@{
     '/api/heartbeat'                 = 'Browser presence for auto-stop: a CLI is not a tab.'
     '/api/leaving'                   = 'Browser presence for auto-stop (sendBeacon on page close).'
+    '/api/launch'                    = 'Trades the launch link''s single-use code for the browser session token.'
     '/api/end'                       = 'Ends a browser session; the CLI equivalent is "semaphore session stop".'
     '/api/query'                     = 'Runs SQL the page plans and holds the session token; the headless route is "refresh run".'
     '/api/profile'                   = 'Profiles a source for the page''s catalog editor.'

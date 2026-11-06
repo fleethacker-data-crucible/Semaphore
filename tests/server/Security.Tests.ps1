@@ -137,6 +137,48 @@ Describe 'Session token' {
         (Invoke-TestRequest -Method 'POST' -Path '/api/info' -Body $body).Status | Should -Be 401
     }
 
+    It 'trades a launch code for the token once' {
+        $code = New-SemLaunchCode
+        $code | Should -Not -Be $script:Sem.Token
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $code + '"}')
+        $r.Status | Should -Be 200
+        $r.Head | Should -Match 'Cache-Control: no-store'
+        ($r.Body | ConvertFrom-Json).token | Should -Be $script:Sem.Token
+        $again = Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $code + '"}')
+        $again.Status | Should -Be 401
+        $again.Body | Should -Not -Match ([regex]::Escape($script:Sem.Token))
+    }
+
+    It 'refuses an unknown, expired, missing or non-POST launch code' {
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body '{"code":"nope"}').Status | Should -Be 401
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body '{}').Status | Should -Be 401
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $script:Sem.Token + '"}')).Status | Should -Be 401
+        (Invoke-TestRequest -Method 'GET' -Path '/api/launch').Status | Should -Be 405
+        $old = New-SemLaunchCode
+        $script:Sem.LaunchCodes[$old] = (Get-Date).ToUniversalTime().AddSeconds(-1)
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $old + '"}')).Status | Should -Be 401
+        $script:Sem.LaunchCodes.ContainsKey($old) | Should -BeFalse
+    }
+
+    It 'refuses a launch code from another origin' {
+        $code = New-SemLaunchCode
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Headers @{ Origin = 'http://evil.example' } -Body ('{"code":"' + $code + '"}')).Status | Should -Be 403
+    }
+
+    It 'puts a launch code, never the token, in the launch link' {
+        $src = [IO.File]::ReadAllText([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server', 'Start-Semaphore.ps1'))
+        $src | Should -Not -Match '\?session='
+        $src | Should -Not -Match 'Sem\.Token\s*\+'
+        $src | Should -Match '\?launch='
+    }
+
+    It 'tells a source-code copy where the ready-to-run zip is' {
+        $page = Get-SemNotBuiltPage
+        $page | Should -Match 'releases/latest'
+        $page | Should -Match 'Semaphore-0\.2\.0\.zip'
+        $page | Should -Match 'Unblock'
+    }
+
     It 'never reads the token from the query string' {
         $h = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
         $h['Host'] = '127.0.0.1:8800'

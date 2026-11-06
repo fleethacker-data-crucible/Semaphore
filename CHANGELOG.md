@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **The session token stays off command lines and transcripts.** Launch links (the browser window, the headless `--refresh` browser, the `--no-browser` and "could not open the browser" console lines) carry a single-use launch code, valid 10 minutes, instead of the session token; the page trades it once with `POST /api/launch` and keeps the token in the tab. Process-creation auditing and PowerShell transcription, both on at the workstation, recorded the old `?session=` link.
+- **"UI not built" page says what to do on a workstation** (#56): it explains that a source-code copy has no interface and gives the three steps to the prebuilt `Semaphore-<version>.zip` on the Releases page (download, Unblock, Extract All).
+- Fixes: an error reading the Fairlead key from Credential Manager no longer stops the legacy DPAPI key file being tried, and is reported as the AI problem when neither works; `Set-SemaphoreAiKey -Clear` said "No Fairlead key was stored" after removing one from Credential Manager.
 - **Read a briefing aloud** ("Brief me" > Read aloud, [docs/VOICE.md](docs/VOICE.md)): speaks with a voice installed on this PC, never an online voice; silent with a message when there is none. Off until clicked.
 - **Plain-English drafting can split by many-side fields** ("credit limit by order status"): same reach rule as the planner, one many-side table per flag, a note that groups can add up to more than the total.
 - **Lineage follows one-to-many joins**: Data > Lineage draws every hop to a field on the many side of a flag's base table, and notes a flag that reads a field reachable in more than one way.

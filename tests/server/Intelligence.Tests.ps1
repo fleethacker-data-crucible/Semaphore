@@ -186,6 +186,23 @@ Context 'Windows Credential Manager selection' {
         Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile | Out-Null
         Should -Invoke Read-SemAiCredential -Times 0 -Exactly
     }
+    It 'falls back to the legacy key file when Credential Manager cannot be read' {
+        Mock Read-SemAiCredential { throw 'Add-Type was refused' }
+        Mock Get-SemAiKeyPath { return $script:KeyFile }
+        Save-SemAiKeyFile -Key (ConvertTo-SecureString $script:Key -AsPlainText -Force) -Path $script:KeyFile
+        $s = Get-SemAiSettings -Root $script:Root
+        $s.Key | Should -Be $script:Key
+        $s.KeySource | Should -Be 'file'
+        $s.Problem | Should -BeNullOrEmpty
+    }
+    It 'says why when Credential Manager cannot be read and there is no key file' {
+        Mock Read-SemAiCredential { throw 'Add-Type was refused' }
+        Mock Get-SemAiKeyPath { return $script:KeyFile }
+        $s = Get-SemAiSettings -Root $script:Root
+        $s.Key | Should -BeNullOrEmpty
+        $s.KeySource | Should -Be 'none'
+        $s.Problem | Should -Match 'Credential Manager'
+    }
     It 'rejects malformed input before touching the Windows store' {
         { Save-SemAiCredential -Key (ConvertTo-SecureString 'invalid' -AsPlainText -Force) } | Should -Throw '*Fairlead client key*'
     }

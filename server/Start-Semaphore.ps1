@@ -142,7 +142,7 @@ function Stop-SemHeadless {
 }
 
 function Open-SemBrowser([string]$Url, [hashtable]$Settings) {
-    # The session link carries the token: it goes to the browser only, never to the log.
+    # The session link carries a single-use launch code (never the token); it is not logged either.
     if (-not (Test-SemIsWindows)) { Write-Host "Open this link: $Url"; return }
     $exe = Find-SemBrowser $Settings.browser
     if ($exe) {
@@ -178,7 +178,7 @@ function Invoke-SemSelfCheck {
         $bad = Test-SemConnectionString -Connection $src.connection
         if ($bad) { $problems.Add("Source '$($src.id)': $bad") }
     }
-    if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($root, 'web', 'dist', 'index.html')))) { Write-Host 'Note: web\dist\index.html is missing (the UI is not built); the server would show a "not built" page.' -ForegroundColor Yellow }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($root, 'web', 'dist', 'index.html')))) { Write-Host 'Note: web\dist\index.html is missing (the UI is not built). Use the Semaphore-<version>.zip from the Releases page, not the source code; the server would show a "not built" page with these steps.' -ForegroundColor Yellow }
     Write-Host ("Semaphore {0}, home {1}, auto-stop {2}" -f $v, $homeDir, $(if (Test-SemAutoStopEnabled -Root $root) { 'on' } else { 'off' }))
     if ($problems.Count -gt 0) {
         foreach ($p in $problems) { Write-Host "  FAIL $p" -ForegroundColor Red; Write-SemLog 'ERROR' "Self-check: $p" }
@@ -317,8 +317,13 @@ if ($Ask) { $script:Sem.View = 'ask' }
 if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).AddMinutes($settings.refreshTimeoutMin) }
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
-$sessionUrl = $baseUrl + '?session=' + $script:Sem.Token
-if ($script:Sem.View -eq 'ask' -or $script:Sem.View -eq 'refresh') { $sessionUrl += '&view=' + $script:Sem.View }
+# Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
+# browser command lines and console transcripts are recorded on the workstation.
+function New-SemSessionLink {
+    $u = $baseUrl + '?launch=' + (New-SemLaunchCode)
+    if ($script:Sem.View -eq 'ask' -or $script:Sem.View -eq 'refresh') { $u += '&view=' + $script:Sem.View }
+    return $u
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $script:Sem.WebRoot 'index.html'))) { Write-SemLog 'WARN' 'web\dist\index.html is missing: serving the "UI not built" page' }
 Write-SemLog 'INFO' ("Serving {0} (PID {1}, auto-stop {2}, stay {3})" -f $baseUrl, $PID, $autoStop, [bool]$Stay)
@@ -328,15 +333,15 @@ $onReady = {
     if (-not $autoStop) { $how = 'It keeps running after the tab closes: use End session or Stop-Semaphore.ps1.' }
     Write-Host ("Semaphore {0} is running at {1}. {2}" -f $version, $baseUrl, $how) -ForegroundColor Green
     if ($Refresh) {
-        if (-not (Start-SemHeadless -Url $sessionUrl -Settings $settings)) { Request-SemStop 'refresh-no-browser' }
+        if (-not (Start-SemHeadless -Url (New-SemSessionLink) -Settings $settings)) { Request-SemStop 'refresh-no-browser' }
     }
-    elseif ($NoBrowser) { Write-Host "Session link: $sessionUrl" }
+    elseif ($NoBrowser) { Write-Host ('Session link (works once, for 10 minutes): ' + (New-SemSessionLink)) }
     else {
-        try { Open-SemBrowser -Url $sessionUrl -Settings $settings }
-        catch { Write-SemLog 'ERROR' ('Could not open the browser: ' + $_.Exception.Message); Write-Host "Open this link: $sessionUrl" -ForegroundColor Yellow }
+        try { Open-SemBrowser -Url (New-SemSessionLink) -Settings $settings }
+        catch { Write-SemLog 'ERROR' ('Could not open the browser: ' + $_.Exception.Message); Write-Host ('Open this link (works once, for 10 minutes): ' + (New-SemSessionLink)) -ForegroundColor Yellow }
     }
 }
-$onOpen = { Open-SemBrowser -Url $sessionUrl -Settings $settings }
+$onOpen = { Open-SemBrowser -Url (New-SemSessionLink) -Settings $settings }
 try {
     Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
 } finally {

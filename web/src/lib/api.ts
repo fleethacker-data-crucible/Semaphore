@@ -50,19 +50,45 @@ export class ApiError extends Error {
   }
 }
 
-export function captureSessionToken(): string | null {
+let launching: Promise<void> | null = null;
+
+/**
+ * Picks up the session for this tab. A launch link carries a single-use launch code (never the
+ * session token, which would end up in the browser's command line and in console transcripts);
+ * the code is removed from the address bar and traded once for the token with POST /api/launch.
+ * A reload or a duplicated tab reuses the token already in sessionStorage. Every api() call waits
+ * for the trade to finish.
+ */
+export function startSession(): Promise<void> {
+  if (launching) return launching;
+  let code: string | null = null;
   try {
     const url = new URL(window.location.href);
-    const fromUrl = url.searchParams.get('session');
-    if (fromUrl) {
-      sessionStorage.setItem(TOKEN_KEY, fromUrl);
-      url.searchParams.delete('session');
+    code = url.searchParams.get('launch');
+    if (code) {
+      url.searchParams.delete('launch');
       window.history.replaceState({}, '', url.pathname + (url.search || '') + url.hash);
-      return fromUrl;
     }
-    return sessionStorage.getItem(TOKEN_KEY);
   } catch {
-    return null;
+    code = null;
+  }
+  launching = code ? trade(code) : Promise.resolve();
+  return launching;
+}
+
+async function trade(code: string): Promise<void> {
+  try {
+    const response = await fetch('/api/launch', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+      cache: 'no-store',
+    });
+    if (!response.ok) return; // used or expired: a token already in sessionStorage (reload) still works
+    const data = (await response.json()) as { token?: unknown };
+    if (typeof data.token === 'string' && data.token) sessionStorage.setItem(TOKEN_KEY, data.token);
+  } catch {
+    /* no server (file://) or no storage: requests go out without a token and say so */
   }
 }
 
@@ -93,6 +119,7 @@ function tabId(): string {
 }
 
 export async function api<T>(path: string, init: { method?: string; json?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+  if (launching) await launching;
   const headers: Record<string, string> = { Accept: 'application/json' };
   const t = token();
   if (t) headers['X-Semaphore-Session'] = t;

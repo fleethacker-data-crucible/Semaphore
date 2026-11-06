@@ -26,7 +26,7 @@ import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, captureSessionToken, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, type StoredItem } from './lib/api.ts';
+import { api, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, startSession, type StoredItem } from './lib/api.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
@@ -76,7 +76,7 @@ function initialView(): View | null {
   return readLocal<'builder' | 'ask'>(K.view);
 }
 
-captureSessionToken();
+void startSession();
 
 function newId(prefix = 'f'): string {
   return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;

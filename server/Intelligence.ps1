@@ -99,10 +99,18 @@ function Get-SemAiSettings {
     $source = 'environment'
     # An explicit legacy path is a test/migration seam; never read a real user
     # credential when the caller supplies its own isolated key file.
-    if (-not $key -and -not $PSBoundParameters.ContainsKey('KeyPath')) { $key = Read-SemAiCredential; $source = 'credential-manager' }
+    # A failed Credential Manager read (Add-Type refused, a Win32 error other than "not found") must
+    # not hide the legacy key file: note it and fall through.
+    $credProblem = $null
+    if (-not $key -and -not $PSBoundParameters.ContainsKey('KeyPath')) {
+        $source = 'credential-manager'
+        try { $key = Read-SemAiCredential }
+        catch { $key = $null; $credProblem = 'Could not read the Fairlead key from Windows Credential Manager: ' + $_.Exception.Message; Write-SemLog 'WARN' $credProblem }
+    }
     if (-not $key) { $key = Read-SemAiKeyFile -Path $KeyPath; $source = 'file' }
     if (-not $key) { $source = 'none' }
     $problem = Test-SemAiUrl $url
+    if (-not $problem -and -not $key -and $credProblem) { $problem = $credProblem }
     if (-not $problem -and $key -and -not (Test-SemAiKeyShape $key)) { $problem = 'The stored Fairlead key is not in the fl-... format. Run Set-SemaphoreAiKey.bat again.' }
     return @{ Url = $url; Model = $model; PrivacyLocal = $privacyLocal; Key = $key; KeySource = $source; Problem = $problem }
 }

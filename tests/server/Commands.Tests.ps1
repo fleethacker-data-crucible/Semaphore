@@ -63,7 +63,7 @@ Describe 'Parity between the routes and the commands' {
     It 'lists a browser-only route only when it really is a route, with a reason' {
         $real = Routes-In-Dispatcher
         foreach ($k in $script:SemUiOnlyRoutes.Keys) {
-            ($real -contains $k -or $k -eq '/api/leaving') | Should -BeTrue -Because "$k is not a route any more"
+            ($real -contains $k -or $k -in @('/api/leaving', '/api/launch')) | Should -BeTrue -Because "$k is not a route any more"
             $script:SemUiOnlyRoutes[$k].Length | Should -BeGreaterThan 10
         }
     }
