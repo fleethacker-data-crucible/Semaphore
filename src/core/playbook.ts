@@ -48,6 +48,10 @@ export interface PlaybookEntry {
   status: EntryStatus;
   review?: { reason: string; at: string };
   retired?: { by: string; at: string; reason: string };
+  /**
+   * How many reviewed answers this entry gave leadership, and the Monday of the latest week it did.
+   * Read from the per-person weekly ask logs (src/core/impact.ts withUses), never counted here.
+   */
   uses: number;
   lastUsed?: string;
   updated: string;
@@ -61,6 +65,10 @@ export interface QuestionItem {
   title: string;
   askedBy: string;
   askedAt: string;
+  /** Everyone who asked it, first asker first and the most recent asker last. */
+  askers: string[];
+  /** How many times it was asked, by anyone. */
+  askCount: number;
   /** What leadership was shown. */
   shown: 'drafted' | 'none';
   notes: string[];
@@ -183,10 +191,6 @@ export function restoreEntry(e: PlaybookEntry, now: Date = new Date()): Playbook
 
 export function flagForReview(e: PlaybookEntry, by: string, note: string, now: Date = new Date()): PlaybookEntry {
   return { ...e, status: 'needs-review', review: { reason: `Marked by ${by}: ${note.trim().slice(0, 300) || 'needs a look.'}`, at: now.toISOString() }, updated: now.toISOString() };
-}
-
-export function recordUse(e: PlaybookEntry, now: Date = new Date()): PlaybookEntry {
-  return { ...e, uses: e.uses + 1, lastUsed: now.toISOString(), updated: now.toISOString() };
 }
 
 /** A one-flag hoist that reproduces an entry exactly: its window and its binding. */
@@ -375,6 +379,8 @@ export function newQuestion(question: string, askedBy: string, shown: 'drafted' 
     title: question.trim().slice(0, 1000),
     askedBy,
     askedAt: now.toISOString(),
+    askers: [askedBy],
+    askCount: 1,
     shown,
     notes: notes.slice(0, 10),
     status: 'open',
@@ -415,6 +421,25 @@ export function isQuestion(raw: unknown): raw is QuestionItem {
   if (typeof raw !== 'object' || raw === null) return false;
   const q = raw as Record<string, unknown>;
   return q.version === 1 && typeof q.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(q.id) && typeof q.title === 'string' && (q.status === 'open' || q.status === 'answered' || q.status === 'dismissed');
+}
+
+/** A question as read from the folder, with its askers filled in (files written before askers were counted have one asker). */
+export function withAskers(q: QuestionItem): QuestionItem {
+  const askers = Array.isArray(q.askers) ? q.askers.filter((a): a is string => typeof a === 'string').slice(-200) : [];
+  if (!askers.length && typeof q.askedBy === 'string') askers.push(q.askedBy);
+  const askCount = typeof q.askCount === 'number' && Number.isFinite(q.askCount) && q.askCount >= askers.length ? Math.floor(q.askCount) : askers.length;
+  return { ...q, askers, askCount };
+}
+
+/** Someone asked an open question again: count them, and move them to the end as the most recent asker. */
+export function addAsker(q: QuestionItem, user: string, now: Date = new Date()): QuestionItem {
+  const base = withAskers(q);
+  return { ...base, askers: [...base.askers.filter((a) => a !== user), user].slice(-200), askCount: base.askCount + 1, updated: now.toISOString() };
+}
+
+/** The analysts' queue order: most people asking first, then the longest waiting. */
+export function byDemand(a: QuestionItem, b: QuestionItem): number {
+  return withAskers(b).askers.length - withAskers(a).askers.length || a.askedAt.localeCompare(b.askedAt);
 }
 
 /** An analyst answered a queued question with an entry: remember the wording for next time. */

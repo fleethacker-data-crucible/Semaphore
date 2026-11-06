@@ -302,7 +302,7 @@ function Get-SemInfo {
         tool = 'semaphore'; version = $script:Sem.Version; pid = $PID; port = $script:Sem.Port; home = $script:Sem.Home
         autoStop = [bool]$script:Sem.Presence.AutoStop; stay = [bool]$script:Sem.Stay; sources = $sources
         user = [string]$env:USERNAME; reviewer = [string]$script:Sem.Reviewer; view = [string]$script:Sem.View
-        skin = [string]$script:Sem.Skin
+        skin = [string]$script:Sem.Skin; social = $script:Sem.Social
     }
 }
 

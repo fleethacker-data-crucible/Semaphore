@@ -9,6 +9,7 @@ import type { FlagKind } from '../../../src/core/hoist.ts';
 import type { QuestionItem } from '../../../src/core/playbook.ts';
 import { MIN_EVIDENCE, SHAPE_LABEL, type Shape, type StyleOverrides, type StyleRule, type TeamStyle } from '../../../src/core/style.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
+import { EmptyState } from './EmptyState.tsx';
 
 const KIND_LABEL: Record<FlagKind, string> = { kpi: 'KPI', bar: 'bar', line: 'line', area: 'area', pie: 'pie', table: 'table', filter: 'picker', text: 'note' };
 
@@ -38,9 +39,7 @@ export function StyleTab({ style, overrides, index, user, onSave }: { style: Tea
         How this team builds, learnt from {style.learnedFrom} accepted flag{style.learnedFrom === 1 ? '' : 's'}. When Semaphore drafts (for you, or for leadership while you are out), it fills in what a brief leaves open the way the team would, and says so in the flag's notes. Switch off anything that is a coincidence rather than a habit.
       </p>
       {rows.length === 0 ? (
-        <p className="flex items-center gap-2 rounded-lg border border-line p-3 text-sm text-ink-3">
-          <Sparkles size={14} /> No habits yet: a rule needs at least {MIN_EVIDENCE} accepted flags that agree. Accept a few flags and it fills in.
-        </p>
+        <EmptyState compact icon={Sparkles} headline="No habits yet." body={`A habit needs at least ${MIN_EVIDENCE} accepted flags that agree. Accept a few flags and the card fills in.`} />
       ) : (
         <ul className="space-y-1.5">
           {rows.map(({ rule, text }) => {

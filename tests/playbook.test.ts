@@ -18,7 +18,6 @@ import {
   newQuestion,
   normalizeQuestion,
   type PlaybookEntry,
-  recordUse,
   resolveQuestions,
   retireEntry,
 } from '../src/core/playbook.ts';
@@ -81,7 +80,6 @@ test('health: catalog changes and long disuse are flagged, with reasons; fixes c
   assert.ok(back.every((e) => e.status === 'active' && !e.review));
   const marked = flagForReview(entries[0]!, 'lee', 'check the definition', today);
   assert.deepEqual(checkHealth([marked], index, today), []);
-  assert.equal(recordUse(entries[0]!, today).uses, 1);
 });
 
 test('answers: same words, exact binding, re-addable, drafted, none', () => {

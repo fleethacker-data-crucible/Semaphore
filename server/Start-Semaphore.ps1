@@ -315,6 +315,7 @@ if ($Ask) { $script:Sem.View = 'ask' }
 if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).AddMinutes($settings.refreshTimeoutMin) }
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
+$script:Sem.Social = Get-SemSocialSettings -Settings $settings
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {

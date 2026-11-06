@@ -53,12 +53,24 @@ function Write-SemLog {
 # Settings: built-in defaults <- config\settings.json (tracked) <- config\settings.local.json
 # (gitignored), key by key. A missing or broken layer is skipped.
 # ---------------------------------------------------------------------------
+$script:SemSocialKeys = @('signalBook', 'impact', 'teamLog', 'showAskers', 'bz')
+
 function Get-SemDefaultSettings {
     return @{
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 90; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
         view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30; skin = ''
+        # Social and motivational features (docs/PLAYBOOK.md); each can be switched off per deployment.
+        signalBook = $true; impact = $true; teamLog = $true; showAskers = $true; bz = $true
     }
+}
+
+function Get-SemSocialSettings {
+    # The page's switches for the social features, as /api/info "social".
+    param([hashtable]$Settings)
+    $out = [ordered]@{}
+    foreach ($k in $script:SemSocialKeys) { $out[$k] = [bool]$Settings[$k] }
+    return $out
 }
 
 function Merge-SemSettingsFile {
@@ -71,6 +83,9 @@ function Merge-SemSettingsFile {
     if ($names -contains 'port' -and $null -ne $j.port) { $p = 0; if ([int]::TryParse([string]$j.port, [ref]$p) -and $p -ge 0 -and $p -le 65535) { $Settings.port = $p } }
     if ($names -contains 'browser' -and @('auto', 'edge', 'chrome', 'default') -contains [string]$j.browser) { $Settings.browser = ([string]$j.browser).ToLowerInvariant() }
     if ($names -contains 'appWindow' -and $null -ne $j.appWindow) { $Settings.appWindow = [bool]$j.appWindow }
+    foreach ($k in $script:SemSocialKeys) {
+        if ($names -contains $k -and $j.$k -is [bool]) { $Settings[$k] = [bool]$j.$k }
+    }
     if ($names -contains 'view' -and @('builder', 'ask') -contains [string]$j.view) { $Settings.view = ([string]$j.view).ToLowerInvariant() }
     # Skin name (docs/SKINS.md): a built-in one (fleet, classic) or one defined in config\skin.css.
     if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
