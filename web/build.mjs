@@ -122,7 +122,8 @@ async function run() {
 
   const outputs = result.metafile.outputs;
   const rel = (abs) => path.relative(outDir, abs).split(path.sep).join('/');
-  const entryKey = Object.keys(outputs).find((k) => outputs[k].entryPoint && k.endsWith('.js'));
+  // Dynamic import() targets are entry points too in the metafile: pick the output built from main.tsx.
+  const entryKey = Object.keys(outputs).find((k) => k.endsWith('.js') && /(^|[\\/])main\.tsx$/.test(outputs[k].entryPoint ?? ''));
   if (!entryKey) throw new Error('esbuild produced no app entry.');
   const entry = rel(path.resolve(entryKey));
   // Chunks the entry imports statically load before it runs anyway: preload them in parallel.

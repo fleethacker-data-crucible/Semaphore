@@ -5,7 +5,7 @@ import { expect, startOwnMock, test } from './fixtures';
 
 const CONNECTION_GONE = /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_FAILED/;
 
-test('a server that dies shows the session-ended screen', async ({ browser, problems }) => {
+test('a server that dies shows the "isn’t answering" screen with Try again', async ({ browser, problems }) => {
   problems.allow(CONNECTION_GONE);
   const mock = await startOwnMock();
   const ctx = await browser.newContext();
@@ -13,10 +13,12 @@ test('a server that dies shows the session-ended screen', async ({ browser, prob
     const page = await ctx.newPage();
     await page.goto(mock.link);
     await page.getByRole('button', { name: /^Continue/ }).click();
-    await expect(page.getByRole('button', { name: 'End session' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Hoist title' })).toBeVisible();
     mock.proc.kill('SIGKILL');
-    // Three missed heartbeats (5 s apart) mean the server is gone.
-    await expect(page.getByRole('alertdialog')).toContainText('The session has ended', { timeout: 25_000 });
+    // Two missed heartbeats (5 s apart) in a row mean the server is not answering.
+    const screen = page.getByRole('alertdialog');
+    await expect(screen).toContainText('Semaphore isn’t answering', { timeout: 25_000 });
+    await expect(screen.getByRole('button', { name: /Try again/ })).toBeVisible();
   } finally {
     await ctx.close();
     mock.stop();
@@ -31,13 +33,11 @@ test('End session stops the server and says so', async ({ browser, problems }) =
     const page = await ctx.newPage();
     await page.goto(mock.link);
     await page.getByRole('button', { name: /^Continue/ }).click();
-    await page.getByRole('button', { name: 'End session' }).click();
-    // A confirmation step, when the UI asks for one, is answered yes.
-    const ended = page.getByRole('alertdialog').filter({ hasText: 'The session has ended' });
-    const confirm = page.getByRole('dialog').or(page.getByRole('alertdialog')).getByRole('button', { name: /^(End session|End|Stop|Yes)/ });
-    await expect(ended.or(confirm).first()).toBeVisible();
-    if (await confirm.isVisible()) await confirm.click();
-    await expect(ended).toBeVisible();
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('menuitem', { name: /End session/ }).click();
+    // End session asks first.
+    await page.getByRole('alertdialog', { name: 'End this session?' }).getByRole('button', { name: 'End session' }).click();
+    await expect(page.getByRole('alertdialog', { name: 'Semaphore has stopped' })).toBeVisible();
     await expect.poll(mock.exited, { timeout: 5_000 }).toBe(true);
     expect(mock.output()).toMatch(/Stopped \(end\)/);
   } finally {

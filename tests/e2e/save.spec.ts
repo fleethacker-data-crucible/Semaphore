@@ -30,7 +30,8 @@ test('an edit followed within 1 s by Open another hoist is saved, not dropped', 
   const name = `Edited before switching ${Date.now()}`;
   const t0 = Date.now();
   await title.fill(name);
-  await page.getByRole('button', { name: 'Open a saved hoist' }).click();
+  await page.getByRole('button', { name: 'Hoist', exact: true }).click();
+  await page.getByRole('menuitem', { name: /Open a saved hoist/ }).click();
   await page.getByRole('dialog', { name: 'Open a hoist' }).getByRole('button', { name: /Spare parts watch/ }).click();
   await expect(title).toHaveValue('Spare parts watch');
   expect(Date.now() - t0, 'the switch happened inside the 1.2 s save delay').toBeLessThan(1200);
