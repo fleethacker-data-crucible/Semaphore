@@ -8,7 +8,7 @@ import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
-import { CsvError, readCsv } from '../../src/core/csv.ts';
+import { checkCsvSize, CsvError, readCsv } from '../../src/core/csv.ts';
 import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
@@ -33,7 +33,7 @@ import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib
 import { usePlaybook } from './lib/playbook.ts';
 import { useKits } from './lib/kits.ts';
 import { useHoistHistory } from './lib/history.ts';
-import { allFiles, deleteFile, putFile, readLocal, writeLocal } from './lib/storage.ts';
+import { allFiles, deleteFile, notKeptMessage, putFile, readLocal, writeLocal } from './lib/storage.ts';
 import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
@@ -202,9 +202,9 @@ export function App() {
       const held: string[] = [];
       for (const f of stored) {
         try {
-          if (worker) held.push((await worker.load(f.name, f.text)).name);
+          if (worker) held.push((await worker.load(f.name, f.blob)).name);
           else {
-            const t = readCsv(f.name, f.text);
+            const t = readCsv(f.name, await f.blob.text());
             tables[t.name] = t.rows;
           }
         } catch {
@@ -251,14 +251,17 @@ export function App() {
     },
     [server, notify],
   );
+  const localSaveFailed = useRef(false);
   useEffect(() => {
-    writeLocal(K.hoist, hoist);
+    const kept = writeLocal(K.hoist, hoist);
+    if (!kept && !localSaveFailed.current) notify('This browser could not save the page (storage is full or blocked). Download this hoist to keep it.');
+    localSaveFailed.current = !kept;
     if (!server) return;
     if (pendingSave.current && pendingSave.current.id !== hoist.id) void flushSave();
     pendingSave.current = hoist;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => void flushSave(), 1200);
-  }, [hoist, server, flushSave]);
+  }, [hoist, server, flushSave, notify]);
   useEffect(() => {
     const leaving = () => void flushSave(true);
     window.addEventListener('pagehide', leaving);
@@ -273,7 +276,7 @@ export function App() {
         return;
       }
       setCatalogState(c);
-      writeLocal(K.catalog, c);
+      if (!writeLocal(K.catalog, c)) notify(server ? 'This browser could not save the catalog (storage is full or blocked). The server keeps a copy.' : 'This browser could not save the catalog (storage is full or blocked), so it will be gone after a reload.');
       if (server) saveItem('catalogs', 'default', c).catch((e: Error) => notify(`Could not save the catalog to the server: ${e.message}`));
     },
     [server, notify],
@@ -460,25 +463,30 @@ export function App() {
       const notes: string[] = [];
       const tables: TableRows = { ...files };
       const held = new Set(workerTables);
+      let notKept: string | null = null;
       for (const file of Array.from(list)) {
         try {
-          const raw = await file.text();
-          // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first (src/core/fleet-exports.ts).
-          const fx = fleetExportToCsv(file.name, raw);
-          const text = fx ? fx.csv : raw;
+          checkCsvSize(file.size);
+          // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first
+          // (src/core/fleet-exports.ts). A plain CSV is never read on the page: its first line tells.
+          const json = /\.json$/i.test(file.name);
+          const fleet = json || fleetExportToCsv(file.name, await file.slice(0, 65536).text()) !== null;
+          const fx = fleet ? fleetExportToCsv(file.name, await file.text()) : null;
+          const blob: Blob = fx ? new Blob([fx.csv], { type: 'text/csv' }) : file;
           const name = fx ? fx.fileName : file.name;
           if (fx) notes.push(fx.note);
           // Parsed in the CSV worker when there is one: a large file never freezes the page.
           let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
           if (worker) {
-            t = await worker.load(name, text);
+            t = await worker.load(name, blob);
             held.add(t.name);
           } else {
-            const parsed = readCsv(name, text);
+            const parsed = readCsv(name, await blob.text());
             tables[parsed.name] = parsed.rows;
             t = { ...parsed, rows: parsed.rows.length };
           }
-          await putFile({ name, text, added: new Date().toISOString() });
+          const kept = await putFile({ name, blob, added: new Date().toISOString() });
+          if (!kept.ok) notKept = notKeptMessage(name, kept);
           // Replace the measures and fields of a file loaded before under the same name.
           const without: Catalog = {
             ...cat,
@@ -499,7 +507,7 @@ export function App() {
       setCatalog(cat);
       setProfileNotes(notes);
       setBusy(null);
-      notify('Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.');
+      notify(notKept ?? 'Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.');
     },
     [catalog, files, workerTables, worker, setCatalog, notify],
   );

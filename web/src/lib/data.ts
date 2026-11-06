@@ -74,21 +74,86 @@ export function approveQuery(key: string): void {
   cache.delete(key);
 }
 
-const cache = new Map<string, Promise<{ rows: Array<Record<string, string | number | boolean | null>>; truncated: boolean; ms: number }>>();
-const CACHE_MAX = 300;
+type Answer = { rows: Array<Record<string, string | number | boolean | null>>; truncated: boolean; ms: number };
 
-function remember<T>(key: string, make: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key) as Promise<T> | undefined;
-  if (hit) return hit;
-  const p = make();
-  cache.set(key, p as never);
-  p.catch(() => cache.delete(key));
-  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
-  return p;
+/** How long a server answer is reused before the source is asked again. */
+export const SERVER_RESULT_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Results by query, least recently used first. Page results never go stale (their key carries the
+ * data version); server results expire, and a failed query is dropped so it is asked again.
+ */
+export class ResultCache<T> {
+  private readonly entries = new Map<string, { p: Promise<T>; expires: number }>();
+  private readonly max: number;
+  private readonly now: () => number;
+  constructor(max: number, now: () => number = Date.now) {
+    this.max = max;
+    this.now = now;
+  }
+
+  /**
+   * The cached promise for `key`, or `make()`'s. `ttl` is how long it is good for, in ms
+   * (Infinity: until cleared); given the result, so a source can say how long its answer stays true.
+   */
+  remember(key: string, make: () => Promise<T>, ttl: number | ((result: T) => number) = Infinity): Promise<T> {
+    const hit = this.entries.get(key);
+    if (hit && hit.expires > this.now()) {
+      // Least recently used goes first: a hit moves to the end.
+      this.entries.delete(key);
+      this.entries.set(key, hit);
+      return hit.p;
+    }
+    if (hit) this.entries.delete(key);
+    const p = make();
+    const entry = { p, expires: typeof ttl === 'number' ? this.now() + ttl : Infinity };
+    this.entries.set(key, entry);
+    p.then(
+      (result) => {
+        if (typeof ttl === 'function') entry.expires = this.now() + ttl(result);
+      },
+      () => {
+        // Only this attempt is dropped: a newer one under the same key stays.
+        if (this.entries.get(key)?.p === p) this.entries.delete(key);
+      },
+    );
+    while (this.entries.size > this.max) this.entries.delete(this.entries.keys().next().value!);
+    return p;
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
 }
 
+const cache = new ResultCache<Answer>(300);
+
+/**
+ * Forget every result, so each flag asks its source again. The "Refresh data" action; also used
+ * when CSV files change.
+ */
 export function clearResultCache(): void {
   cache.clear();
+}
+
+/**
+ * How long a lake answer is reused. The server keeps lake results for its `cacheHours`; when it
+ * says so (on the source in /api/info), the answer is good until then, counted from `asOf`.
+ * Otherwise 15 minutes, like any server answer.
+ */
+export function lakeTtl(result: { asOf?: string }, cacheHours: number | undefined, now = Date.now()): number {
+  if (typeof cacheHours !== 'number' || !(cacheHours > 0)) return SERVER_RESULT_TTL_MS;
+  const taken = result.asOf ? Date.parse(result.asOf) : NaN;
+  const from = Number.isFinite(taken) && taken <= now ? taken : now;
+  return Math.max(0, from + cacheHours * 3600_000 - now);
 }
 
 function sourceSql(plan: QueryPlan, ctx: DataContext): RenderedSql | null {
@@ -105,7 +170,7 @@ async function run(plan: QueryPlan, ctx: DataContext) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
     const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])].every((t) => ctx.workerTables?.has(t));
-    return { origin: 'page' as const, result: await remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
+    return { origin: 'page' as const, result: await cache.remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);
   if (!server) {
@@ -116,7 +181,10 @@ async function run(plan: QueryPlan, ctx: DataContext) {
   if (!sql) throw new DataError('This flag cannot be turned into SQL for its source.');
   const key = `server|${plan.source}|${sql.sql}|${JSON.stringify(sql.params)}|${plan.rowCap}`;
   try {
-    return { origin: 'server' as const, result: await remember(key, () => runServerQuery(plan.source, sql.sql, sql.params, plan.rowCap, { approve: approved.has(key) })) };
+    const lake = server.provider === 'athena';
+    const cacheHours = (server as { cacheHours?: number }).cacheHours;
+    const ttl = lake ? (r: Answer) => lakeTtl(r as { asOf?: string }, cacheHours) : SERVER_RESULT_TTL_MS;
+    return { origin: 'server' as const, result: await cache.remember(key, () => runServerQuery(plan.source, sql.sql, sql.params, plan.rowCap, { approve: approved.has(key) }), ttl) };
   } catch (e) {
     if (e instanceof ApiError && e.code === 'lake-approval') throw new ApprovalNeeded(e.message, key);
     throw e;
@@ -182,6 +250,25 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
     const prevDisplay = applySelections(earlier, prev.result.rows, comparisonSelections(plan, selections), flag.behavior);
     out.previous = lineUp(display.rows, prevDisplay.rows, comparisonShift(plan) ?? undefined);
     out.previousRaw = { plan: earlier, rows: prev.result.rows };
+  }
+  return out;
+}
+
+/**
+ * Only the selections that can change this plan's numbers, in a stable key order: those on its own
+ * dimensions or slices (unless the flag ignores the field, or it is the flag's own picker field),
+ * and those it sends back to the source (`plan.live`). A selection on a table the plan does not
+ * read is dropped, so `JSON.stringify(selectionsFor(...))` is a key that changes only when the
+ * flag's result would. computeFlag gives the same result for these as for all the selections.
+ */
+export function selectionsFor(plan: QueryPlan, selections: Selections, ignore: readonly string[] = []): Selections {
+  const out: Record<string, Selections[string]> = {};
+  for (const key of Object.keys(selections).sort()) {
+    const values = selections[key]!;
+    if (!values.length || ignore.includes(key.split('@')[0]!)) continue;
+    const own = plan.own.includes(key);
+    if (own && !plan.selfFilter) continue;
+    if (plan.live.includes(key) || plan.dimensions.some((d) => d.key === key)) out[key] = values;
   }
   return out;
 }

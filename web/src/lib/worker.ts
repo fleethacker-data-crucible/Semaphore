@@ -52,8 +52,12 @@ export class CsvWorker {
     });
   }
 
-  load(name: string, text: string): Promise<LoadedCsv> {
-    return this.ask({ type: 'load', name, text });
+  /**
+   * The worker reads the file itself: a Blob (a File, or one from IndexedDB) is passed by
+   * reference, so the page never holds the file's text.
+   */
+  load(name: string, blob: Blob): Promise<LoadedCsv> {
+    return this.ask({ type: 'load', name, blob });
   }
   drop(name: string): Promise<boolean> {
     return this.ask({ type: 'drop', name });
