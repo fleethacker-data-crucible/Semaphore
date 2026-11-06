@@ -14,3 +14,4 @@ temp/
 web/dist/
 config/settings.local.json
 config/semaphore.env
+dist/
