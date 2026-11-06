@@ -2,8 +2,8 @@
 // middle, the selected flag's inspector on the right. State lives here; the core does the
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Bot, Database, Download, FileDown, FilePlus2, FlaskConical, FolderOpen, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, Sparkles, ScrollText, Sun, TerminalSquare, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
@@ -12,7 +12,7 @@ import { CsvError, readCsv } from '../../src/core/csv.ts';
 import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
-import { emptyBehavior, type Flag, type FlagKind, GRID_COLS, type Hoist, type Layout, parseHoist } from '../../src/core/hoist.ts';
+import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, LIMITS, oversize, parseHoist } from '../../src/core/hoist.ts';
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
 import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
@@ -27,7 +27,9 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, sessionRefused, startHeartbeat, startSession, type StoredItem } from './lib/api.ts';
+import { api, describeError, listItems, loadItem, profileTable, saveItem, type StoredItem } from './lib/api.ts';
+import { notify } from './lib/toasts.ts';
+import { confirm } from './lib/confirm.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
@@ -38,19 +40,29 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
+import { AskView, DataPanel, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SqlDesk } from './components/LazyPanels.tsx';
+import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
+import { Toasts } from './components/Toasts.tsx';
+import { ConfirmHost } from './components/ConfirmHost.tsx';
+import { BrowserOnlyNote, SessionScreen } from './components/SessionScreen.tsx';
+import { CommandPalette } from './components/CommandPalette.tsx';
+import { HelpDialog } from './components/HelpDialog.tsx';
+import { Header } from './components/Header.tsx';
+import { ConflictBar, TabChangeBar } from './components/ConflictBar.tsx';
+import { DraftMiss, type DraftMissInfo } from './components/DraftMiss.tsx';
+import { OpenHoistDialog } from './components/OpenHoistDialog.tsx';
+import { useSession } from './hooks/useSession.ts';
+import { usePersistence } from './hooks/usePersistence.ts';
+import { useBusy } from './hooks/useBusy.ts';
+import { useShortcuts } from './hooks/useShortcuts.ts';
+import { useFlagKeys } from './hooks/useFlagKeys.ts';
+import { buildActions, useCommands } from './hooks/useCommands.ts';
 import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
-import { AskView } from './components/AskView.tsx';
-import { PlaybookPanel } from './components/PlaybookPanel.tsx';
-import { KitsPanel } from './components/KitsPanel.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
-import { DataPanel } from './components/DataPanel.tsx';
-import { SqlDesk } from './components/SqlDesk.tsx';
-import { LineageView } from './components/LineageView.tsx';
-import { ShareDialog } from './components/ShareDialog.tsx';
 import { buildReportHtml, download, reportPayload } from './lib/share.ts';
-import { QlikImport, type QlikImportPlan } from './components/QlikImport.tsx';
+import type { QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
@@ -76,8 +88,6 @@ function initialView(): View | null {
   }
   return readLocal<'builder' | 'ask'>(K.view);
 }
-
-void startSession();
 
 function newId(prefix = 'f'): string {
   return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -105,8 +115,10 @@ export function App() {
   const index = useMemo(() => indexCatalog(catalog), [catalog]);
   const history = useHoistHistory(useMemo(() => initialHoist(catalog), []));
   const { hoist, change } = history;
-  const [server, setServer] = useState<ServerInfo | null>(null);
-  const [serverChecked, setServerChecked] = useState(false);
+  // The session (lib/session.ts): the server's info while it answers, and one screen per state.
+  const session = useSession();
+  const server = session.info;
+  const serverChecked = session.state !== 'boot';
   const [view, setViewState] = useState<View | null>(initialView);
   // The builder opens on the welcome page (components/Welcome.tsx) unless the analyst turned it off.
   const [welcome, setWelcome] = useState(() => (initialView() ?? 'builder') === 'builder' && !readLocal<boolean>(K.skipWelcome));
@@ -114,9 +126,6 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [kitsOpen, setKitsOpen] = useState(false);
-  // Why the page cannot reach its server any more: it stopped (or the session ended), or this tab's
-  // launch link was already used or has expired.
-  const [serverLost, setServerLost] = useState<null | 'stopped' | 'link'>(null);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
   const [useExamples, setUseExamples] = useState(aiExamplesWanted);
@@ -127,8 +136,13 @@ export function App() {
   const [dataVersion, setDataVersion] = useState(1);
   const [selections, setSelections] = useState<Selections>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // The busy line, and the guard that keeps a second draft or import from starting during one (#91).
+  const { busy, run: runBusy, say: sayBusy } = useBusy();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [browserNoteHidden, setBrowserNoteHidden] = useState(false);
+  // "Why it didn't draft" (#69): kept until the flag's brief changes.
+  const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
@@ -173,27 +187,16 @@ export function App() {
     if (!server?.skin) writeLocal(K.skin, skin);
   }, [skin, server]);
 
-  const notify = useCallback((text: string) => {
-    setToast(text);
-    window.setTimeout(() => setToast((t) => (t === text ? null : t)), 6000);
-  }, []);
+  // notify(text, { tone, action }) (lib/toasts.ts): info goes after 5 s, an error stays until dismissed.
 
-  // The server, when there is one: its sources, and the heartbeat that keeps it alive while
-  // this tab is open.
+  // The server, once it answers: the view this computer opens by default, and the AI status. The
+  // heartbeat that keeps it alive while this tab is open runs in lib/session.ts.
   useEffect(() => {
-    let stop: (() => void) | null = null;
-    probeServer().then((info) => {
-      if (!info && sessionRefused()) setServerLost('link');
-      setServer(info);
-      setServerChecked(true);
-      if (info?.view === 'ask' || info?.view === 'builder') setViewState((v) => v ?? (info.view as 'ask' | 'builder'));
-      if (info) {
-        stop = startHeartbeat(() => setServerLost('stopped'));
-        loadAiStatus().then(setAi);
-      }
-    });
-    return () => stop?.();
-  }, []);
+    if (!server) return;
+    if (server.view === 'ask' || server.view === 'builder') setViewState((v) => v ?? (server.view as 'ask' | 'builder'));
+    loadAiStatus().then(setAi);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server?.pid]);
 
   // CSV files kept in this browser come back on reload.
   useEffect(() => {
@@ -232,51 +235,42 @@ export function App() {
     return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
   }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
-  // Save: always to this browser; to the server's folder too when there is one, 1.2 s after the
-  // last change. A pending save is sent at once, never dropped, when another hoist replaces this
-  // one (New, Open, Import), before End session, and when the page goes away.
-  const saveTimer = useRef<number | null>(null);
-  const pendingSave = useRef<Hoist | null>(null);
-  const flushSave = useCallback(
-    (keepalive = false): Promise<void> => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-      const h = pendingSave.current;
-      pendingSave.current = null;
-      if (!h || !server) return Promise.resolve();
-      return saveItem('hoists', h.id, h, keepalive).then(
-        () => undefined,
-        (e: Error) => notify(`Could not save "${h.title}" to the server: ${e.message}`),
-      );
+  // Save (hooks/usePersistence.ts): always to this browser; to the Semaphore folder 1.2 s after the
+  // last change, with the version check, the size check, and another tab's changes noticed.
+  const persistence = usePersistence({
+    hoist,
+    server,
+    online: session.state === 'ok',
+    index,
+    hoistKey: K.hoist,
+    newId,
+    onLoadHoist: (h) => {
+      history.replace(h);
+      setSelections({});
+      setSelectedId(null);
     },
-    [server, notify],
-  );
-  useEffect(() => {
-    writeLocal(K.hoist, hoist);
-    if (!server) return;
-    if (pendingSave.current && pendingSave.current.id !== hoist.id) void flushSave();
-    pendingSave.current = hoist;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => void flushSave(), 1200);
-  }, [hoist, server, flushSave]);
-  useEffect(() => {
-    const leaving = () => void flushSave(true);
-    window.addEventListener('pagehide', leaving);
-    return () => window.removeEventListener('pagehide', leaving);
-  }, [flushSave]);
+    onLoadCatalog: (c) => {
+      if (c && c.version === 1 && checkCatalog(c).length === 0) {
+        setCatalogState(c);
+        writeLocal(K.catalog, c);
+      }
+    },
+  });
+  const { flushSave } = persistence;
 
   const setCatalog = useCallback(
     (c: Catalog) => {
       const problems = checkCatalog(c);
       if (problems.length) {
-        notify(problems[0]!);
+        notify(problems[0]!, { tone: 'error' });
         return;
       }
       setCatalogState(c);
       writeLocal(K.catalog, c);
-      if (server) saveItem('catalogs', 'default', c).catch((e: Error) => notify(`Could not save the catalog to the server: ${e.message}`));
+      persistence.saveCatalog(c);
     },
-    [server, notify],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [persistence.saveCatalog],
   );
 
   // A server keeps the catalog for every browser on this computer; prefer its copy.
@@ -289,7 +283,10 @@ export function App() {
           writeLocal(K.catalog, c);
         }
       },
-      () => saveItem('catalogs', 'default', catalog).catch(() => undefined),
+      // Nothing in the folder yet (or it could not be read): this browser's catalog becomes the folder's.
+      () => {
+        if (!oversize(catalog, 'catalog')) saveItem('catalogs', 'default', catalog).catch(() => undefined);
+      },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server]);
@@ -320,10 +317,13 @@ export function App() {
 
   const removeFlag = useCallback(
     (id: string) => {
+      const gone = hoist.flags.find((f) => f.id === id);
       change((h) => ({ ...h, flags: h.flags.filter((f) => f.id !== id) }));
       setSelectedId(null);
+      // Fail-safe delete (#69): one step back brings it back, offered right where the analyst looks.
+      notify(`Flag deleted${gone?.title ? `: “${gone.title}”` : ''}.`, { action: { label: 'Undo', run: () => { history.undo(); setSelectedId(id); } } });
     },
-    [change],
+    [change, hoist.flags, history],
   );
 
   const duplicateFlag = useCallback(
@@ -346,14 +346,13 @@ export function App() {
   const draftSelected = useCallback(async () => {
     if (!selected) return;
     const provider = draftingProvider(index, ai, useAi);
-    setBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`);
-    try {
+    await runBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`, async () => {
       const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
       // When Fairlead fell back to a local model, the draft names the model that really answered.
       const by = outcome.draft.answeredBy;
       const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
       const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [credit, ...outcome.draft.notes] };
-      if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`);
+      if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
       else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
       // A fresh draft takes the drafted title; one the analyst typed is kept.
@@ -366,17 +365,24 @@ export function App() {
         const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols).map((p) => [p.id, p.layout]));
         return { ...h, flags: flags.map((f) => ({ ...f, layout: placed.get(f.id) ?? f.layout })) };
       });
-      if (!draft.binding && !outcome.fallbackReason) notify(draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.');
-    } finally {
-      setBusy(null);
-    }
-  }, [selected, index, hoist, autoKinds, change, notify, ai, useAi, teamStyle, aiExamples]);
+      // No measure found: the "Why it didn't draft" card says what was understood and what to do next.
+      if (!draft.binding) setDraftMiss({ flagId: selected.id, brief: next.brief, note: draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.' });
+      else setDraftMiss((m) => (m?.flagId === selected.id ? null : m));
+    }).catch((e: unknown) => notify(`Could not draft this flag. ${describeError(e)}`, { tone: 'error' }));
+  }, [selected, index, hoist, autoKinds, change, ai, useAi, teamStyle, aiExamples, runBusy]);
+
+  // "Use <measure>" on the draft-miss card: draft again once the new brief is in the hoist.
+  const [redraftFor, setRedraftFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!redraftFor || selected?.id !== redraftFor) return;
+    setRedraftFor(null);
+    void draftSelected();
+  }, [redraftFor, selected, draftSelected]);
 
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
       const provider = draftingProvider(index, ai, useAi);
-      setBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`);
-      try {
+      await runBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`, async () => {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
         const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
         const draft = outcome ? outcome.draft : starterHoistLocally(index);
@@ -384,13 +390,11 @@ export function App() {
         change(next);
         setSelections({});
         setSelectedId(null);
-        if (outcome?.fallbackReason) notify(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`);
+        if (outcome?.fallbackReason) notify(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
         else if (draft.notes.length) notify(draft.notes[0]!);
-      } finally {
-        setBusy(null);
-      }
+      }).catch((e: unknown) => notify(`Could not draft the page. ${describeError(e)}`, { tone: 'error' }));
     },
-    [hoist, index, change, notify, ai, useAi, teamStyle, aiExamples],
+    [hoist, index, change, ai, useAi, teamStyle, aiExamples, runBusy],
   );
 
   const toggleExamples = useCallback(() => {
@@ -398,7 +402,7 @@ export function App() {
     setUseExamples(on);
     setAiExamplesWanted(on);
     notify(on ? 'Reviewed examples are on: drafts also send a few similar reviewed briefs with catalog keys and labels. Never rows, results or names.' : 'Reviewed examples are off: drafts send only the brief and the catalog.');
-  }, [useExamples, notify]);
+  }, [useExamples]);
 
   // The header's AI switch. Turning Fairlead on checks it, so a missing Fairlead or a refused key
   // shows up now rather than on the next draft.
@@ -419,9 +423,9 @@ export function App() {
     }
     checkAi().then(
       (r) => notify(r.ok ? r.detail : `${r.detail} Drafts fall back to local rules until this is fixed.`),
-      (e: Error) => notify(`Could not check Fairlead: ${e.message}`),
+      (e: unknown) => notify(`Could not check Fairlead. ${describeError(e)}`, { tone: 'error' }),
     );
-  }, [ai, useAi, notify]);
+  }, [ai, useAi]);
 
   const onLearn = useCallback(
     (word: string, s: Suggestion) => {
@@ -431,7 +435,7 @@ export function App() {
         notify(`Learnt: "${word}" means ${s.label}.`);
       }
     },
-    [catalog, setCatalog, notify],
+    [catalog, setCatalog],
   );
 
   const onSelectValue = useCallback((key: string, value: Cell, additive: boolean) => {
@@ -454,8 +458,8 @@ export function App() {
   );
 
   const addCsv = useCallback(
-    async (list: FileList) => {
-      setBusy('Reading files…');
+    (list: FileList) =>
+      runBusy('Reading files…', async () => {
       let cat = catalog;
       const notes: string[] = [];
       const tables: TableRows = { ...files };
@@ -498,15 +502,14 @@ export function App() {
       clearResultCache();
       setCatalog(cat);
       setProfileNotes(notes);
-      setBusy(null);
-      notify('Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.');
-    },
-    [catalog, files, workerTables, worker, setCatalog, notify],
+      notify('Files added. Check the proposed measures and fields, then describe a flag or draft a starter page.', { tone: 'success' });
+      }).then(() => undefined),
+    [catalog, files, workerTables, worker, setCatalog, runBusy],
   );
 
   const profile = useCallback(
-    async (source: string, table: string) => {
-      setBusy(`Profiling ${table}…`);
+    (source: string, table: string) =>
+      runBusy(`Profiling ${table}…`, async () => {
       try {
         const p = await profileTable(source, table);
         const s = server?.sources.find((x) => x.id === source);
@@ -515,14 +518,12 @@ export function App() {
         const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
-        notify(`${table} added to the catalog.`);
+        notify(`${table} added to the catalog.`, { tone: 'success' });
       } catch (e) {
-        notify(`Profiling failed: ${(e as Error).message}`);
-      } finally {
-        setBusy(null);
+        notify(`Could not profile ${table}. ${describeError(e)}`, { tone: 'error' });
       }
-    },
-    [server, catalog, setCatalog, notify],
+      }).then(() => undefined),
+    [server, catalog, setCatalog, runBusy],
   );
 
   // Import from Qlik: profile each picked table, name its fields the way the Qlik app did, then add
@@ -532,9 +533,9 @@ export function App() {
       const out: string[] = [];
       const imported: QlikImported[] = [];
       let cat = catalog;
-      try {
+      const ran = await runBusy('Importing from Qlik…', async () => {
         for (const t of plan.tables) {
-          setBusy(`Profiling ${t.table}…`);
+          sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
             const s = server?.sources.find((x) => x.id === t.source);
@@ -546,7 +547,7 @@ export function App() {
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
             out.push(`${p.table}: ${p.columns.length} columns profiled, ${labelled.renamed} named the way the Qlik app named them.`);
           } catch (e) {
-            out.push(`${t.table}: could not be profiled (${(e as Error).message}).`);
+            out.push(`${t.table}: could not be profiled. ${describeError(e)}`);
           }
         }
         if (plan.expressions.trim()) {
@@ -569,7 +570,7 @@ export function App() {
           const candidates = qlikRelationshipCandidates(plan.script, cat, imported);
           const checkCtx: DataContext = { ...ctx, index: indexCatalog(cat) };
           for (const c of candidates) {
-            setBusy(`Checking the ${c.from.label} link…`);
+            sayBusy(`Checking the ${c.from.label} link…`);
             try {
               const [a, b] = [await runAnywhere(valuesPlan(checkCtx.index, c.from.key), checkCtx), await runAnywhere(valuesPlan(checkCtx.index, c.to.key), checkCtx)];
               const rel = proposeRelationship(c, checkRelationship(toValueCounts(a.rows), toValueCounts(b.rows)));
@@ -578,18 +579,18 @@ export function App() {
                 out.push(`Linked ${c.from.table} to ${c.to.table} on ${c.from.label}, as Qlik did (${Math.round((rel.match ?? 0) * 100)}% of values match).`);
               }
             } catch (e) {
-              out.push(`The ${c.from.label} link could not be checked: ${(e as Error).message}`);
+              out.push(`The ${c.from.label} link could not be checked. ${describeError(e)}`);
             }
           }
         }
         setCatalog(cat);
-        notify('Qlik import done: check the new measures and fields under Data.');
-      } finally {
-        setBusy(null);
-      }
+        notify('Qlik import done: check the new measures and fields under Data.', { tone: 'success' });
+        return true;
+      });
+      if (!ran) return ['Another import or draft is still running. Try again when it has finished.'];
       return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
     },
-    [catalog, server, setCatalog, notify, ctx],
+    [catalog, server, setCatalog, ctx, runBusy, sayBusy],
   );
 
   const readQlikWithAi = useCallback((label: string, expression: string) => readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
@@ -608,7 +609,7 @@ export function App() {
       setSelectedId(id);
       notify(`Added "${title}" as a flag: select Draft to let Semaphore work it out.`);
     },
-    [change, notify],
+    [change],
   );
 
   const removeSource = useCallback(
@@ -653,14 +654,27 @@ export function App() {
   };
 
   const importHoist = async (file: File) => {
+    // The size check comes first (#91): the folder takes 2 MB a hoist, so a bigger file is never read in.
+    if (file.size > LIMITS.docBytes) {
+      notify(`${file.name} is ${formatMb(file.size)}, over the ${formatMb(LIMITS.docBytes)} a hoist may be. Remove some flags from it, or split it into two hoists.`, { tone: 'error' });
+      return;
+    }
     try {
-      const { hoist: h, warnings } = parseHoist(JSON.parse(await file.text()), index);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await file.text());
+      } catch {
+        throw new Error('It is not a JSON file.');
+      }
+      const { hoist: h, warnings } = parseHoist(raw, index);
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
+      void flushSave();
       history.replace(h);
       setSelections({});
-      if (warnings.length) notify(warnings.slice(0, 2).join(' '));
+      setSelectedId(null);
+      notify(warnings.length ? `Opened “${h.title}”. ${warnings.slice(0, 2).join(' ')}` : `Opened “${h.title}”.`, { tone: warnings.length ? 'info' : 'success' });
     } catch (e) {
-      notify(`Could not open ${file.name}: ${(e as Error).message}`);
+      notify(`Could not open ${file.name}. ${describeError(e)}`, { tone: 'error' });
     }
   };
 
@@ -669,14 +683,32 @@ export function App() {
       const raw = await loadItem<unknown>('hoists', id);
       const { hoist: h, warnings } = parseHoist(raw, index);
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
+      void flushSave();
       history.replace(h);
       setSelections({});
+      setSelectedId(null);
       setOpenList(null);
       if (warnings.length) notify(warnings.slice(0, 2).join(' '));
     } catch (e) {
-      notify(`Could not open it: ${(e as Error).message}`);
+      notify(`Could not open it. ${describeError(e)}`, { tone: 'error' });
     }
   };
+  const showOpenList = useCallback(() => {
+    listItems('hoists').then(setOpenList, (e: unknown) => notify(`Could not list the saved hoists. ${describeError(e)}`, { tone: 'error' }));
+  }, []);
+  const newHoist = useCallback(() => {
+    void flushSave();
+    history.replace(blankHoist());
+    setSelections({});
+    setSelectedId(null);
+  }, [flushSave, history]);
+
+  // End session (#87): confirm, send the pending save, stop the heartbeat, then stop the server.
+  const endTheSession = useCallback(async () => {
+    const ok = await confirm({ title: 'End this session?', body: 'Semaphore saves this hoist to the folder, then stops its server. You can start it again any time with Launch-Semaphore.bat.', confirmLabel: 'End session', destructive: true });
+    if (ok) await session.end(() => flushSave());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flushSave, session.end]);
 
   // ---- The playbook: learn from accepted flags, keep it healthy, keep snapshots fresh --------
   // (usePlaybook, user and the team style are set up near the top: the draft handlers use them.)
@@ -694,11 +726,11 @@ export function App() {
       playbook.saveEntries(learnt).then(
         () => {
           const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
-          if (fresh.length) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`);
+          if (fresh.length) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
           const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
           for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
         },
-        (e: Error) => notify(`Could not save to the playbook: ${e.message}`),
+        (e: unknown) => notify(`Could not save to the playbook. ${describeError(e)}`, { tone: 'error' }),
       );
     }, 2000);
     return () => clearTimeout(timer);
@@ -768,15 +800,16 @@ export function App() {
   // "Brief me": the open page's briefing, written by the AI when it is on, checked against the facts.
   const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
   const briefMe = useCallback(async () => {
+    if (briefing === 'loading') return;
     setBriefing('loading');
     try {
       const frozen = await freezeHoist(hoist, ctx, index);
       setBriefing(await briefFrozen(frozen, hoist.title, index, draftingProvider(index, ai, useAi)));
     } catch (e) {
       setBriefing(null);
-      notify(`Could not read the page: ${(e as Error).message}`);
+      notify(`Could not brief you on this page. ${describeError(e)}`, { tone: 'error' });
     }
-  }, [hoist, ctx, index, ai, useAi, notify]);
+  }, [hoist, ctx, index, ai, useAi, briefing]);
 
   // The refresher (Launch-Semaphore.bat --refresh, in a headless browser): refresh every snapshot
   // this computer can reach, report to the server, and end the session.
@@ -811,7 +844,7 @@ export function App() {
       for (const line of await produceDueEditions(playbook, ctx, index, user, null, draftingProvider(index, ai, useAi)).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
         await api('/api/refresh-report', { json: { refreshed, skipped, failed } }).catch(() => undefined);
-        await endSession().catch(() => undefined);
+        await session.end(() => Promise.resolve());
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -836,44 +869,30 @@ export function App() {
     [change],
   );
 
-  // Keyboard: undo/redo, delete, arrows to nudge, Escape to deselect, / to ask.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (currentView !== 'builder') return;
-      const t = e.target as HTMLElement;
-      const typing = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) {
-        e.preventDefault();
-        if (e.shiftKey) history.redo();
-        else history.undo();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && !typing) {
-        e.preventDefault();
-        history.redo();
-        return;
-      }
-      if (typing) return;
-      if (e.key === '/') {
-        e.preventDefault();
-        askRef.current?.focus();
-      } else if (e.key === 'Escape') {
-        setSelectedId(null);
-        setAsked(null);
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-        e.preventDefault();
-        removeFlag(selectedId);
-      } else if (selected && e.key.startsWith('Arrow')) {
-        e.preventDefault();
-        const l = selected.layout;
-        const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key] ?? [0, 0];
-        const target = e.shiftKey ? { ...l, w: Math.max(1, l.w + d[0]!), h: Math.max(1, l.h + d[1]!) } : { ...l, x: l.x + d[0]!, y: Math.max(0, l.y + d[1]!) };
-        onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols), `keys-${selected.id}`);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [history, selectedId, selected, removeFlag, onLayout, hoist, currentView]);
+  // Keyboard (hooks/useShortcuts.ts, listed in the ? help): palette, help, undo and redo, delete,
+  // arrows to nudge, Escape to deselect, / for a quick chart. Flag keys come from useFlagKeys.
+  const flagKeys = useFlagKeys({ selectedId });
+  useShortcuts({
+    enabled: currentView === 'builder' && !welcome,
+    hasSelection: !!selected,
+    flagKeys,
+    onPalette: () => setPaletteOpen(true),
+    onHelp: () => setHelpOpen(true),
+    onAsk: () => askRef.current?.focus(),
+    onUndo: history.undo,
+    onRedo: history.redo,
+    onEscape: () => {
+      setSelectedId(null);
+      setAsked(null);
+    },
+    onDelete: () => selectedId && removeFlag(selectedId),
+    onArrow: (dx, dy, resize) => {
+      if (!selected) return;
+      const l = selected.layout;
+      const target = resize ? { ...l, w: Math.max(1, l.w + dx), h: Math.max(1, l.h + dy) } : { ...l, x: l.x + dx, y: Math.max(0, l.y + dy) };
+      onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols), `keys-${selected.id}`);
+    },
+  });
 
   const selectionChips = Object.entries(selections).flatMap(([key, values]) => {
     const [field, grain] = key.split('@');
@@ -893,207 +912,200 @@ export function App() {
     );
   }
 
+  // The one action list: the header's menus and the command palette both show it (hooks/useCommands.ts).
+  const importInput = useRef<HTMLInputElement>(null);
+  const actions = useMemo(
+    () =>
+      buildActions({
+        hasServer: !!server,
+        hasSql: !!server && server.sources.length > 0,
+        busy: busy !== null,
+        canUndo: history.canUndo,
+        canRedo: history.canRedo,
+        hasBrief: !!hoist.brief.trim(),
+        hasFlags: hoist.flags.length > 0,
+        experiment: !!hoist.experiment,
+        theme,
+        skinLabel: skinFixed ? null : (SKINS.find((x) => x.id === skin)?.label ?? skin),
+        ai: server && ai ? { configured: ai.configured, on: ai.configured && useAi } : null,
+        examplesOn: server && ai?.configured && useAi ? useExamples : null,
+        run: {
+          new: newHoist,
+          open: showOpenList,
+          import: () => importInput.current?.click(),
+          download: exportHoist,
+          share: () => setShareOpen(true),
+          brief: () => void briefMe(),
+          kits: () => setKitsOpen(true),
+          sql: () => setSqlOpen(true),
+          lineage: () => setLineageOpen(true),
+          qlik: () => setQlikOpen(true),
+          playbook: () => setPlaybookOpen(true),
+          data: () => setDataOpen(true),
+          leadership: () => setView('ask'),
+          home: () => setWelcome(true),
+          undo: history.undo,
+          redo: history.redo,
+          ask: () => askRef.current?.focus(),
+          'draft-page': () => void draftPage(hoist.flags.length ? 'add' : 'replace'),
+          starter: () => void draftPage('starter'),
+          experiment: () => change((h) => ({ ...h, experiment: !h.experiment })),
+          theme: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
+          skin: () => {
+            const i = SKINS.findIndex((x) => x.id === skin);
+            const next = SKINS[(i + 1) % SKINS.length]!;
+            setSkin(next.id);
+            notify(`Skin: ${next.label}.`);
+          },
+          ai: toggleAi,
+          examples: toggleExamples,
+          help: () => setHelpOpen(true),
+          palette: () => setPaletteOpen(true),
+          end: () => void endTheSession(),
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [server, busy, history, hoist, theme, skin, skinFixed, ai, useAi, useExamples, newHoist, showOpenList, briefMe, draftPage, toggleAi, toggleExamples, endTheSession],
+  );
+  const paletteCommands = useCommands({
+    actions,
+    open: paletteOpen,
+    hasServer: !!server,
+    flags: hoist.flags,
+    catalog,
+    questions: playbook.questions,
+    onSelectFlag: (id) => {
+      setSelectedId(id);
+      document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ block: 'center' });
+    },
+    onOpenHoist: (id) => void openFromServer(id),
+    onInsert: (label) => change((h) => ({ ...h, brief: `${h.brief.trimEnd()}${h.brief.trim() ? ' ' : ''}${label}`.slice(0, LIMITS.briefChars) }), 'hoist-brief'),
+    onAnswer: answerQuestionItem,
+  });
+
+  // Over every view: the session's state, toasts and confirmations.
+  const overlays = (
+    <>
+      <SessionScreen session={session} view={currentView === 'ask' ? 'ask' : 'builder'} onRetry={session.retry} />
+      <ConfirmHost />
+      <Toasts busy={busy} />
+    </>
+  );
+
   if (currentView === 'ask') {
     return (
       <>
-        <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
-        {serverLost && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
-            <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
-              <h2 className="mb-1 text-base font-semibold">{serverLost === 'link' ? 'This launch link has already been used' : 'The session has ended'}</h2>
-              <p className="text-sm text-ink-2">{serverLost === 'link' ? 'Close this tab and start Semaphore again with Ask-Semaphore.bat.' : 'Semaphore has stopped. Start it again with Ask-Semaphore.bat.'}</p>
-            </div>
-          </div>
-        )}
+        <PanelBoundary name="leadership view">
+          <Suspense fallback={<PanelSkeleton label="leadership view" />}>
+            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+          </Suspense>
+        </PanelBoundary>
+        {overlays}
       </>
     );
   }
 
   if (welcome) {
     return (
-      <Welcome
-        lastTitle={hoist.title}
-        canOpenSaved={!!server}
-        onContinue={() => setWelcome(false)}
-        onNew={() => {
-          history.replace(blankHoist());
-          setSelections({});
-          setSelectedId(null);
-          setWelcome(false);
-        }}
-        onOpenSaved={() => {
-          setWelcome(false);
-          listItems('hoists').then(setOpenList, (e: Error) => notify(e.message));
-        }}
-        onData={() => {
-          setWelcome(false);
-          setDataOpen(true);
-        }}
-        onAsk={() => {
-          setWelcome(false);
-          setView('ask');
-        }}
-        skipNextTime={!!readLocal<boolean>(K.skipWelcome)}
-        onSkipNextTime={(skip) => writeLocal(K.skipWelcome, skip)}
-      />
+      <>
+        <Welcome
+          lastTitle={hoist.title}
+          canOpenSaved={!!server}
+          onContinue={() => setWelcome(false)}
+          onNew={() => {
+            newHoist();
+            setWelcome(false);
+          }}
+          onOpenSaved={() => {
+            setWelcome(false);
+            showOpenList();
+          }}
+          onData={() => {
+            setWelcome(false);
+            setDataOpen(true);
+          }}
+          onAsk={() => {
+            setWelcome(false);
+            setView('ask');
+          }}
+          skipNextTime={!!readLocal<boolean>(K.skipWelcome)}
+          onSkipNextTime={(skip) => writeLocal(K.skipWelcome, skip)}
+        />
+        {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
+        {overlays}
+      </>
     );
   }
 
+  const miss = selected && draftMiss && draftMiss.flagId === selected.id && draftMiss.brief === selected.brief ? draftMiss : null;
+
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-line bg-panel px-4 py-2">
-        <img src="brand/mark.svg" alt="" className="header-mark h-7 w-7" />
-        <div className="flex min-w-0 flex-col">
-          <button type="button" onClick={() => setWelcome(true)} title="Home: the welcome page" className="self-start text-[10px] font-semibold uppercase tracking-[0.18em] text-brass hover:underline">
-            Semaphore
-          </button>
-          <input
-            value={hoist.title}
-            onChange={(e) => change((h) => ({ ...h, title: e.target.value.slice(0, 200) }), 'title')}
-            aria-label="Hoist title"
-            className="-ml-1 min-w-0 rounded border border-transparent bg-transparent px-1 text-[15px] font-semibold leading-tight hover:border-line focus:border-accent focus:outline-none"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={() => change((h) => ({ ...h, experiment: !h.experiment }))}
-          aria-pressed={!!hoist.experiment}
-          title={hoist.experiment ? 'Experiment page: never learnt from. Click to make it a normal page.' : 'Mark this page as an experiment: try anything, and the playbook and team style never learn from it.'}
-          className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${hoist.experiment ? 'border-warn bg-warn-soft font-semibold text-warn' : 'border-line text-ink-3 hover:border-warn hover:text-warn'}`}
-        >
-          <FlaskConical size={12} /> {hoist.experiment ? 'Experiment' : 'Try freely'}
-        </button>
-        {digestWaiting && (
-          <button
-            type="button"
-            onClick={() => {
-              setPlaybookTab('away');
-              setPlaybookOpen(true);
-            }}
-            className="flex items-center gap-1 rounded-full border border-accent bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent"
-          >
-            While you were out
-          </button>
-        )}
-        {!hoist.experiment && hoistSchedule && (
-          <ReportChip
-            title={hoist.title}
-            cadence={reportOffer}
-            schedule={hoistSchedule}
-            onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
-            onDismiss={() => {
-              writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
-              setOfferTick((t) => t + 1);
-            }}
-            onStop={() => hoistSchedule && void playbook.removeReportDoc(hoistSchedule.id)}
-          />
-        )}
-        <div className="ml-4 flex items-center gap-0.5">
-          <IconButton label="Undo (Ctrl+Z)" onClick={history.undo} disabled={!history.canUndo}>
-            <Undo2 size={16} />
-          </IconButton>
-          <IconButton label="Redo (Ctrl+Y)" onClick={history.redo} disabled={!history.canRedo}>
-            <Redo2 size={16} />
-          </IconButton>
-        </div>
-        <div className="flex flex-1 justify-center">
-          <AskBox index={index} onAsk={setAsked} inputRef={askRef} />
-        </div>
-        <div className="flex items-center gap-0.5">
-          <IconButton label="New hoist" onClick={() => { history.replace(blankHoist()); setSelections({}); setSelectedId(null); }}>
-            <FilePlus2 size={16} />
-          </IconButton>
-          {server && (
-            <IconButton label="Open a saved hoist" onClick={() => listItems('hoists').then(setOpenList, (e: Error) => notify(e.message))}>
-              <FolderOpen size={16} />
-            </IconButton>
-          )}
-          <label className="cursor-pointer rounded-md p-1.5 text-ink-2 hover:bg-panel-2" title="Import a hoist file">
-            <Upload size={16} />
-            <span className="sr-only">Import a hoist file</span>
-            <input type="file" accept=".json,application/json" className="sr-only" onChange={(e) => e.target.files?.[0] && importHoist(e.target.files[0])} />
-          </label>
-          <IconButton label="Download this hoist" onClick={exportHoist}>
-            <Download size={16} />
-          </IconButton>
-          <IconButton label="Share as a report: one HTML file with working filters" onClick={() => setShareOpen(true)}>
-            <FileDown size={16} />
-          </IconButton>
-          <IconButton label="Flag kits: save flags as a kit, or fly a kit on this page" onClick={() => setKitsOpen(true)}>
-            <Package size={16} />
-          </IconButton>
-          <IconButton label="Brief me: what this page says, as leadership would read it" onClick={briefMe}>
-            <ScrollText size={16} />
-          </IconButton>
-          <button type="button" onClick={() => setPlaybookOpen(true)} className="relative ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="What leadership can ask for, their questions, and what needs review">
-            <BookOpen size={14} className="text-brass" /> Playbook
-            {waiting > 0 && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-bad px-1.5 text-[10px] font-bold text-panel">{waiting}</span>}
-          </button>
-          <button type="button" onClick={() => setView('ask')} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="The leadership view: ask a question, get an answer">
-            <MessagesSquare size={14} className="text-brass" /> Ask view
-          </button>
-          <button type="button" onClick={() => setDataOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent">
-            <Database size={14} className="text-brass" /> Data
-          </button>
-          {server && server.sources.length > 0 && (
-            <button type="button" onClick={() => setSqlOpen(true)} className="ml-1 flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-sm hover:border-accent" title="Write your own SELECT against a source on this computer">
-              <TerminalSquare size={14} className="text-brass" /> SQL
-            </button>
-          )}
-          {server && ai && (
-            <button
-              type="button"
-              onClick={toggleAi}
-              aria-pressed={ai.configured && useAi}
-              className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:border-accent ${ai.configured && useAi ? 'border-accent text-accent' : 'border-line text-ink-2'}`}
-              title={ai.configured ? (useAi ? 'Drafts go through Fairlead. Click to draft with local rules only.' : 'Drafting with local rules only. Click to use Fairlead.') : (ai.problem ?? ai.setup)}
-            >
-              <Bot size={14} /> {ai.configured ? (useAi ? 'AI: Fairlead' : 'AI: off') : 'AI: local rules'}
-            </button>
-          )}
-          {server && ai?.configured && useAi && (
-            <button
-              type="button"
-              onClick={toggleExamples}
-              aria-pressed={useExamples}
-              className={`ml-1 flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:border-accent ${useExamples ? 'border-accent text-accent' : 'border-line text-ink-2'}`}
-              title={
-                useExamples
-                  ? `Drafts also send up to 3 similar reviewed briefs from the playbook, as catalog keys and labels only, never rows, results or names${ai.privacyLocal ? ' (kept on this computer by Fairlead)' : ''}. Click to stop.`
-                  : 'Off: drafts send only the brief and the catalog. Click to also send a few similar reviewed briefs from the playbook as worked examples.'
-              }
-            >
-              <BookOpen size={14} /> {useExamples ? 'Examples: on' : 'Examples: off'}
-            </button>
-          )}
-          {!skinFixed && (
-            <IconButton
-              label={`Skin: ${SKINS.find((s) => s.id === skin)?.label ?? skin}. Switch skin`}
-              onClick={() => {
-                const i = SKINS.findIndex((s) => s.id === skin);
-                const next = SKINS[(i + 1) % SKINS.length]!;
-                setSkin(next.id);
-                notify(`Skin: ${next.label}.`);
-              }}
-            >
-              <Paintbrush size={16} />
-            </IconButton>
-          )}
-          <IconButton label={theme === 'dark' ? 'Light theme' : 'Dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-          </IconButton>
-          {server && (
-            <button
-              type="button"
-              onClick={() => void flushSave().then(endSession).then(() => setServerLost('stopped'), () => setServerLost('stopped'))}
-              className="ml-1 flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm text-ink-2 hover:bg-bad-soft hover:text-bad"
-              title="Stop the Semaphore server and end this session"
-            >
-              <Power size={14} /> End session
-            </button>
-          )}
-        </div>
-      </header>
+      <Header
+        title={hoist.title}
+        onTitle={(t) => change((h) => ({ ...h, title: t.slice(0, LIMITS.titleChars) }), 'title')}
+        onHome={() => setWelcome(true)}
+        experiment={!!hoist.experiment}
+        onExperiment={actions.experiment.run}
+        chips={
+          <>
+            {digestWaiting && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPlaybookTab('away');
+                  setPlaybookOpen(true);
+                }}
+                className="flex min-h-7 shrink-0 items-center gap-1 rounded-full border border-accent bg-accent-soft px-2 text-[11px] font-semibold text-accent"
+              >
+                While you were out
+              </button>
+            )}
+            {!hoist.experiment && hoistSchedule && (
+              <ReportChip
+                title={hoist.title}
+                cadence={reportOffer}
+                schedule={hoistSchedule}
+                onAccept={(c) => void playbook.saveReportDoc(newSchedule(hoist.id, hoist.title, user, c, new Date())).then(() => notify(`While you are marked away, “${hoist.title || 'this page'}” keeps coming ${describeCadence(c)}.`))}
+                onDismiss={() => {
+                  writeLocal(`semaphore.reportOffer.${hoist.id}`, 'no');
+                  setOfferTick((t) => t + 1);
+                }}
+                onStop={() => hoistSchedule && void playbook.removeReportDoc(hoistSchedule.id)}
+              />
+            )}
+          </>
+        }
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
+        onUndo={history.undo}
+        onRedo={history.redo}
+        askBox={<AskBox index={index} onAsk={setAsked} inputRef={askRef} />}
+        actions={actions}
+        theme={theme}
+        aiOn={server && ai ? ai.configured && useAi : null}
+        examplesOn={server && ai?.configured && useAi ? useExamples : null}
+        waiting={waiting}
+        onPlaybook={actions.playbook.run}
+        onData={actions.data.run}
+        onLeadership={actions.leadership.run}
+        onHelp={actions.help.run}
+      />
+      <input ref={importInput} type="file" accept=".json,application/json" tabIndex={-1} aria-hidden="true" className="sr-only" onChange={(e) => {
+        const f = e.target.files?.[0];
+        e.target.value = '';
+        if (f) void importHoist(f);
+      }} />
+      {session.state === 'no-server' && !browserNoteHidden && <BrowserOnlyNote onDismiss={() => setBrowserNoteHidden(true)} />}
+      {persistence.conflict && (
+        <ConflictBar
+          conflict={persistence.conflict}
+          onTheirs={() => persistence.resolveConflict('theirs')}
+          {...(persistence.conflict.kind === 'hoists' ? { onCopy: () => persistence.resolveConflict('copy') } : {})}
+          onOverwrite={() => persistence.resolveConflict('overwrite')}
+        />
+      )}
+      {persistence.tabChange && <TabChangeBar change={persistence.tabChange} onReload={() => persistence.resolveTabChange('reload')} onKeep={() => persistence.resolveTabChange('keep')} />}
       {!hoist.experiment && !hoistSchedule && reportOffer && (
           <ReportChip
             title={hoist.title}
@@ -1113,7 +1125,10 @@ export function App() {
           <div className="min-w-0 flex-1 space-y-1.5">
             <BriefEditor
               value={hoist.brief}
-              onChange={(v) => change((h) => ({ ...h, brief: v }), 'hoist-brief')}
+              onChange={(v) => {
+                if (v.length > LIMITS.briefChars) notify(`A brief can be up to ${LIMITS.briefChars.toLocaleString('en-US')} characters, so the rest was left out. Split a long brief over several flags.`);
+                change((h) => ({ ...h, brief: v.slice(0, LIMITS.briefChars) }), 'hoist-brief');
+              }}
               index={index}
               rows={1}
               label="What is this page for?"
@@ -1204,165 +1219,167 @@ export function App() {
           </div>
         </main>
         {selected && (
-          <Inspector
-            key={selected.id}
-            hoist={hoist}
-            flag={selected}
-            ctx={ctx}
-            index={index}
-            selections={selections}
-            busy={busy !== null}
-            autoKind={autoKinds[selected.id] ?? selected.status === 'empty'}
-            onAutoKind={(on) => setAutoKinds((a) => ({ ...a, [selected.id]: on }))}
-            onChange={(patch, group) => updateFlag(selected.id, patch, group)}
-            onDraft={draftSelected}
-            onAccept={() => updateFlag(selected.id, { status: 'ready' })}
-            onDuplicate={() => duplicateFlag(selected.id)}
-            onDelete={() => removeFlag(selected.id)}
-            onClose={() => setSelectedId(null)}
-            onLearn={onLearn}
-          />
+          <div className="flex h-full min-h-0 w-[360px] shrink-0 flex-col">
+            {miss && (
+              <DraftMiss
+                miss={miss}
+                index={index}
+                busy={busy !== null}
+                onUseMeasure={(label) => {
+                  updateFlag(selected.id, { brief: `${selected.brief.trimEnd()} ${label}`.trim().slice(0, LIMITS.briefChars) });
+                  setDraftMiss(null);
+                  setRedraftFor(selected.id);
+                }}
+                onLearn={(word, sug) => {
+                  onLearn(word, sug);
+                  setDraftMiss(null);
+                }}
+                onData={() => setDataOpen(true)}
+                onDismiss={() => setDraftMiss(null)}
+              />
+            )}
+            <div className="min-h-0 flex-1">
+              <PanelBoundary key={selected.id} name="inspector" variant="inline" onClose={() => setSelectedId(null)}>
+                <Inspector
+                  key={selected.id}
+                  hoist={hoist}
+                  flag={selected}
+                  ctx={ctx}
+                  index={index}
+                  selections={selections}
+                  busy={busy !== null}
+                  autoKind={autoKinds[selected.id] ?? selected.status === 'empty'}
+                  onAutoKind={(on) => setAutoKinds((a) => ({ ...a, [selected.id]: on }))}
+                  onChange={(patch, group) => updateFlag(selected.id, patch, group)}
+                  onDraft={draftSelected}
+                  onAccept={() => updateFlag(selected.id, { status: 'ready' })}
+                  onDuplicate={() => duplicateFlag(selected.id)}
+                  onDelete={() => removeFlag(selected.id)}
+                  onClose={() => setSelectedId(null)}
+                  onLearn={onLearn}
+                />
+              </PanelBoundary>
+            </div>
+          </div>
         )}
       </div>
 
       {playbookOpen && (
-        <PlaybookPanel
-          playbook={playbook}
-          index={index}
-          user={user}
-          reviewer={server?.reviewer ?? ''}
-          style={teamStyle}
-          initialTab={playbookTab}
-          onClose={() => {
-            setPlaybookOpen(false);
-            setPlaybookTab(undefined);
-          }}
-          onAnswer={answerQuestionItem}
-        />
+        <Panel name="playbook" onClose={() => setPlaybookOpen(false)}>
+          <PlaybookPanel
+            playbook={playbook}
+            index={index}
+            user={user}
+            reviewer={server?.reviewer ?? ''}
+            style={teamStyle}
+            initialTab={playbookTab}
+            onClose={() => {
+              setPlaybookOpen(false);
+              setPlaybookTab(undefined);
+            }}
+            onAnswer={answerQuestionItem}
+          />
+        </Panel>
       )}
 
       {kitsOpen && (
-        <KitsPanel
-          store={kitStore}
-          hoist={hoist}
-          index={index}
-          onClose={() => setKitsOpen(false)}
-          onApply={(h, summary) => {
-            change(h);
-            notify(summary);
-          }}
-        />
+        <Panel name="kits panel" onClose={() => setKitsOpen(false)}>
+          <KitsPanel
+            store={kitStore}
+            hoist={hoist}
+            index={index}
+            onClose={() => setKitsOpen(false)}
+            onApply={(h, summary) => {
+              change(h);
+              notify(summary, { tone: 'success' });
+            }}
+          />
+        </Panel>
       )}
 
       {dataOpen && (
-        <DataPanel
-          catalog={catalog}
-          server={server}
-          localSources={ctx.localSources}
-          notes={profileNotes}
-          busy={busy}
-          onClose={() => setDataOpen(false)}
-          onCatalog={setCatalog}
-          ctx={ctx}
-          provider={draftingProvider(index, ai, useAi)}
-          onLineage={() => setLineageOpen(true)}
-          onAddCsv={addCsv}
-          onRemoveSource={removeSource}
-          onProfile={profile}
-          onLoadExample={loadExample}
-          onImportQlik={() => {
-            setDataOpen(false);
-            setQlikOpen(true);
-          }}
-        />
+        <Panel name="Data panel" onClose={() => setDataOpen(false)}>
+          <DataPanel
+            catalog={catalog}
+            server={server}
+            localSources={ctx.localSources}
+            notes={profileNotes}
+            busy={busy}
+            onClose={() => setDataOpen(false)}
+            onCatalog={setCatalog}
+            ctx={ctx}
+            provider={draftingProvider(index, ai, useAi)}
+            onLineage={() => setLineageOpen(true)}
+            onAddCsv={addCsv}
+            onRemoveSource={removeSource}
+            onProfile={profile}
+            onLoadExample={loadExample}
+            onImportQlik={() => {
+              setDataOpen(false);
+              setQlikOpen(true);
+            }}
+          />
+        </Panel>
       )}
 
       {briefing && (
-        <BriefingPanel
-          briefing={briefing}
-          flags={hoist.flags}
-          onFlag={(id) => {
-            setSelectedId(id);
-            document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }}
-          onClose={() => setBriefing(null)}
-        />
+        <PanelBoundary name="briefing" onClose={() => setBriefing(null)}>
+          <BriefingPanel
+            briefing={briefing}
+            flags={hoist.flags}
+            onFlag={(id) => {
+              setSelectedId(id);
+              document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }}
+            onClose={() => setBriefing(null)}
+          />
+        </PanelBoundary>
       )}
 
       {shareOpen && (
-        <ShareDialog
-          title={hoist.title}
-          onClose={() => setShareOpen(false)}
-          onSave={async (passphrase) => {
-            const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true });
-            const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
-            const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
-            download(name, html);
-            return name;
-          }}
-        />
+        <Panel name="share dialog" onClose={() => setShareOpen(false)}>
+          <ShareDialog
+            title={hoist.title}
+            onClose={() => setShareOpen(false)}
+            onSave={async (passphrase) => {
+              const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true });
+              const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
+              const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
+              download(name, html);
+              return name;
+            }}
+          />
+        </Panel>
       )}
 
-      {lineageOpen && <LineageView catalog={catalog} hoist={hoist} onClose={() => setLineageOpen(false)} />}
-
-      {sqlOpen && server && <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />}
-
-      {qlikOpen && <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} ai={ai?.configured && useAi ? aiLabel(ai) : null} onReadWithAi={readQlikWithAi} onAddMeasures={addMeasures} onClose={() => setQlikOpen(false)} />}
-
-      {openList && (
-        <div className="fixed inset-0 z-40 flex items-start justify-center bg-ink/20 pt-24" onPointerDown={(e) => e.target === e.currentTarget && setOpenList(null)}>
-          <div role="dialog" aria-label="Open a hoist" className="w-[440px] rounded-xl border border-line bg-panel p-4 shadow-xl">
-            <h2 className="mb-2 text-base font-semibold">Open a hoist</h2>
-            <ul className="scroll-thin max-h-80 space-y-1 overflow-y-auto">
-              {openList.map((item) => (
-                <li key={item.id}>
-                  <button type="button" onClick={() => openFromServer(item.id)} className="w-full rounded-md px-2 py-1.5 text-left hover:bg-panel-2">
-                    <span className="block text-sm font-medium">{item.title || item.id}</span>
-                    <span className="text-[11px] text-ink-3">{item.updated ? new Date(item.updated).toLocaleString() : ''}</span>
-                  </button>
-                </li>
-              ))}
-              {openList.length === 0 && <li className="text-sm text-ink-3">Nothing saved yet.</li>}
-            </ul>
-          </div>
-        </div>
+      {lineageOpen && (
+        <Panel name="lineage view" onClose={() => setLineageOpen(false)}>
+          <LineageView catalog={catalog} hoist={hoist} onClose={() => setLineageOpen(false)} />
+        </Panel>
       )}
 
-      {serverLost && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
-          <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
-            {serverLost === 'link' ? (
-              <>
-                <h2 className="mb-1 text-base font-semibold">This launch link has already been used</h2>
-                <p className="text-sm text-ink-2">Each link from Launch-Semaphore.bat opens one tab, within 10 minutes. Close this tab and start Semaphore again; your hoist is kept in this browser.</p>
-              </>
-            ) : (
-              <>
-                <h2 className="mb-1 text-base font-semibold">The session has ended</h2>
-                <p className="text-sm text-ink-2">The Semaphore server has stopped. Your hoist is kept in this browser. Start Semaphore again with Launch-Semaphore.bat.</p>
-              </>
-            )}
-          </div>
-        </div>
+      {sqlOpen && server && (
+        <Panel name="SQL desk" onClose={() => setSqlOpen(false)}>
+          <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />
+        </Panel>
       )}
 
-      <div aria-live="polite" className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2">
-        {(toast || busy) && <div className="rounded-lg bg-ink px-4 py-2 text-sm text-panel shadow-lg">{busy ?? toast}</div>}
-      </div>
+      {qlikOpen && (
+        <Panel name="Qlik import" onClose={() => setQlikOpen(false)}>
+          <QlikImport sources={server?.sources ?? []} busy={busy} onImport={importQlik} onDraftAsFlag={addBriefFlag} ai={ai?.configured && useAi ? aiLabel(ai) : null} onReadWithAi={readQlikWithAi} onAddMeasures={addMeasures} onClose={() => setQlikOpen(false)} />
+        </Panel>
+      )}
+
+      {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
+      {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} />}
+      {overlays}
     </div>
   );
 }
 
 function titleOf(f: Flag): string {
   return f.title;
-}
-
-function IconButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return (
-    <button type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label} className="rounded-md p-1.5 text-ink-2 hover:bg-panel-2 disabled:opacity-30">
-      {children}
-    </button>
-  );
 }
 
 /** Example briefs written from the catalog, so the first thing to try uses real names. */
