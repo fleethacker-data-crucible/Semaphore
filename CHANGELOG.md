@@ -3,6 +3,8 @@
 ## Unreleased
 
 - **The session token stays off command lines and transcripts.** Launch links (the browser window, the headless `--refresh` browser, the `--no-browser` and "could not open the browser" console lines) carry a single-use launch code, valid 10 minutes, instead of the session token; the page trades it once with `POST /api/launch` and keeps the token in the tab. Process-creation auditing and PowerShell transcription, both on at the workstation, recorded the old `?session=` link.
+- **A launch link opened twice says so.** A used or expired launch link left the page running without its server (no saves, no heartbeat) and without a word; it now shows "This launch link has already been used" with what to do.
+- **Pending saves are sent, not dropped.** Opening, importing or starting another hoist within 1.2 s of an edit cancelled that edit's save to the Semaphore folder; End session did too. The pending save now goes at once in each case, and on page close (keepalive). A catalog save that fails now says so instead of failing silently.
 - **"UI not built" page says what to do on a workstation** (#56): it explains that a source-code copy has no interface and gives the three steps to the prebuilt `Semaphore-<version>.zip` on the Releases page (download, Unblock, Extract All).
 - Fixes from a second code review:
   - A field with more than one cleaning step (for example a map, then blank-as, then number) wrote its column more than once but bound its values once, so with positional `?` markers (every server source) the driver got too few parameters or values in the wrong places. The expression and its values are now written together each time.

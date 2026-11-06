@@ -84,7 +84,8 @@ async function trade(code: string): Promise<void> {
       body: JSON.stringify({ code }),
       cache: 'no-store',
     });
-    if (!response.ok) return; // used or expired: a token already in sessionStorage (reload) still works
+    if (!response.ok) return; // used or expired: a token already in sessionStorage (reload) still works;
+    // without one, /api/info answers 401 and probeServer reports the session as refused.
     const data = (await response.json()) as { token?: unknown };
     if (typeof data.token === 'string' && data.token) sessionStorage.setItem(TOKEN_KEY, data.token);
   } catch {
@@ -118,7 +119,7 @@ function tabId(): string {
   }
 }
 
-export async function api<T>(path: string, init: { method?: string; json?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+export async function api<T>(path: string, init: { method?: string; json?: unknown; signal?: AbortSignal; keepalive?: boolean } = {}): Promise<T> {
   if (launching) await launching;
   const headers: Record<string, string> = { Accept: 'application/json' };
   const t = token();
@@ -128,7 +129,7 @@ export async function api<T>(path: string, init: { method?: string; json?: unkno
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(init.json);
   }
-  const response = await fetch(path, { method: init.method ?? (body ? 'POST' : 'GET'), headers, body, cache: 'no-store', signal: init.signal ?? null });
+  const response = await fetch(path, { method: init.method ?? (body ? 'POST' : 'GET'), headers, body, cache: 'no-store', signal: init.signal ?? null, ...(init.keepalive ? { keepalive: true } : {}) });
   const text = await response.text();
   let data: unknown = null;
   if (text) {
@@ -145,7 +146,18 @@ export async function api<T>(path: string, init: { method?: string; json?: unkno
   return data as T;
 }
 
-/** The server's info, or null when Semaphore is running without one. */
+let refused = false;
+
+/**
+ * True when a server answered but would not accept this tab: the launch link was already used
+ * or has expired, and the tab holds no session from before. The page must say so rather than
+ * quietly carry on without the server (no saves, no heartbeat, and the server stops).
+ */
+export function sessionRefused(): boolean {
+  return refused;
+}
+
+/** The server's info, or null when Semaphore is running without one (or refused this tab: see sessionRefused). */
 export async function probeServer(): Promise<ServerInfo | null> {
   if (location.protocol === 'file:') return null;
   try {
@@ -154,7 +166,8 @@ export async function probeServer(): Promise<ServerInfo | null> {
     const info = await api<ServerInfo>('/api/info', { signal: controller.signal });
     clearTimeout(timer);
     return info && info.tool === 'semaphore' ? info : null;
-  } catch {
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) refused = true;
     return null;
   }
 }
@@ -196,7 +209,9 @@ export const endSession = () => api<{ ok: boolean }>('/api/end', { json: {} });
 
 export const listItems = (kind: 'hoists' | 'catalogs') => api<StoredItem[]>(`/api/${kind}`);
 export const loadItem = <T,>(kind: 'hoists' | 'catalogs', id: string) => api<T>(`/api/${kind}/${encodeURIComponent(id)}`);
-export const saveItem = (kind: 'hoists' | 'catalogs', id: string, value: unknown) => api<{ ok: boolean }>(`/api/${kind}/${encodeURIComponent(id)}`, { method: 'PUT', json: value });
+/** keepalive lets a save started on pagehide finish after the page is gone (bodies up to 64 KB). */
+export const saveItem = (kind: 'hoists' | 'catalogs', id: string, value: unknown, keepalive = false) =>
+  api<{ ok: boolean }>(`/api/${kind}/${encodeURIComponent(id)}`, { method: 'PUT', json: value, ...(keepalive ? { keepalive: true } : {}) });
 export const deleteItem = (kind: 'hoists' | 'catalogs', id: string) => api<{ ok: boolean }>(`/api/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export interface QueryResponse {

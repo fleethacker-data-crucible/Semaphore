@@ -27,7 +27,7 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, startHeartbeat, startSession, type StoredItem } from './lib/api.ts';
+import { api, endSession, listItems, loadItem, probeServer, profileTable, saveItem, type ServerInfo, sessionRefused, startHeartbeat, startSession, type StoredItem } from './lib/api.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
 import { canReach, clearResultCache, type DataContext, runAnywhere } from './lib/data.ts';
 import { usePlaybook } from './lib/playbook.ts';
@@ -114,7 +114,9 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [kitsOpen, setKitsOpen] = useState(false);
-  const [serverLost, setServerLost] = useState(false);
+  // Why the page cannot reach its server any more: it stopped (or the session ended), or this tab's
+  // launch link was already used or has expired.
+  const [serverLost, setServerLost] = useState<null | 'stopped' | 'link'>(null);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
   const [useExamples, setUseExamples] = useState(aiExamplesWanted);
@@ -181,11 +183,12 @@ export function App() {
   useEffect(() => {
     let stop: (() => void) | null = null;
     probeServer().then((info) => {
+      if (!info && sessionRefused()) setServerLost('link');
       setServer(info);
       setServerChecked(true);
       if (info?.view === 'ask' || info?.view === 'builder') setViewState((v) => v ?? (info.view as 'ask' | 'builder'));
       if (info) {
-        stop = startHeartbeat(() => setServerLost(true));
+        stop = startHeartbeat(() => setServerLost('stopped'));
         loadAiStatus().then(setAi);
       }
     });
@@ -229,16 +232,38 @@ export function App() {
     return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
   }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
-  // Save: always to this browser; to the server's folder too when there is one.
+  // Save: always to this browser; to the server's folder too when there is one, 1.2 s after the
+  // last change. A pending save is sent at once, never dropped, when another hoist replaces this
+  // one (New, Open, Import), before End session, and when the page goes away.
   const saveTimer = useRef<number | null>(null);
+  const pendingSave = useRef<Hoist | null>(null);
+  const flushSave = useCallback(
+    (keepalive = false): Promise<void> => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      const h = pendingSave.current;
+      pendingSave.current = null;
+      if (!h || !server) return Promise.resolve();
+      return saveItem('hoists', h.id, h, keepalive).then(
+        () => undefined,
+        (e: Error) => notify(`Could not save "${h.title}" to the server: ${e.message}`),
+      );
+    },
+    [server, notify],
+  );
   useEffect(() => {
     writeLocal(K.hoist, hoist);
     if (!server) return;
+    if (pendingSave.current && pendingSave.current.id !== hoist.id) void flushSave();
+    pendingSave.current = hoist;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      saveItem('hoists', hoist.id, hoist).catch((e: Error) => notify(`Could not save to the server: ${e.message}`));
-    }, 1200);
-  }, [hoist, server, notify]);
+    saveTimer.current = window.setTimeout(() => void flushSave(), 1200);
+  }, [hoist, server, flushSave]);
+  useEffect(() => {
+    const leaving = () => void flushSave(true);
+    window.addEventListener('pagehide', leaving);
+    return () => window.removeEventListener('pagehide', leaving);
+  }, [flushSave]);
 
   const setCatalog = useCallback(
     (c: Catalog) => {
@@ -249,7 +274,7 @@ export function App() {
       }
       setCatalogState(c);
       writeLocal(K.catalog, c);
-      if (server) saveItem('catalogs', 'default', c).catch(() => undefined);
+      if (server) saveItem('catalogs', 'default', c).catch((e: Error) => notify(`Could not save the catalog to the server: ${e.message}`));
     },
     [server, notify],
   );
@@ -875,8 +900,8 @@ export function App() {
         {serverLost && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
             <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
-              <h2 className="mb-1 text-base font-semibold">The session has ended</h2>
-              <p className="text-sm text-ink-2">Semaphore has stopped. Start it again with Ask-Semaphore.bat.</p>
+              <h2 className="mb-1 text-base font-semibold">{serverLost === 'link' ? 'This launch link has already been used' : 'The session has ended'}</h2>
+              <p className="text-sm text-ink-2">{serverLost === 'link' ? 'Close this tab and start Semaphore again with Ask-Semaphore.bat.' : 'Semaphore has stopped. Start it again with Ask-Semaphore.bat.'}</p>
             </div>
           </div>
         )}
@@ -1060,7 +1085,7 @@ export function App() {
           {server && (
             <button
               type="button"
-              onClick={() => endSession().then(() => setServerLost(true), () => setServerLost(true))}
+              onClick={() => void flushSave().then(endSession).then(() => setServerLost('stopped'), () => setServerLost('stopped'))}
               className="ml-1 flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm text-ink-2 hover:bg-bad-soft hover:text-bad"
               title="Stop the Semaphore server and end this session"
             >
@@ -1306,8 +1331,17 @@ export function App() {
       {serverLost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
           <div role="alertdialog" className="max-w-sm rounded-xl border border-line bg-panel p-5 text-center shadow-xl">
-            <h2 className="mb-1 text-base font-semibold">The session has ended</h2>
-            <p className="text-sm text-ink-2">The Semaphore server has stopped. Your hoist is saved. Start Semaphore again with Launch-Semaphore.bat.</p>
+            {serverLost === 'link' ? (
+              <>
+                <h2 className="mb-1 text-base font-semibold">This launch link has already been used</h2>
+                <p className="text-sm text-ink-2">Each link from Launch-Semaphore.bat opens one tab, within 10 minutes. Close this tab and start Semaphore again; your hoist is kept in this browser.</p>
+              </>
+            ) : (
+              <>
+                <h2 className="mb-1 text-base font-semibold">The session has ended</h2>
+                <p className="text-sm text-ink-2">The Semaphore server has stopped. Your hoist is kept in this browser. Start Semaphore again with Launch-Semaphore.bat.</p>
+              </>
+            )}
           </div>
         </div>
       )}
