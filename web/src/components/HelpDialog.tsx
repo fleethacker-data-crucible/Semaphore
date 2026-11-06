@@ -1,6 +1,7 @@
 // The "?" help dialog (Fleet UI 7, #77): every keyboard shortcut, the Phrasebook (the words a brief
 // understands, filled in by components/Phrasebook.tsx), and a way to restart the shakedown tour.
 
+import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { useRef, useState } from 'react';
 import { Keyboard, LifeBuoy, X } from 'lucide-react';
 import { useModal } from '../lib/modal.ts';
@@ -23,7 +24,7 @@ function Keys({ keys }: { keys: string[] }) {
   );
 }
 
-export function HelpDialog({ onClose, onPalette }: { onClose: () => void; onPalette: () => void }) {
+export function HelpDialog({ onClose, onPalette, index, onTry }: { onClose: () => void; onPalette: () => void; index: CatalogIndex; onTry?: (brief: string) => void }) {
   const ref = useRef<HTMLElement>(null);
   useModal(ref, onClose);
   const [tab, setTab] = useState<Tab>('shortcuts');
@@ -90,7 +91,7 @@ export function HelpDialog({ onClose, onPalette }: { onClose: () => void; onPale
               ))}
             </div>
           ) : (
-            <Phrasebook />
+            <Phrasebook index={index} {...(onTry ? { onTry: (brief: string) => { onTry(brief); onClose(); } } : {})} />
           )}
         </div>
         <footer className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">

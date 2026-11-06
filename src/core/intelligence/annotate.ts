@@ -198,3 +198,189 @@ export function learnSynonym(catalog: Catalog, word: string, target: { kind: 'me
 function unique<T>(xs: T[]): T[] {
   return [...new Set(xs)];
 }
+
+// ---- Teaching the brief language ------------------------------------------------------------
+// The brief understands more than anyone guesses from a blank box. These helpers turn the grammar
+// into next steps built from the catalog's own names: "+ by Region", "+ vs last year". Each hint's
+// phrase is one the annotator above reads as its kind, so clicking a hint shows exactly which words
+// cause which behaviour (tests/brief-language.test.ts holds every kind to that).
+
+/** The constructions a brief can use, in the order a brief usually grows. */
+export const GRAMMAR_KINDS = ['metric', 'field', 'range', 'compare', 'threshold', 'click', 'time', 'rank', 'share', 'kind', 'ignore'] as const;
+export type GrammarKind = (typeof GRAMMAR_KINDS)[number];
+
+export interface Hint {
+  kind: GrammarKind;
+  /** What the button says, e.g. "+ by Region". */
+  label: string;
+  /** The words added to the brief, e.g. "by region". */
+  phrase: string;
+  /** A clause starts its own sentence ("Turn red over $1M."); the rest join the current one. */
+  clause: boolean;
+}
+
+export interface SuggestOptions {
+  /** At most this many hints (default 3). */
+  max?: number;
+  /** Kinds the analyst no longer needs to be shown (they have used them often). */
+  skip?: readonly string[];
+}
+
+/** Which grammar kind each annotated span teaches. Spans of kind "unknown" teach nothing. */
+const SPAN_GRAMMAR: Partial<Record<SpanKind, GrammarKind>> = {
+  metric: 'metric', field: 'field', time: 'time', range: 'range', compare: 'compare', share: 'share',
+  rank: 'rank', kind: 'kind', click: 'click', ignore: 'ignore', threshold: 'threshold',
+};
+
+/** The grammar kinds a brief already uses. */
+export function usedKinds(annotation: Annotation): Set<GrammarKind> {
+  const out = new Set<GrammarKind>();
+  for (const s of annotation.spans) {
+    const k = SPAN_GRAMMAR[s.kind];
+    if (k) out.add(k);
+  }
+  return out;
+}
+
+/** A round number in the measure's own format, for the colour-rule example. */
+function ruleValue(format: 'number' | 'currency' | 'percent' | undefined): string {
+  return format === 'currency' ? '$1M' : format === 'percent' ? '90%' : '100';
+}
+
+interface Words {
+  metric: { key: string; label: string; format?: 'number' | 'currency' | 'percent' } | undefined;
+  /** A short category field in reach of the measure, not yet in the brief. */
+  field: { key: string; label: string } | undefined;
+  /** A category field to show "ignore ... filter" with (the brief's own field when it has one). */
+  ignoreField: { key: string; label: string } | undefined;
+  date: boolean;
+}
+
+function wordsFor(annotation: Annotation, index: CatalogIndex): Words {
+  const named = annotation.spans.filter((s) => s.kind === 'metric' && s.key).map((s) => index.metric(s.key!)).find((m) => m);
+  const metric = named ?? index.catalog.metrics.find((m) => m.agg === 'sum') ?? index.catalog.metrics[0];
+  const table = metric ? (metric.field ? index.field(metric.field)?.table : metric.table) : undefined;
+  const inReach = index.catalog.fields.filter((f) => (!metric || f.source === metric.source) && (table === undefined || f.table === table));
+  const usedFields = new Set(annotation.spans.filter((s) => s.kind === 'field' && s.key).map((s) => s.key!));
+  const categories = inReach
+    .filter((f) => f.type === 'string')
+    .sort((a, b) => (a.cardinality ?? 50) - (b.cardinality ?? 50) || a.label.localeCompare(b.label));
+  const field = categories.find((f) => !usedFields.has(f.key) && (f.cardinality ?? 50) <= 50) ?? categories.find((f) => !usedFields.has(f.key));
+  const ignoreField = categories.find((f) => usedFields.has(f.key)) ?? field;
+  return {
+    metric: metric ? { key: metric.key, label: metric.label, ...(metric.format ? { format: metric.format } : {}) } : undefined,
+    field: field ? { key: field.key, label: field.label } : undefined,
+    ignoreField: ignoreField ? { key: ignoreField.key, label: ignoreField.label } : undefined,
+    date: inReach.some((f) => f.type === 'date'),
+  };
+}
+
+/** The hint for one kind, from the catalog's names; null when the catalog has nothing to say it with. */
+function hintFor(kind: GrammarKind, w: Words, hasField: boolean): Hint | null {
+  const low = (s: string) => s.toLowerCase();
+  switch (kind) {
+    case 'metric':
+      return w.metric ? { kind, label: `+ ${w.metric.label}`, phrase: low(w.metric.label), clause: false } : null;
+    case 'field':
+      return w.field ? { kind, label: `+ by ${w.field.label}`, phrase: `by ${low(w.field.label)}`, clause: false } : null;
+    case 'range':
+      return w.date ? { kind, label: '+ last 12 months', phrase: 'for the last 12 months', clause: false } : null;
+    case 'compare':
+      return w.date ? { kind, label: '+ vs last year', phrase: 'vs last year', clause: false } : null;
+    case 'threshold':
+      return w.metric ? { kind, label: `+ turn red over ${ruleValue(w.metric.format)}`, phrase: `Turn red over ${ruleValue(w.metric.format)}`, clause: true } : null;
+    case 'click':
+      return hasField ? { kind, label: '+ click to filter', phrase: 'Clicking a bar filters the page', clause: true } : null;
+    case 'time':
+      return w.date ? { kind, label: '+ per month', phrase: 'per month', clause: false } : null;
+    case 'rank':
+      return hasField ? { kind, label: '+ top 10 only', phrase: 'top 10 only', clause: false } : null;
+    case 'share':
+      return hasField ? { kind, label: '+ % of total', phrase: 'as a share of the total', clause: false } : null;
+    case 'kind':
+      return { kind, label: '+ as a table', phrase: 'as a table', clause: false };
+    case 'ignore':
+      return w.ignoreField ? { kind, label: `+ ignore ${w.ignoreField.label} filter`, phrase: `Ignore the ${low(w.ignoreField.label)} filter`, clause: true } : null;
+  }
+}
+
+/**
+ * The next grammar moves this brief does not use yet, as hints built from catalog names. Pure:
+ * the same brief and catalog always give the same hints. A brief with no measure is offered one
+ * first; moves that need a breakdown (click, rank, share) wait until the brief has one.
+ */
+export function suggestNext(annotation: Annotation, index: CatalogIndex, options: SuggestOptions = {}): Hint[] {
+  const max = options.max ?? 3;
+  const skip = new Set(options.skip ?? []);
+  const used = usedKinds(annotation);
+  const w = wordsFor(annotation, index);
+  const hasField = used.has('field');
+  const out: Hint[] = [];
+  for (const kind of GRAMMAR_KINDS) {
+    if (out.length >= max) break;
+    if (used.has(kind) || skip.has(kind)) continue;
+    // A word the brief names but the catalog does not know is taught first, not talked over.
+    if (kind === 'field' && annotation.unknown.length > 0) continue;
+    const h = hintFor(kind, w, hasField);
+    if (h) out.push(h);
+  }
+  return out;
+}
+
+/**
+ * The brief with a hint's words added. A joining phrase ("by region", "vs last year") goes at the
+ * end of the first sentence, which says what the flag shows; a clause ("Turn red over $1M") is a
+ * sentence of its own at the end.
+ */
+export function appendHint(brief: string, hint: Pick<Hint, 'phrase' | 'clause'>): string {
+  const trimmed = brief.replace(/\s+$/, '');
+  if (!trimmed) return hint.clause ? `${hint.phrase}.` : hint.phrase.charAt(0).toUpperCase() + hint.phrase.slice(1);
+  if (hint.clause) return `${trimmed}${/[.!?]$/.test(trimmed) ? '' : '.'} ${hint.phrase}.`;
+  const end = /[.!?](?=\s|$)/.exec(trimmed);
+  if (!end) return `${trimmed} ${hint.phrase}`;
+  return `${trimmed.slice(0, end.index)} ${hint.phrase}${trimmed.slice(end.index)}`;
+}
+
+export interface Phrase {
+  kind: GrammarKind;
+  /** The construction's name, e.g. "Compare". */
+  name: string;
+  /** What it does, in a few words. */
+  what: string;
+  /** A whole brief that uses it, written with this catalog's names. */
+  example: string;
+}
+
+const PHRASE_TEXT: Record<GrammarKind, { name: string; what: string }> = {
+  metric: { name: 'Measure', what: 'The number to show. Name it as the catalog does, or teach Semaphore your word.' },
+  field: { name: 'Breakdown', what: '"by" or "per" a field splits the number into one bar, row or slice per value.' },
+  range: { name: 'Time window', what: '"last 12 months", "past 6 weeks": only that window is counted.' },
+  compare: { name: 'Compare', what: '"vs last year" or "vs the previous period" shows the earlier window beside it.' },
+  threshold: { name: 'Colour rule', what: '"Turn red over …" or "green under …" marks values that break a rule.' },
+  click: { name: 'Click to filter', what: '"Clicking a bar filters the page": a click selects that value on every flag.' },
+  time: { name: 'Over time', what: '"per month", "weekly", "quarterly": a trend along the calendar.' },
+  rank: { name: 'Top N', what: '"top 10" or "bottom 5" keeps the highest or lowest values only.' },
+  share: { name: 'Share of total', what: '"as a share of the total" or "% of total" shows each part of the whole.' },
+  kind: { name: 'Chart kind', what: '"as a table", "as a line", "as a pie" picks how it is drawn.' },
+  ignore: { name: 'Ignore a filter', what: '"Ignore the region filter": page selections on that field leave this flag alone.' },
+};
+
+/** Every construction the brief understands, each with a working example from this catalog. */
+export function phrasebook(index: CatalogIndex): Phrase[] {
+  const base = annotateBrief('', index);
+  const w = wordsFor(base, index);
+  if (!w.metric) return [];
+  const metric = w.metric.label;
+  const withField = w.field ? `${metric} by ${w.field.label.toLowerCase()}` : metric;
+  const fieldWords = annotateBrief(withField, index);
+  const fw = wordsFor(fieldWords, index);
+  const out: Phrase[] = [];
+  for (const kind of GRAMMAR_KINDS) {
+    const needsField = kind === 'click' || kind === 'rank' || kind === 'share' || kind === 'ignore' || kind === 'kind';
+    const start = kind === 'metric' ? '' : kind === 'field' ? metric : needsField ? withField : metric;
+    const h = hintFor(kind, kind === 'field' ? w : needsField ? fw : w, needsField && !!w.field);
+    if (!h) continue;
+    out.push({ kind, ...PHRASE_TEXT[kind], example: appendHint(start, h) });
+  }
+  return out;
+}

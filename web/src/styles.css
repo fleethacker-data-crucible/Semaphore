@@ -7,6 +7,7 @@
      fleet    (default) Fleet Unified UI v0.2: the --fl-* tokens of vendor/fleet/fleet.css, which
               already follow data-theme (Chart room light, Night watch dark).
      classic  Semaphore's own palette before Fleet UI, from its brand mark.
+     safe     Colour-blind safe: Fleet UI with Okabe-Ito status and series colours, AA in both themes.
    A workstation can override any token without a rebuild: the server serves config\skin.css as
    /skin.css after this file. */
 
@@ -39,25 +40,27 @@
   --focus: var(--fl-brass);
   --hl-metric: color-mix(in srgb, var(--fl-info) 24%, var(--fl-card));
   --hl-field: color-mix(in srgb, var(--fl-brass) 24%, var(--fl-card));
-  --hl-time: color-mix(in srgb, var(--fl-accent) 22%, var(--fl-card));
+  /* Time is grey, not a second blue beside measures; every kind also has its own underline. */
+  --hl-time: color-mix(in srgb, var(--fl-muted-foreground) 16%, var(--fl-card));
   --hl-behaviour: color-mix(in srgb, var(--fl-success) 22%, var(--fl-card));
   --hl-unknown: color-mix(in srgb, var(--fl-danger) 22%, var(--fl-card));
   --sem-font: var(--fl-font-body);
   --sem-font-mono: var(--fl-font-mono);
   --sem-radius-card: var(--fl-radius-card);
-  /* Chart series: plain colours only (charts draw on a canvas, which cannot read color-mix). */
+  /* Chart series: plain colours only (charts draw on a canvas, which cannot read color-mix).
+     Green and red are never neighbours (purple sits between), for red-green colour blindness. */
   --series-1: var(--fl-accent);
   --series-2: var(--fl-brass);
   --series-3: var(--fl-success);
-  --series-4: var(--fl-danger);
-  --series-5: var(--fl-info);
-  --series-6: var(--fl-warning);
-  --series-7: #4b45b8;
-  --series-8: #0f766e;
+  --series-4: #4b45b8;
+  --series-5: var(--fl-danger);
+  --series-6: #0f766e;
+  --series-7: var(--fl-warning);
+  --series-8: var(--fl-info);
 }
 :root[data-theme='dark'] {
-  --series-7: #9b98f3;
-  --series-8: #3fb6a8;
+  --series-4: #9b98f3;
+  --series-6: #3fb6a8;
 }
 
 /* classic: Semaphore's palette from its brand mark: deep sea navy, brass, signal-flag cream and amber. */
@@ -106,10 +109,10 @@
   --series-1: #1f6f8b;
   --series-2: #a8834a;
   --series-3: #2e7d4f;
-  --series-4: #c0392b;
-  --series-5: #6a4fa3;
-  --series-6: #b7791f;
-  --series-7: #00796b;
+  --series-4: #6a4fa3;
+  --series-5: #c0392b;
+  --series-6: #00796b;
+  --series-7: #b7791f;
   --series-8: #ad1457;
   color-scheme: light;
 }
@@ -141,12 +144,50 @@
   --series-1: #5fb3d0;
   --series-2: #c9a66b;
   --series-3: #8fd18b;
-  --series-4: #f07163;
-  --series-5: #b39ddb;
-  --series-6: #f0b429;
-  --series-7: #4db6ac;
+  --series-4: #b39ddb;
+  --series-5: #f07163;
+  --series-6: #4db6ac;
+  --series-7: #f0b429;
   --series-8: #e57fa8;
   color-scheme: dark;
+}
+
+/* safe: colour-blind safe. Fleet UI's surfaces and type, with status, accent and series colours
+   from the Okabe-Ito palette (blue, orange, bluish green, reddish purple, vermillion, sky, yellow),
+   darkened for Chart room and lightened for Night watch so each passes WCAG AA there: status and
+   accent colours 4.5:1 or better as text on the page, card and sidebar; series 3:1 or better as
+   marks. Statuses never rely on colour alone anyway (icons, words and patterns). */
+:root[data-skin='safe'] {
+  --fl-accent: #0072b2;
+  --fl-accent-ink: #ffffff;
+  --fl-success: #00745a;
+  --fl-warning: #9a5b00;
+  --fl-danger: #b23c00;
+  --fl-info: #0072b2;
+  --series-1: #0072b2;
+  --series-2: #b86a00;
+  --series-3: #00805e;
+  --series-4: #a8538a;
+  --series-5: #c2410c;
+  --series-6: #2f86bd;
+  --series-7: #857300;
+  --series-8: #5c5c5c;
+}
+:root[data-skin='safe'][data-theme='dark'] {
+  --fl-accent: #56b4e9;
+  --fl-accent-ink: #071a26;
+  --fl-success: #36c497;
+  --fl-warning: #e69f00;
+  --fl-danger: #f5875a;
+  --fl-info: #56b4e9;
+  --series-1: #56b4e9;
+  --series-2: #e69f00;
+  --series-3: #2fbf8f;
+  --series-4: #e08fc4;
+  --series-5: #f5875a;
+  --series-6: #a6dcf7;
+  --series-7: #f0e442;
+  --series-8: #c9c9c9;
 }
 
 @theme inline {
@@ -236,17 +277,25 @@ body {
 .hl {
   border-radius: 4px;
   box-shadow: 0 0 0 1px transparent;
-}
-.hl-metric { background: var(--hl-metric); }
-.hl-field { background: var(--hl-field); }
-.hl-time, .hl-range, .hl-compare, .hl-share, .hl-rank { background: var(--hl-time); }
-.hl-kind, .hl-click, .hl-ignore, .hl-threshold { background: var(--hl-behaviour); }
-.hl-unknown {
-  background: var(--hl-unknown);
-  text-decoration: underline wavy var(--bad);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }
+/* Each kind has its own underline as well as its tint, so the highlights read without colour:
+   measure solid, field dotted, time dashed, behaviour double, not understood wavy. The layer's
+   text is transparent, so the underline takes its colour from the kind, not the text. */
+.hl-metric { background: var(--hl-metric); text-decoration-style: solid; text-decoration-color: var(--fl-info); }
+.hl-field { background: var(--hl-field); text-decoration-style: dotted; text-decoration-color: var(--brass); text-decoration-thickness: 2px; }
+.hl-time, .hl-range, .hl-compare, .hl-share, .hl-rank { background: var(--hl-time); text-decoration-style: dashed; text-decoration-color: var(--ink-2); }
+.hl-kind, .hl-click, .hl-ignore, .hl-threshold { background: var(--hl-behaviour); text-decoration-style: double; text-decoration-color: var(--good); text-decoration-thickness: 1px; }
+.hl-unknown {
+  background: var(--hl-unknown);
+  text-decoration-style: wavy;
+  text-decoration-color: var(--bad);
+}
+/* A legend swatch: a short word-length sample of the tint and the underline. */
+.hl-swatch { display: inline-block; width: 18px; height: 12px; line-height: 8px; overflow: hidden; color: transparent; }
 
 .grid-bg {
   background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
@@ -254,16 +303,59 @@ body {
 }
 
 .flip-enter {
-  animation: flip 220ms ease-out;
+  animation: flip 180ms ease-out;
 }
 @keyframes flip {
   from { transform: rotateY(70deg); opacity: 0.2; }
   to { transform: rotateY(0); opacity: 1; }
 }
 
+/* Flag cards. Handles show on hover, while the card holds focus, and on the selected card. */
+.flag-card { container-type: inline-size; }
+.flag-handle { opacity: 0; }
+.flag-card:hover .flag-handle,
+.flag-card:focus-within .flag-handle,
+.flag-card[aria-current='true'] .flag-handle { opacity: 1; }
+.flag-resize { background: linear-gradient(135deg, transparent 55%, var(--fl-control-border) 55%, var(--fl-control-border) 62%, transparent 62%, transparent 72%, var(--fl-control-border) 72%, var(--fl-control-border) 79%, transparent 79%); border-bottom-right-radius: 12px; }
+
+/* The persistent mark of an accepted flag: a brass signal flag, with the day when it is known. */
+.reviewed-chip { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--brass); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.reviewed-chip .reviewed-text { color: var(--ink-2); font-weight: 500; }
+@container (max-width: 300px) {
+  .reviewed-chip .reviewed-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+/* The accept moment: the flag runs up its halyard, 180 ms, once. */
+.flag-run { animation: flag-run 180ms cubic-bezier(0.2, 0.9, 0.25, 1); transform-origin: 30% 100%; }
+@keyframes flag-run {
+  from { transform: translateY(7px) scaleY(0.35); opacity: 0.2; }
+  to { transform: none; opacity: 1; }
+}
+
+/* A chart's clicks as buttons for the keyboard: out of sight until focus reaches them, then laid
+   over the foot of the chart. Arrow keys move between them (one tab stop). */
+.kbd-filter { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.kbd-filter:focus-within {
+  width: auto; height: auto; clip-path: none; white-space: normal; overflow: auto;
+  left: 0; right: 0; bottom: 0; max-height: 70%; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 4px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--fl-control-border); border-radius: 8px;
+}
+.kbd-filter-chip { min-height: 28px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--fl-control-border); background: var(--panel-2); color: var(--ink); font-size: 12px; }
+.kbd-filter-chip[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+
+/* Colour-rule legend swatches: the same patterns the chart draws on rule-breaking marks. */
+.rule-swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
+.rule-swatch-bad { background: repeating-linear-gradient(-45deg, var(--bad) 0 3px, var(--panel) 3px 4.5px); }
+.rule-swatch-warn { background: repeating-linear-gradient(45deg, var(--warn) 0 3px, var(--panel) 3px 4.5px); }
+.rule-swatch-good { background: radial-gradient(circle, var(--panel) 0.8px, transparent 1px) 0 0 / 3px 3px, var(--good); }
+
+/* "Add to this brief" hints fade in once, quickly. */
+.hint-row { animation: hint-in 160ms ease-out; }
+@keyframes hint-in { from { opacity: 0; } to { opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
-  .flip-enter { animation: none; }
-  * { transition: none !important; }
+  .flip-enter, .flag-run, .hint-row { animation: none; }
+  * { transition: none !important; animation-duration: 0s !important; }
 }
 
 /* Brand (UNIFIED-UI 5 and 8): the full emblem with its wordmark, the Night watch or Chart room
@@ -290,3 +382,7 @@ body {
 
 .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll-thin::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+
+/* A compact chip with a full 32 px hit area (UNIFIED-UI 7) that does not change its look. */
+.hit-32 { position: relative; }
+.hit-32::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 32px; min-width: 32px; transform: translateY(-50%); }

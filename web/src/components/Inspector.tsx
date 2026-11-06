@@ -2,16 +2,18 @@
 // produced in plain English, why Semaphore is or is not sure, what is worth a look, and the
 // controls an analyst reaches for most. The binding and SQL are a click away, never in the way.
 
-import { useMemo, useState } from 'react';
-import { Check, Copy, Sparkles, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Check, Copy, Flag as FlagIcon, MessagesSquare, Sparkles, Trash2, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
 import type { Behavior, Flag, FlagKind, Hoist } from '../../../src/core/hoist.ts';
 import { findInsights } from '../../../src/core/insights.ts';
-import { annotateBrief, type Suggestion } from '../../../src/core/intelligence/annotate.ts';
+import { annotateBrief, type Suggestion, usedKinds } from '../../../src/core/intelligence/annotate.ts';
+import { flushAccepts, shortDate, useReviewedAt } from '../lib/accept.ts';
 import type { DataContext } from '../lib/data.ts';
-import { BriefEditor, BriefLegend, Understood } from './BriefEditor.tsx';
+import { noteGrammarUsed } from '../lib/onboarding.ts';
+import { BriefEditor, BriefHints, BriefLegend, Understood } from './BriefEditor.tsx';
 import { useFlagResult } from './FlagCard.tsx';
 import { KIND_META } from './Palette.tsx';
 
@@ -31,6 +33,8 @@ export interface InspectorProps {
   onDelete: () => void;
   onClose: () => void;
   onLearn: (word: string, s: Suggestion) => void;
+  /** Open the leadership view (shown with an accepted flag: "See it as leadership will"). */
+  onSeeAsLeadership?: () => void;
 }
 
 const KINDS: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
@@ -50,9 +54,35 @@ export function Inspector(p: InspectorProps) {
   const table = firstMetric ? (firstMetric.field ? index.field(firstMetric.field)?.table : firstMetric.table) : flag.binding?.dimensions[0] ? index.field(flag.binding.dimensions[0].field)?.table : undefined;
   const fields = index.catalog.fields.filter((f) => table === undefined || f.table === table);
   const setBehavior = (b: Partial<Behavior>) => p.onChange({ behavior: { ...flag.behavior, ...b } });
+  const reviewedAt = useReviewedAt(hoist.id, flag.id);
+  const briefId = `brief-${flag.id}`;
+  // Drafting counts as using each construction in the brief: hints for them fade after a few uses.
+  const draft = () => {
+    noteGrammarUsed(usedKinds(annotateBrief(flag.brief, index)));
+    p.onDraft();
+  };
+  // An empty flag opens with its brief ready to type in, unless the analyst is moving through the
+  // cards with the keyboard (focus stays on the card; Enter comes here).
+  useEffect(() => {
+    if (flag.status !== 'empty' || flag.kind === 'text') return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest('[data-flag-card]') && active.matches(':focus-visible')) return;
+    (document.getElementById(briefId) as HTMLTextAreaElement | null)?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <aside aria-label="Flag inspector" className="scroll-thin flex h-full w-[360px] shrink-0 flex-col overflow-y-auto border-l border-line bg-panel">
+    <aside
+      id="flag-inspector"
+      aria-label="Flag inspector"
+      onKeyDown={(e) => {
+        // Escape from a field goes back to the flag's card, so the keyboard picks up where it was.
+        if (e.key === 'Escape' && e.target !== e.currentTarget && (e.target as HTMLElement).matches('input, textarea, select')) {
+          e.preventDefault();
+          document.querySelector<HTMLElement>(`[data-flag-card="${CSS.escape(flag.id)}"]`)?.focus();
+        }
+      }}
+      className="scroll-thin flex h-full w-[360px] shrink-0 flex-col overflow-y-auto border-l border-line bg-panel">
       <div className="flex items-center gap-2 border-b border-line px-4 py-3">
         <input
           value={flag.title}
@@ -61,7 +91,7 @@ export function Inspector(p: InspectorProps) {
           aria-label="Flag title"
           className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold hover:border-line focus:border-accent focus:outline-none"
         />
-        <button type="button" onClick={p.onClose} aria-label="Close inspector" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+        <button type="button" onClick={p.onClose} aria-label="Close inspector" className="flex h-8 w-8 items-center justify-center rounded-md text-ink-3 hover:bg-panel-2">
           <X size={16} />
         </button>
       </div>
@@ -84,7 +114,7 @@ export function Inspector(p: InspectorProps) {
           <section className="space-y-2">
             <div className="flex items-baseline justify-between">
               <h3 className="text-xs font-semibold text-ink-2">What should this flag show?</h3>
-              <span className="text-[11px] text-ink-3">Enter to draft · Shift+Enter for a new line</span>
+              <span className="text-[11px] text-ink-2">Enter to draft{flag.status === 'drafted' ? ' · Ctrl+Enter to accept' : ' · Shift+Enter for a new line'}</span>
             </div>
             <BriefEditor
               value={flag.brief}
@@ -92,22 +122,24 @@ export function Inspector(p: InspectorProps) {
               index={index}
               label="Flag brief"
               placeholder="e.g. Monthly labor cost vs last year. Turn red over $500K."
-              onSubmit={p.onDraft}
+              onSubmit={draft}
+              {...(flag.status === 'drafted' ? { onCtrlEnter: p.onAccept } : {})}
               onLearn={p.onLearn}
-              autoFocus={flag.status === 'empty'}
+              id={briefId}
             />
             <Understood value={flag.brief} index={index} />
+            <BriefHints value={flag.brief} index={index} onChange={(v) => p.onChange({ brief: v }, `brief-${flag.id}`)} briefId={briefId} />
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={p.onDraft}
+                onClick={draft}
                 disabled={p.busy || !flag.brief.trim()}
-                className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-panel hover:opacity-90 disabled:opacity-40"
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-sm font-semibold text-panel hover:opacity-90 disabled:opacity-40"
               >
                 <Sparkles size={14} /> {flag.binding ? 'Redraft' : 'Draft'}
               </button>
               {flag.status === 'drafted' && (
-                <button type="button" onClick={p.onAccept} className="flex items-center gap-1 rounded-lg border border-line px-3 py-1.5 text-sm hover:border-good hover:text-good">
+                <button type="button" onClick={p.onAccept} title="Accept this draft (A, or Ctrl+Enter in the brief)" className="flex h-8 items-center gap-1 rounded-lg border border-[var(--fl-control-border)] px-3 text-sm hover:border-good hover:text-good">
                   <Check size={14} /> Accept
                 </button>
               )}
@@ -116,6 +148,18 @@ export function Inspector(p: InspectorProps) {
                 Pick chart for me
               </label>
             </div>
+            {flag.status === 'ready' && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-brass-soft px-2.5 py-1.5 text-xs text-ink">
+                <FlagIcon size={13} className="text-brass" aria-hidden="true" />
+                <span className="font-medium">{reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed'}</span>
+                {flag.learn !== false && !hoist.experiment && <span className="text-ink-2">Leadership can ask for it.</span>}
+                {p.onSeeAsLeadership && flag.learn !== false && !hoist.experiment && (
+                  <button type="button" onClick={() => void flushAccepts().then(p.onSeeAsLeadership)} className="ml-auto flex h-8 items-center gap-1 rounded-md px-1.5 font-medium text-accent hover:bg-panel">
+                    <MessagesSquare size={13} aria-hidden="true" /> See it as leadership will
+                  </button>
+                )}
+              </div>
+            )}
             <BriefLegend />
             <label className="flex items-center gap-1.5 text-xs text-ink-2" title="Accepted flags go into the playbook, so leadership can ask for them in the Ask view">
               <input type="checkbox" checked={flag.learn !== false} onChange={(e) => p.onChange({ learn: e.target.checked ? undefined : false })} />
@@ -253,10 +297,10 @@ export function Inspector(p: InspectorProps) {
         </section>
 
         <div className="flex gap-2 border-t border-line pt-3">
-          <button type="button" onClick={p.onDuplicate} className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs hover:border-accent">
+          <button type="button" onClick={p.onDuplicate} title="Duplicate (D)" className="flex h-8 items-center gap-1 rounded-md border border-[var(--fl-control-border)] px-2 text-xs hover:border-accent">
             <Copy size={13} /> Duplicate
           </button>
-          <button type="button" onClick={p.onDelete} className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs hover:border-bad hover:text-bad">
+          <button type="button" onClick={p.onDelete} title="Delete (Delete key)" className="flex h-8 items-center gap-1 rounded-md border border-[var(--fl-control-border)] px-2 text-xs hover:border-bad hover:text-bad">
             <Trash2 size={13} /> Delete
           </button>
         </div>

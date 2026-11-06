@@ -68,6 +68,10 @@ import { formatDim } from './components/FlagView.tsx';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
 import { Welcome } from './components/Welcome.tsx';
+import { Shakedown, ShakedownAskMark } from './components/Shakedown.tsx';
+import { announcedByAccept, useAccept } from './lib/accept.ts';
+import { scrollBehavior } from './lib/motion.ts';
+import { withBriefFlag } from './lib/onboarding.ts';
 
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
@@ -76,6 +80,7 @@ const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'sema
 const SKINS = [
   { id: 'fleet', label: 'Fleet' },
   { id: 'classic', label: 'Classic' },
+  { id: 'safe', label: 'Colour-blind safe' },
 ];
 
 type View = 'builder' | 'ask' | 'refresh';
@@ -733,7 +738,7 @@ export function App() {
       playbook.saveEntries(learnt).then(
         () => {
           const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
-          if (fresh.length) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
+          if (fresh.length && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
           const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
           for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
         },
@@ -878,7 +883,8 @@ export function App() {
 
   // Keyboard (hooks/useShortcuts.ts, listed in the ? help): palette, help, undo and redo, delete,
   // arrows to nudge, Escape to deselect, / for a quick chart. Flag keys come from useFlagKeys.
-  const flagKeys = useFlagKeys({ selectedId });
+  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
+  const flagKeys = useFlagKeys({ selectedId, selectedStatus: selected?.status, onAccept: onAcceptFlag, onDuplicate: duplicateFlag });
   useShortcuts({
     enabled: currentView === 'builder' && !welcome,
     hasSelection: !!selected,
@@ -1009,6 +1015,7 @@ export function App() {
             <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
           </Suspense>
         </PanelBoundary>
+        <ShakedownAskMark />
         {overlays}
       </>
     );
@@ -1211,6 +1218,7 @@ export function App() {
             />
           )}
           <div className="mx-auto max-w-[1400px] p-4">
+            <Shakedown catalog={catalog} onAsk={() => setView('ask')} onTypeForMe={(brief) => { const id = newId(); change((h) => withBriefFlag(h, id, brief)); setAutoKinds((a) => ({ ...a, [id]: true })); setSelectedId(id); }} />
             <Canvas
               hoist={hoist}
               ctx={ctx}
@@ -1220,7 +1228,7 @@ export function App() {
               themeKey={themeKey}
               onSelectFlag={setSelectedId}
               onSelectValue={onSelectValue}
-              onAccept={(id) => updateFlag(id, { status: 'ready' })}
+              onAccept={onAcceptFlag}
               onLayout={onLayout}
               onDropKind={addFlag}
               empty={<EmptyHoist examples={examples} onExample={(b) => change((h) => ({ ...h, brief: b }))} onStarter={() => draftPage('starter')} hasCatalog={catalog.metrics.length > 0} onData={() => setDataOpen(true)} />}
@@ -1261,7 +1269,8 @@ export function App() {
                   onAutoKind={(on) => setAutoKinds((a) => ({ ...a, [selected.id]: on }))}
                   onChange={(patch, group) => updateFlag(selected.id, patch, group)}
                   onDraft={draftSelected}
-                  onAccept={() => updateFlag(selected.id, { status: 'ready' })}
+                  onAccept={() => onAcceptFlag(selected.id)}
+                  onSeeAsLeadership={() => setView('ask')}
                   onDuplicate={() => duplicateFlag(selected.id)}
                   onDelete={() => removeFlag(selected.id)}
                   onClose={() => setSelectedId(null)}
@@ -1349,7 +1358,7 @@ export function App() {
             flags={hoist.flags}
             onFlag={(id) => {
               setSelectedId(id);
-              document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
             }}
             onClose={() => setBriefing(null)}
           />
@@ -1392,7 +1401,7 @@ export function App() {
 
       {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
       {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
-      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} />}
+      {helpOpen && <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />}
       {overlays}
     </div>
   );
