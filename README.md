@@ -7,6 +7,8 @@
 
 # SEMAPHORE · Dashboard Intelligence
 
+**Download Semaphore:** get `Semaphore-<version>.zip` (prebuilt, ready to run) from the [latest release](https://github.com/fleethacker-data-crucible/Semaphore/releases/latest), not "Source code (zip)". Unblock it, Extract All, then double-click `Launch-Semaphore.bat`.
+
 **Reading offline?** The [standalone README](docs/README-standalone.html) and [illustrated analyst guide](docs/semaphore-for-analysts.html) embed their images. Use the file page's **Download raw file** button and open the HTML in your browser. Downloading `README.md` alone requires its image folders; both standalone guides describe this engineering preview.
 
 Semaphore is an analyst workbench for building dashboards from plain-English briefs, CSV files and configured database sources. Analysts review each proposed chart and its SQL, accept useful work into a shared playbook, and publish summarized snapshots that leadership can question without opening a database. It targets Windows thin clients and Qlik-style analytical workflows.

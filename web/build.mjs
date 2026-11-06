@@ -111,39 +111,74 @@ async function run() {
   const readerName = `report.${createHash('sha256').update(readerJs).digest('hex').slice(0, 10)}.js`;
   await writeFile(path.join(outDir, 'assets', readerName), readerJs);
 
-  const result = await build({
-    entryPoints: [path.join(srcDir, 'main.tsx')],
-    bundle: true,
-    minify: !watch,
-    sourcemap: watch ? 'inline' : false,
-    format: 'iife',
-    target: ['es2020', 'edge120', 'chrome120'],
-    jsx: 'automatic',
-    define: { 'process.env.NODE_ENV': JSON.stringify(watch ? 'development' : 'production'), __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`), __SEMAPHORE_REPORT__: JSON.stringify(`assets/${readerName}`) },
-    write: false,
-    outfile: 'app.js',
-    legalComments: 'none',
-    logLevel: 'warning',
-  });
-  const js = result.outputFiles[0].text;
+  // The app is an ES module entry with code splitting: a dynamic import() becomes its own chunk,
+  // loaded on first use. Every output is named assets/<name>-<HASH>.js (contract: the server caches
+  // hashed assets as immutable). Same origin, so script-src 'self' covers the chunks.
+  const result = await build(appBuildOptions({ outdir: path.join(outDir, 'assets'), dev: watch, define: { __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`), __SEMAPHORE_REPORT__: JSON.stringify(`assets/${readerName}`) } }));
   const css = await buildCss(files);
-  const hash = createHash('sha256').update(js).update(css).digest('hex').slice(0, 10);
-  await writeFile(path.join(outDir, 'assets', `app.${hash}.js`), js);
-  await writeFile(path.join(outDir, 'assets', `app.${hash}.css`), css);
+  const cssHash = createHash('sha256').update(css).digest('hex').slice(0, 10);
+  const cssName = `app-${cssHash}.css`;
+  await writeFile(path.join(outDir, 'assets', cssName), css);
+
+  const outputs = result.metafile.outputs;
+  const rel = (abs) => path.relative(outDir, abs).split(path.sep).join('/');
+  const entryKey = Object.keys(outputs).find((k) => outputs[k].entryPoint && k.endsWith('.js'));
+  if (!entryKey) throw new Error('esbuild produced no app entry.');
+  const entry = rel(path.resolve(entryKey));
+  // Chunks the entry imports statically load before it runs anyway: preload them in parallel.
+  const preload = [];
+  const seen = new Set();
+  const walk = (key) => {
+    for (const imp of outputs[key].imports) {
+      if (imp.kind !== 'import-statement' || seen.has(imp.path)) continue;
+      seen.add(imp.path);
+      preload.push(rel(path.resolve(imp.path)));
+      walk(imp.path);
+    }
+  };
+  walk(entryKey);
+  const chunks = Object.keys(outputs).filter((k) => k.endsWith('.js') && k !== entryKey).map((k) => rel(path.resolve(k)));
+
   const html = (await readFile(path.join(here, 'index.html'), 'utf8'))
-    .replace('%APP_JS%', `assets/app.${hash}.js`)
-    .replace('%APP_CSS%', `assets/app.${hash}.css`);
+    .replace('%APP_JS%', entry)
+    .replace('%APP_CSS%', `assets/${cssName}`)
+    .replace(/^[ \t]*%PRELOAD%\r?\n/m, preload.map((p) => `    <link rel="modulepreload" href="${p}" />\n`).join(''));
   await writeFile(path.join(outDir, 'index.html'), html);
   // Static files (favicon, emblem art) are copied as they are, at the same relative paths.
   await cp(publicDir, outDir, { recursive: true });
-  await writeFile(path.join(outDir, 'build.json'), JSON.stringify({ hash, builtAt: new Date().toISOString(), watch }, null, 2));
-  const size = (await stat(path.join(outDir, 'assets', `app.${hash}.js`))).size;
-  console.log(`built dist/ (app.${hash}.js ${(size / 1024).toFixed(0)} KB, css ${(css.length / 1024).toFixed(0)} KB)`);
+  const hash = createHash('sha256').update(entry).update(cssName).update(chunks.join(',')).update(workerName).update(readerName).digest('hex').slice(0, 10);
+  const manifest = { hash, builtAt: new Date().toISOString(), watch, entry, css: `assets/${cssName}`, preload, chunks, worker: `assets/${workerName}`, report: `assets/${readerName}` };
+  await writeFile(path.join(outDir, 'build.json'), JSON.stringify(manifest, null, 2));
+  const size = (await stat(path.join(outDir, entry))).size;
+  console.log(`built dist/ (${entry} ${(size / 1024).toFixed(0)} KB, ${chunks.length} chunk(s), css ${(css.length / 1024).toFixed(0)} KB)`);
 }
 
-await run();
+/** esbuild options for the app entry; exported so tests can prove a dynamic import() splits. */
+export function appBuildOptions({ outdir, dev = false, define = {}, entryPoints = { app: path.join(srcDir, 'main.tsx') } }) {
+  return {
+    entryPoints,
+    bundle: true,
+    minify: !dev,
+    sourcemap: dev ? 'inline' : false,
+    format: 'esm',
+    splitting: true,
+    target: ['es2020', 'edge120', 'chrome120'],
+    jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'), ...define },
+    outdir,
+    entryNames: '[name]-[hash]',
+    chunkNames: '[name]-[hash]',
+    metafile: true,
+    write: true,
+    legalComments: 'none',
+    logLevel: 'warning',
+  };
+}
 
-if (watch) {
+const invoked = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invoked) await run();
+
+if (invoked && watch) {
   const { watch: fsWatch } = await import('node:fs');
   let timer = null;
   const schedule = () => {

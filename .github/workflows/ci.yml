@@ -33,13 +33,14 @@ jobs:
           npm test; if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build; if ($LASTEXITCODE) { exit $LASTEXITCODE }
           if (-not (Test-Path web\dist\index.html)) { throw 'The build did not write web\dist\index.html.' }
+          npm run size; if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Server scripts parse on Windows PowerShell 5.1
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $bad = @()
-          foreach ($f in Get-ChildItem -Path server, tests -Recurse -Include *.ps1, *.psm1, *.psd1) {
+          foreach ($f in Get-ChildItem -Path server, tests, build -Recurse -Include *.ps1, *.psm1, *.psd1) {
             $tokens = $null; $errors = $null
             [void][Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
             foreach ($e in @($errors)) { $bad += ('{0}:{1} {2}' -f $f.FullName, $e.Extent.StartLineNumber, $e.Message) }
@@ -63,3 +64,45 @@ jobs:
           foreach ($t in $r.Failed) { Write-Host ('FAILED: ' + $t.ExpandedPath) }
           if ($r.FailedCount -gt 0 -or $r.Result -ne 'Passed') { throw ('{0} Pester test(s) failed.' -f $r.FailedCount) }
           Write-Host ('{0} passed, {1} skipped' -f $r.PassedCount, $r.SkippedCount)
+
+  e2e:
+    # The browser suite in the workstation's Edge against tests/e2e/mock-server.mjs (#86). Nothing is
+    # downloaded: Playwright drives the installed Edge (SEMAPHORE_E2E_BROWSER_CHANNEL=msedge).
+    needs: windows
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, windows, powershell51, headless]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Build the UI
+        shell: powershell
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci --no-audit --no-fund; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npx tsc -p tests/e2e/tsconfig.json; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: End-to-end (Edge, mock server)
+        shell: powershell
+        env:
+          SEMAPHORE_E2E_BROWSER_CHANNEL: msedge
+        run: |
+          npm run e2e
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+            # Job logs are not always reachable where failures are triaged: put each failed test's
+            # page snapshot (Playwright error-context.md) into annotations too.
+            foreach ($f in Get-ChildItem tests\e2e\.output\results -Recurse -Filter error-context.md -ErrorAction SilentlyContinue | Select-Object -First 4) {
+              $t = (Get-Content $f.FullName -Raw); if ($t.Length -gt 7000) { $t = $t.Substring(0, 7000) }
+              $t = $t -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+              Write-Host ("::error title=e2e context {0}::{1}" -f ($f.Directory.Name -replace '[,:]', ' '), $t)
+            }
+          }
+          exit $rc
