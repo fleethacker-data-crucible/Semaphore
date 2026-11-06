@@ -1,5 +1,5 @@
 # Pester 5. AI drafting through Fairlead: settings, the DPAPI key file, the forwarder against a fake
-# Fairlead on loopback, and the /api/ai routes. The key must never reach a response, the status or a message.
+# Fairlead on loopback, the port owner check (#65, with a stub PID lookup) and the /api/ai routes. The key must never reach a response, the status or a message.
 BeforeAll {
     $server = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server'))
     . ([IO.Path]::Combine($server, 'Common.ps1'))
@@ -73,6 +73,10 @@ BeforeAll {
 Describe 'Semaphore intelligence' {
 BeforeEach {
     Mock Read-SemAiCredential { return $null }
+    # The port owner check is a stub here: the fake Fairlead "is" PID 4168 unless a test says otherwise.
+    Mock Initialize-SemAiPortCheck { return $null }
+    Mock Get-SemAiListenerPids { return 4168 }
+    Clear-SemAiIdentityCache
     $script:Saved = @{}
     foreach ($n in $script:EnvNames) { $script:Saved[$n] = [Environment]::GetEnvironmentVariable($n); [Environment]::SetEnvironmentVariable($n, $null) }
     $script:Root = Join-Path ([IO.Path]::GetTempPath()) ('sem-ai-' + [guid]::NewGuid().ToString('N'))
@@ -260,6 +264,111 @@ Context 'Forwarding to Fairlead' {
     }
 }
 
+Context 'Port owner check (the key goes only to the process that holds the port)' {
+    BeforeAll {
+        $script:Chat = @{ model = 'local'; messages = @(@{ role = 'user'; content = 'hi' }) }
+    }
+
+    It 'does not send the key when the id answer names another PID than the port owner' {
+        Mock Get-SemAiListenerPids { return 999 }
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            $j = $r.Body | ConvertFrom-Json
+            $j.code | Should -Be 'ai-not-fairlead'
+            $j.error | Should -Match '^Something other than Fairlead is answering on port \d+; the key was not sent\.$'
+            $fake.Seen.Requests.Count | Should -Be 1
+            [string]$fake.Seen.Requests[0] | Should -Match '^GET /__fleethacker/id '
+            [string]$fake.Seen.Requests[0] | Should -Not -Match ([regex]::Escape($script:Key))
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'does not send the key when the id answer has no PID' {
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0"}' }, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            ($r.Body | ConvertFrom-Json).error | Should -Match 'the key was not sent'
+            $fake.Seen.Requests.Count | Should -Be 1
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'asks nothing and sends nothing when two processes listen on the port' {
+        Mock Get-SemAiListenerPids { return @(4168, 5000) }
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","pid":4168}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            ($r.Body | ConvertFrom-Json).error | Should -Match 'Something other than Fairlead'
+            $fake.Seen.Requests.Count | Should -Be 0
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'reports Fairlead not running when nothing listens on the port' {
+        Mock Get-SemAiListenerPids { return @() }
+        $env:SEMAPHORE_AI_URL = 'http://127.0.0.1:9/v1'; $env:SEMAPHORE_AI_KEY = $script:Key
+        $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+        $r.Status | Should -Be 503
+        ($r.Body | ConvertFrom-Json).code | Should -Be 'ai-down'
+    }
+
+    It 'fails closed when the TCP table cannot be read' {
+        Mock Get-SemAiListenerPids { throw 'GetExtendedTcpTable failed' }
+        $env:SEMAPHORE_AI_URL = 'http://127.0.0.1:9/v1'; $env:SEMAPHORE_AI_KEY = $script:Key
+        $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+        $r.Status | Should -Be 503
+        $j = $r.Body | ConvertFrom-Json
+        $j.code | Should -Be 'ai-port-check'
+        $j.error | Should -Match 'was not sent'
+    }
+
+    It 'fails closed, and says so in the AI status, when Add-Type is refused' {
+        $why = 'Windows did not let Semaphore compile its port check (Add-Type was refused), so the key is not sent.'
+        Mock Initialize-SemAiPortCheck { return $why }
+        $env:SEMAPHORE_AI_URL = 'http://127.0.0.1:9/v1'; $env:SEMAPHORE_AI_KEY = $script:Key
+        $r = Invoke-Route -Path '/api/ai/check' -Json @{} -Root $script:Root
+        $j = $r.Body | ConvertFrom-Json
+        $j.ok | Should -BeFalse
+        $j.code | Should -Be 'ai-port-check'
+        $j.detail | Should -Be $why
+        Should -Invoke Get-SemAiListenerPids -Times 0 -Exactly
+        $status = Get-SemAiStatus -Settings (Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile)
+        $status.configured | Should -BeFalse
+        $status.problem | Should -Be $why
+    }
+
+    It 'does not run the port check for the status when no key is stored' {
+        Mock Initialize-SemAiPortCheck { return 'unused' }
+        $status = Get-SemAiStatus -Settings (Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile)
+        $status.problem | Should -BeNullOrEmpty
+        Should -Invoke Initialize-SemAiPortCheck -Times 0 -Exactly
+    }
+
+    It 'remembers a verified Fairlead process and asks again when the listener changes' {
+        # This test process stands in for Fairlead: its PID has a readable start time, so it is cached.
+        Mock Get-SemAiListenerPids { return $PID }
+        $id = @{ Status = 200; Body = ('{"tool":"fairlead","version":"0.1.0","pid":' + $PID + '}') }
+        $answer = @{ Status = 200; Body = '{"choices":[]}' }
+        $fake = Start-FakeFairlead -Replies @($id, $answer, $answer, $id, $answer)
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            (Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root).Status | Should -Be 200
+            (Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root).Status | Should -Be 200
+            $fake.Seen.Requests.Count | Should -Be 3
+            [string]$fake.Seen.Requests[2] | Should -Match '^POST /v1/chat/completions '
+            # Another process now holds the port: the cache does not apply, and it fails the PID check.
+            Mock Get-SemAiListenerPids { return 4168 }
+            (Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root).Status | Should -Be 502
+            $fake.Seen.Requests.Count | Should -Be 4
+            [string]$fake.Seen.Requests[3] | Should -Match '^GET /__fleethacker/id '
+        } finally { Stop-FakeFairlead $fake }
+    }
+}
+
 Context '/api/ai routes' {
     BeforeAll {
         # Every route asks /__fleethacker/id first (port authority); a real Fairlead answers like this.
@@ -357,4 +466,17 @@ Context '/api/ai routes' {
         } finally { Stop-FakeFairlead $fake }
     }
 }
+}
+
+Describe 'Port owner lookup on Windows (GetExtendedTcpTable)' -Skip:($env:OS -ne 'Windows_NT') {
+    It 'compiles and finds this process as the owner of a loopback listener' {
+        Initialize-SemAiPortCheck | Should -BeNullOrEmpty
+        $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $l.Start()
+        try {
+            $port = ([Net.IPEndPoint]$l.LocalEndpoint).Port
+            @(Get-SemAiListenerPids -Port $port) | Should -Be @($PID)
+        } finally { $l.Stop() }
+        @(Get-SemAiListenerPids -Port $port) | Should -BeNullOrEmpty
+    }
 }

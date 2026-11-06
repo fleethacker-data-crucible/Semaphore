@@ -13,8 +13,10 @@
 # New setup writes only to the app-prefixed Windows credential. It never reaches the browser, the
 # log, the runtime file or an error message.
 #
-# Port authority: the key is sent only after the address answers /__fleethacker/id as "fairlead"
-# (Test-SemAiIdentity), the rule Lazarette uses, so a tool squatting on Fairlead's port never gets it.
+# Port authority: the key is sent only after the address answers /__fleethacker/id as "fairlead" AND
+# reports the PID of the process that really listens on the port (GetExtendedTcpTable, compiled with
+# Add-Type; Test-SemAiIdentity), the rule Lazarette uses, so a tool squatting on Fairlead's port never
+# gets it. When the port check cannot be compiled, the key is never sent and /api/ai says why.
 # Semaphore only ever calls a loopback address: Fairlead decides where a prompt goes. By default the
 # request asks for Fairlead's "local" route and sends X-Fairlead-Privacy: local, so prompts stay on
 # this machine. SEMAPHORE_AI_MODEL picks another route (auto, smart, fast); SEMAPHORE_AI_PRIVACY=off
@@ -116,16 +118,19 @@ function Get-SemAiSettings {
 }
 
 function Get-SemAiStatus {
-    # What the browser may know: never the key.
+    # What the browser may know: never the key. With a key stored, a port check that cannot run
+    # (Add-Type refused) is the problem: the key would never be sent.
     param($Settings = (Get-SemAiSettings))
+    $problem = $Settings.Problem
+    if (-not $problem -and $Settings.Key) { $problem = Initialize-SemAiPortCheck }
     return [ordered]@{
-        configured   = [bool]($Settings.Key -and -not $Settings.Problem)
+        configured   = [bool]($Settings.Key -and -not $problem)
         provider     = 'fairlead'
         url          = $Settings.Url
         model        = $Settings.Model
         privacyLocal = [bool]$Settings.PrivacyLocal
         keySource    = $Settings.KeySource
-        problem      = $Settings.Problem
+        problem      = $problem
         setup        = 'Open Fairlead > Clients and install a key for Semaphore (or run Set-SemaphoreAiKey.bat as a fallback). Until then, local rules draft every flag.'
     }
 }
@@ -214,15 +219,134 @@ function Get-SemAiErrorText {
     return ''
 }
 
+# ---------------------------------------------------------------------------
+# Port owner: which process listens on Fairlead's port (issue #65). iphlpapi.dll is an OS DLL, so
+# P/Invoke into it from Add-Type source is allowed on the workstation (TechStack); the same approach
+# as Lazarette's Initialize-LazarettePeerCheck. C# 5 only.
+# ---------------------------------------------------------------------------
+$script:SemAiPortOwnerSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class SemaphorePortOwner {
+    [DllImport("iphlpapi.dll", SetLastError = true)]
+    static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int dwOutBufLen, bool sort, int ipVersion, int tableClass, uint reserved);
+    const int TcpTableOwnerPidListener = 3;
+    const uint ErrorInsufficientBuffer = 122;
+    static int Port(int raw) { return ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF); }
+    static bool Loopback(IntPtr row, int family) {
+        if (family == 2) {
+            byte first = Marshal.ReadByte(row, 4);
+            return first == 127 || Marshal.ReadInt32(row, 4) == 0;
+        }
+        for (int i = 0; i < 15; i++) { if (Marshal.ReadByte(row, i) != 0) return false; }
+        byte last = Marshal.ReadByte(row, 15);
+        return last == 0 || last == 1;
+    }
+    static void Scan(int family, int rowSize, int portOffset, int pidOffset, int port, List<int> pids) {
+        for (int attempt = 0; attempt < 4; attempt++) {
+            int len = 0;
+            GetExtendedTcpTable(IntPtr.Zero, ref len, false, family, TcpTableOwnerPidListener, 0);
+            if (len <= 0) throw new InvalidOperationException("GetExtendedTcpTable gave no table size.");
+            len += 4096;
+            IntPtr buf = Marshal.AllocHGlobal(len);
+            try {
+                uint rc = GetExtendedTcpTable(buf, ref len, false, family, TcpTableOwnerPidListener, 0);
+                if (rc == ErrorInsufficientBuffer) continue;
+                if (rc != 0) throw new InvalidOperationException("GetExtendedTcpTable failed with error " + rc + ".");
+                int n = Marshal.ReadInt32(buf);
+                for (int i = 0; i < n; i++) {
+                    IntPtr row = new IntPtr(buf.ToInt64() + 4 + (long)i * rowSize);
+                    if (Port(Marshal.ReadInt32(row, portOffset)) != port) continue;
+                    if (!Loopback(row, family)) continue;
+                    int pid = Marshal.ReadInt32(row, pidOffset);
+                    if (!pids.Contains(pid)) pids.Add(pid);
+                }
+                return;
+            } finally { Marshal.FreeHGlobal(buf); }
+        }
+        throw new InvalidOperationException("The TCP table kept changing while it was read.");
+    }
+    // Distinct PIDs listening at this port on IPv4 loopback or the IPv4 wildcard, or IPv6 ::1 or the IPv6 wildcard.
+    public static int[] GetListenerPids(int port) {
+        List<int> pids = new List<int>();
+        Scan(2, 24, 8, 20, port, pids);    // MIB_TCPROW_OWNER_PID: state, localAddr, localPort, remoteAddr, remotePort, owningPid
+        Scan(23, 56, 20, 52, port, pids);  // MIB_TCP6ROW_OWNER_PID: localAddr[16], scope, localPort, remoteAddr[16], scope, remotePort, state, owningPid
+        return pids.ToArray();
+    }
+}
+'@
+
+function Initialize-SemAiPortCheck {
+    <#
+      $null when Semaphore can tell which process listens on Fairlead's port, else the sentence that
+      says why it cannot (and so never sends the key: fail closed). Compiled once per process; the
+      outcome is kept in the AppDomain so the worker runspaces do not compile again.
+    #>
+    if ('SemaphorePortOwner' -as [type]) { return $null }
+    $known = [AppDomain]::CurrentDomain.GetData('Semaphore.PortCheckProblem')
+    if ($known) { return [string]$known }
+    $problem = $null
+    if (-not (Test-SemIsWindows)) {
+        $problem = 'Semaphore can check which program holds Fairlead''s port only on Windows, so the Fairlead key is not sent.'
+    } else {
+        try { Add-Type -TypeDefinition $script:SemAiPortOwnerSource -Language CSharp -ErrorAction Stop }
+        catch { $problem = 'Windows did not let Semaphore compile its port check (Add-Type was refused), so Semaphore cannot confirm that Fairlead holds its port and does not send the Fairlead key.' }
+    }
+    if ($problem) {
+        [AppDomain]::CurrentDomain.SetData('Semaphore.PortCheckProblem', $problem)
+        Write-SemLog 'WARN' ('AI port check unavailable: ' + $problem)
+    }
+    return $problem
+}
+
+function Get-SemAiListenerPids {
+    # The distinct PIDs listening on this loopback port. Throws when the TCP table cannot be read.
+    # Tests replace it with a stub (Mock).
+    param([Parameter(Mandatory = $true)][int]$Port)
+    return [SemaphorePortOwner]::GetListenerPids($Port)
+}
+
+function Get-SemAiProcessStamp {
+    # "<pid>:<start time ticks>" so a cached answer dies with its process (a reused PID has another
+    # start time); '' when the start time cannot be read (then nothing is cached).
+    param([int]$ProcessId)
+    try {
+        $p = [Diagnostics.Process]::GetProcessById($ProcessId)
+        try { return ('{0}:{1}' -f $ProcessId, $p.StartTime.ToUniversalTime().Ticks) } finally { $p.Dispose() }
+    } catch { return '' }
+}
+
+function Clear-SemAiIdentityCache {
+    [AppDomain]::CurrentDomain.SetData('Semaphore.FairleadProcess', $null)
+}
+
 function Test-SemAiIdentity {
     <#
-      Port authority (edge-ops PORTS.md, the same rule Lazarette uses): before the key is sent, the
-      address must answer GET /__fleethacker/id as "fairlead". Ports can be taken by another tool when
-      Fairlead is down (8776 is Fairlead's own port, outside Semaphore's block 8800-8802), and the key must never go to it.
+      Port authority (edge-ops PORTS.md, the same rule Lazarette uses): before the key is sent,
+        1. the port check must be available (Initialize-SemAiPortCheck), else nothing is sent;
+        2. exactly one process may listen on the port on loopback (Get-SemAiListenerPids);
+        3. the address must answer GET /__fleethacker/id as "fairlead" with that process's PID.
+      Ports can be taken by another program when Fairlead is down (8776 is Fairlead's own port, outside
+      Semaphore's block 8800-8802), and the key must never go to it. A verified process is remembered
+      by PID and start time, so the id request is made again only when the listener changes.
       Returns $null when it is Fairlead, else @{ Code; Error }. The id request carries no key.
     #>
     param($Settings, [int]$TimeoutSec = 3)
     $u = [Uri]$Settings.Url
+    $notFairlead = 'Something other than Fairlead is answering on port ' + $u.Port + '; the key was not sent.'
+    $checkProblem = Initialize-SemAiPortCheck
+    if ($checkProblem) { return @{ Code = 'ai-port-check'; Error = $checkProblem } }
+    try { $pids = @(Get-SemAiListenerPids -Port $u.Port) }
+    catch { return @{ Code = 'ai-port-check'; Error = ('Semaphore could not read which program listens on port ' + $u.Port + ', so the Fairlead key was not sent.') } }
+    if ($pids.Count -eq 0) { return @{ Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
+    if ($pids.Count -gt 1) {
+        Write-SemLog 'WARN' ('AI: {0} processes listen on port {1}' -f $pids.Count, $u.Port)
+        return @{ Code = 'ai-not-fairlead'; Error = $notFairlead }
+    }
+    $owner = [int]$pids[0]
+    $stamp = Get-SemAiProcessStamp -ProcessId $owner
+    if ($stamp -and ([string][AppDomain]::CurrentDomain.GetData('Semaphore.FairleadProcess')) -ceq $stamp) { return $null }
     $idUrl = $u.GetLeftPart([UriPartial]::Authority) + '/__fleethacker/id'
     $req = [Net.HttpWebRequest]::Create($idUrl)
     $req.Method = 'GET'; $req.Timeout = $TimeoutSec * 1000; $req.ReadWriteTimeout = $TimeoutSec * 1000
@@ -233,11 +357,20 @@ function Test-SemAiIdentity {
         $reader = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
         try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
         if ($text.Length -gt 4096) { $text = '' }
-        $tool = $null
-        try { $tool = Get-SemJsonProp ($text | ConvertFrom-Json -ErrorAction Stop) 'tool' } catch { }
-        if ($tool -ceq 'fairlead') { return $null }
-        $who = if ($tool -is [string] -and $tool -cmatch '\A[A-Za-z0-9._-]{1,40}\z') { '"' + $tool + '"' } else { 'something else' }
-        return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' is ' + $who + ', not Fairlead, so the Fairlead key was not sent. Start Fairlead (it must have port ' + $u.Port + ') and try again.') }
+        $id = $null
+        try { $id = $text | ConvertFrom-Json -ErrorAction Stop } catch { }
+        $tool = Get-SemJsonProp $id 'tool'
+        if ($tool -cne 'fairlead') {
+            $who = if ($tool -is [string] -and $tool -cmatch '\A[A-Za-z0-9._-]{1,40}\z') { '"' + $tool + '"' } else { 'something else' }
+            return @{ Code = 'ai-not-fairlead'; Error = ('The program at ' + $u.Authority + ' is ' + $who + ', not Fairlead, so the Fairlead key was not sent. Start Fairlead (it must have port ' + $u.Port + ') and try again.') }
+        }
+        $idPid = 0
+        if (-not [int]::TryParse([string](Get-SemJsonProp $id 'pid'), [ref]$idPid) -or $idPid -ne $owner) {
+            Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead with PID {1}, but PID {2} holds the port' -f $u.Port, $idPid, $owner)
+            return @{ Code = 'ai-not-fairlead'; Error = $notFairlead }
+        }
+        if ($stamp) { [AppDomain]::CurrentDomain.SetData('Semaphore.FairleadProcess', $stamp) }
+        return $null
     } catch [Net.WebException] {
         if ($_.Exception.Status -eq [Net.WebExceptionStatus]::ConnectFailure -or (Test-SemConnectRefused $_.Exception)) { return @{ Code = 'ai-down'; Error = ('Fairlead is not running at ' + $Settings.Url + '. Start it with Launch-Fairlead.bat.') } }
         if ($_.Exception.Status -eq [Net.WebExceptionStatus]::Timeout) { return @{ Code = 'ai-timeout'; Error = ('Nothing answered at ' + $u.Authority + ' within ' + $TimeoutSec + ' s.') } }
@@ -279,7 +412,7 @@ function Invoke-SemAiRequest {
     if ($notFairlead) {
         Write-SemLog 'WARN' ('AI request not sent: ' + $notFairlead.Code)
         if ($Req.Path -eq '/api/ai/check') { Send-SemJson 200 ([ordered]@{ ok = $false; code = $notFairlead.Code; detail = $notFairlead.Error }); return }
-        $status = 502; if ($notFairlead.Code -eq 'ai-down') { $status = 503 } elseif ($notFairlead.Code -eq 'ai-timeout') { $status = 504 }
+        $status = 502; if ($notFairlead.Code -eq 'ai-down' -or $notFairlead.Code -eq 'ai-port-check') { $status = 503 } elseif ($notFairlead.Code -eq 'ai-timeout') { $status = 504 }
         Send-SemError $status $notFairlead.Code $notFairlead.Error; return
     }
     if ($Req.Path -eq '/api/ai/check') {
