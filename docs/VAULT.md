@@ -32,7 +32,7 @@ Lazarette keeps one table of the vault item each Fleet app reads (its `docs/FLEE
 | Each Foundry source | none: named per source | the same | the item's secret is the bearer token |
 | Fairlead client key (AI drafting) | **not a Lazarette item**: Windows Credential Manager target `Fairlead/Semaphore`, written by Fairlead | Fairlead > Clients (install for Semaphore); `Set-SemaphoreAiKey.bat` is a manual fallback, and `SEMAPHORE_AI_KEY` is for CI | sent only to Fairlead on 127.0.0.1:8776, after it answers as Fairlead |
 
-The Fairlead key is the one place the Fleet's "one vault" contract is not yet followed: Semaphore keeps it in Credential Manager, not Lazarette, because the server reads it at every draft without anyone unlocking a vault. Moving it is a decision for the team, not done here.
+**AI keys never come to Semaphore.** AI provider secrets (OpenAI, Anthropic, Azure OpenAI and so on) are Lazarette items shared with Fairlead only (Lazarette `docs/FAIRLEAD.md`). Fairlead holds them in memory and calls the provider. Semaphore gets a **client token that Fairlead issues** (`fl-…`): it is scoped to Semaphore, revocable in Fairlead > Clients, and useless outside Fairlead. So the token is not a Lazarette item, and that is by design. Semaphore refuses anything that is not in the `fl-` format (`Test-SemAiKeyShape`), so a provider key pasted by mistake is never stored or sent. The token is kept in Credential Manager because the server reads it at every draft without anyone unlocking a vault.
 
 | Provider | Roles read from the item |
 |---|---|
