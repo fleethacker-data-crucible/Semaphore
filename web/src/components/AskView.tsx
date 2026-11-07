@@ -4,7 +4,7 @@
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Settings2, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
 import { ReportsShelf } from './Reports.tsx';
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
@@ -29,6 +29,7 @@ export interface AskViewProps {
   /** Changes with the theme and the skin, so charts re-read their colours. */
   themeKey: string;
   onTheme: () => void;
+  onSettings: () => void;
   onBuilder: () => void;
   /** The last full refresh (Launch-Semaphore.bat --refresh), when there has been one. */
   lastRefresh?: { at: string; computer: string; refreshed: number; failed: unknown[] } | null;
@@ -65,7 +66,7 @@ function asOfText(iso: string): string {
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
-export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, onBuilder, lastRefresh }: AskViewProps) {
+export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, onSettings, onBuilder, lastRefresh }: AskViewProps) {
   const [q, setQ] = useState('');
   const [answers, setAnswers] = useState<Shown[]>([]);
   const counter = useRef(0);
@@ -218,6 +219,9 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
           </span>
           <button type="button" onClick={onTheme} aria-label={theme === 'dark' ? 'Light theme' : 'Dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'} className="rounded-md p-1.5 text-ink-2 hover:bg-panel-2">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button type="button" onClick={onSettings} aria-label="Settings" title="Settings" className="rounded-md p-1 text-ink-2 hover:bg-panel-2">
+            <Settings2 size={16} />
           </button>
           <button type="button" onClick={onBuilder} className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-ink-2 hover:border-accent" title="Open the analysts' builder">
             <LayoutDashboard size={13} /> Builder

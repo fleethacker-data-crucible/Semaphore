@@ -51,3 +51,10 @@ test('a person can turn a feature off and back on, with nothing lost', async ({ 
   await page.getByRole('button', { name: 'Playbook' }).click();
   await expect(page.getByRole('tab', { name: 'This week' })).toBeVisible();
 });
+
+test('Settings opens from the Leadership view too', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await page.getByRole('button', { name: 'Leadership view' }).click();
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: /End session/ })).toBeVisible();
+});

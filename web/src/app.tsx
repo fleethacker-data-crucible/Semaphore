@@ -1037,7 +1037,7 @@ export function App() {
       <>
         <PanelBoundary name="leadership view">
           <Suspense fallback={<PanelSkeleton label="leadership view" />}>
-            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onBuilder={() => setView('builder')} />
+            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onSettings={() => setSettingsOpen(true)} onBuilder={() => setView('builder')} />
           </Suspense>
         </PanelBoundary>
         <ShakedownAskMark />
