@@ -1,8 +1,11 @@
 // The landing page (UNIFIED-UI 6, .fl-empty): the full emblem, one headline and the ways in. It shows
 // when Semaphore opens and gives way to the builder as soon as the analyst picks something.
+// On a first run (no `semaphore.onboarding` yet) the primary way in is the shakedown cruise: hoist
+// a first flag of one's own in about a minute (components/Shakedown.tsx); continuing is secondary.
 
-import { Database, FilePlus2, FolderOpen, MessagesSquare, PenLine } from 'lucide-react';
+import { Database, FilePlus2, Flag, FolderOpen, MessagesSquare, PenLine } from 'lucide-react';
 import { useState } from 'react';
+import { isFirstRun, passFirstRun, startShakedown } from '../lib/onboarding.ts';
 
 /** The full Semaphore emblem with its wordmark, one per theme (web/public/brand, from assets/brand). */
 export function Emblem({ className, alt = 'Semaphore' }: { className?: string; alt?: string }) {
@@ -30,6 +33,12 @@ export interface WelcomeProps {
 
 export function Welcome(p: WelcomeProps) {
   const [skip, setSkip] = useState(p.skipNextTime);
+  const [first] = useState(isFirstRun);
+  // Any other way in on a first run means the analyst chose not to take the shakedown now.
+  const pass = (go: () => void) => () => {
+    passFirstRun();
+    go();
+  };
   const secondary = 'inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3.5 py-2 text-sm font-medium text-ink hover:border-accent';
   return (
     // Centred with auto margins, not justify-center: on a short window the top stays reachable by scrolling.
@@ -42,23 +51,43 @@ export function Welcome(p: WelcomeProps) {
       <p className="max-w-[56ch] text-sm text-ink-2">
         Describe a dashboard in plain English and Semaphore drafts it from your data, on this computer. Leadership asks the questions; your reviewed work answers them.
       </p>
-      <button type="button" autoFocus onClick={p.onContinue} className="inline-flex max-w-full items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-[15px] font-semibold text-panel hover:opacity-90">
-        <PenLine size={17} className="shrink-0" />
-        <span className="truncate">Continue “{p.lastTitle || 'Untitled hoist'}”</span>
-      </button>
+      {first ? (
+        <button
+          type="button"
+          autoFocus
+          onClick={() => {
+            startShakedown();
+            p.onContinue();
+          }}
+          className="inline-flex max-w-full items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-[15px] font-semibold text-panel hover:opacity-90"
+        >
+          <Flag size={17} className="shrink-0" />
+          <span className="truncate">Hoist your first flag (about a minute)</span>
+        </button>
+      ) : (
+        <button type="button" autoFocus onClick={p.onContinue} className="inline-flex max-w-full items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-[15px] font-semibold text-panel hover:opacity-90">
+          <PenLine size={17} className="shrink-0" />
+          <span className="truncate">Continue “{p.lastTitle || 'Untitled hoist'}”</span>
+        </button>
+      )}
       <div className="flex flex-wrap justify-center gap-2">
-        <button type="button" onClick={p.onNew} className={secondary}>
+        {first && (
+          <button type="button" onClick={pass(p.onContinue)} className={`${secondary} max-w-full`}>
+            <PenLine size={16} className="shrink-0" /> <span className="truncate">Continue “{p.lastTitle || 'Untitled hoist'}”</span>
+          </button>
+        )}
+        <button type="button" onClick={pass(p.onNew)} className={secondary}>
           <FilePlus2 size={16} /> New hoist
         </button>
         {p.canOpenSaved && (
-          <button type="button" onClick={p.onOpenSaved} className={secondary}>
+          <button type="button" onClick={pass(p.onOpenSaved)} className={secondary}>
             <FolderOpen size={16} /> Open a saved hoist
           </button>
         )}
-        <button type="button" onClick={p.onData} className={secondary}>
+        <button type="button" onClick={pass(p.onData)} className={secondary}>
           <Database size={16} /> Add data
         </button>
-        <button type="button" onClick={p.onAsk} className={secondary}>
+        <button type="button" onClick={pass(p.onAsk)} className={secondary}>
           <MessagesSquare size={16} /> Leadership view
         </button>
       </div>

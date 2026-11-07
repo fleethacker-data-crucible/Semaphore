@@ -63,7 +63,7 @@ Describe 'Parity between the routes and the commands' {
     It 'lists a browser-only route only when it really is a route, with a reason' {
         $real = Routes-In-Dispatcher
         foreach ($k in $script:SemUiOnlyRoutes.Keys) {
-            ($real -contains $k -or $k -eq '/api/leaving') | Should -BeTrue -Because "$k is not a route any more"
+            ($real -contains $k -or $k -in @('/api/leaving', '/api/launch')) | Should -BeTrue -Because "$k is not a route any more"
             $script:SemUiOnlyRoutes[$k].Length | Should -BeGreaterThan 10
         }
     }
@@ -137,12 +137,16 @@ Describe 'Commands run on a Semaphore folder' {
         Set-Content -LiteralPath (Join-Path $script:H 'snapshots\.last-refresh.json') -Value '{"version":1,"refreshed":3,"skipped":1,"failed":[]}'
         (Run 'refresh report' @{} $false $false $script:H).Result.refreshed | Should -Be 3
     }
-    It 'reports the vault bridge without any secret: which source names which item, never unlocked from here' {
-        Set-Content -LiteralPath (Join-Path $script:H 'sources.json') -Encoding UTF8 -Value '[{"id":"maint","provider":"odbc","connection":"DSN=x","vaultItem":"maint-db"},{"id":"plain","provider":"odbc","connection":"DSN=y"}]'
-        $r = Run 'vault status' @{} $false $false $script:H
+    It 'reports the Lazarette bridge without any secret: which source reads which share, and the pairing' {
+        Set-Content -LiteralPath (Join-Path $script:H 'sources.json') -Encoding UTF8 -Value '[{"id":"maint","provider":"odbc","connection":"DSN=x","vault":{"password":"SMDATS_PASSWORD","user":"SMDATS_USER"}},{"id":"plain","provider":"odbc","connection":"DSN=y"}]'
+        $oldLocal = $env:LOCALAPPDATA; $env:LOCALAPPDATA = Join-Path $TestDrive 'no-pairing'
+        try { $r = Run 'vault status' @{} $false $false $script:H } finally { $env:LOCALAPPDATA = $oldLocal }
         $r.Ok | Should -BeTrue
-        @($r.Result.sources) | Should -Be @('maint -> maint-db')
-        $r.Result.unlocked | Should -BeFalse
+        @($r.Result.sources).Count | Should -Be 1
+        $r.Result.sources[0].id | Should -Be 'maint'
+        $r.Result.sources[0].shares.password | Should -Be 'SMDATS_PASSWORD'
+        $r.Result.paired | Should -BeFalse
+        $r.Result.problem | Should -BeLike '*vault pair*'
         (ConvertTo-Json -InputObject $r.Result -Depth 5) | Should -Not -BeLike '*DSN*'
     }
     It 'reports AI status without printing a key' {

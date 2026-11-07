@@ -137,7 +137,7 @@ test('experiment pages are never learnt from', () => {
   assert.equal(learnFromHoist([], { ...accepted, experiment: true }, index, 'analyst').length, 0);
 });
 
-const q = (id: string, askedAt: string, shown: 'drafted' | 'none', status: QuestionItem['status'] = 'open'): QuestionItem => ({ version: 1, id, title: id, askedBy: 'cdr', askedAt, shown, notes: [], status, updated: askedAt });
+const q = (id: string, askedAt: string, shown: 'drafted' | 'none', status: QuestionItem['status'] = 'open'): QuestionItem => ({ version: 1, id, title: id, askedBy: 'cdr', askedAt, askers: ['cdr'], askCount: 1, shown, notes: [], status, updated: askedAt });
 
 test('away notices: validation, dates and being back', () => {
   const nt = newAwayNotice('J.Smith', '2026-11-02', '2026-11-06', ' Back Monday ', new Date('2026-10-30T09:00:00Z'));

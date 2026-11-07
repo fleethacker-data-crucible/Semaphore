@@ -48,8 +48,8 @@ export function AskBox({ index, onAsk, inputRef }: { index: CatalogIndex; onAsk:
         ref={inputRef}
         value={q}
         onChange={(e) => setQ(e.target.value.slice(0, 400))}
-        placeholder="Ask a question… (press / )"
-        aria-label="Ask a question of the data"
+        placeholder="Quick chart from a question… (press / )"
+        aria-label="Quick chart from a question"
         className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none placeholder:text-ink-3"
       />
     </form>

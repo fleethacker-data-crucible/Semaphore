@@ -113,9 +113,24 @@ export interface Hoist {
 
 export const GRID_COLS = 12;
 
-/** Limits on untrusted input (files, imports, AI output). */
+/**
+ * Limits on untrusted input (files, imports, AI output) and on what the analyst types. The UI puts the
+ * character limits on its inputs as maxLength; the document limit is the server's (server/Routes.ps1
+ * SemDocMaxBytes), checked before a save or an import so it never fails late.
+ */
 export const LIMITS = {
-  briefChars: 4000,
+  /** A hoist's or a flag's title. */
+  titleChars: 120,
+  /** The hoist brief and a flag's brief. */
+  briefChars: 2000,
+  /** A catalog label (measure, field, source). */
+  labelChars: 80,
+  /** One taught word or synonym. */
+  synonymChars: 40,
+  /** A quick-chart question or a search box. */
+  questionChars: 400,
+  /** One saved document (a hoist or the catalog), as the JSON the server stores. */
+  docBytes: 2 * 1024 * 1024,
   flags: 200,
   metrics: 50,
   dimensions: 20,
@@ -125,6 +140,28 @@ export const LIMITS = {
   thresholds: 20,
   warnings: 200,
 } as const;
+
+/** Bytes of `value` as the JSON a save sends (UTF-8). */
+export function docBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+/** Megabytes for a person, one decimal: 2.3 MB. */
+export function formatMb(bytes: number): string {
+  const mb = Math.ceil((bytes / 1048576) * 10) / 10;
+  return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB`;
+}
+
+/**
+ * Null when the document fits the server's limit; otherwise what to tell the analyst, with the next
+ * step. `noun` is "hoist" or "catalog".
+ */
+export function oversize(value: unknown, noun: 'hoist' | 'catalog'): string | null {
+  const bytes = docBytes(value);
+  if (bytes <= LIMITS.docBytes) return null;
+  const fix = noun === 'hoist' ? 'Remove some flags or split the page into two hoists.' : 'Remove sources or measures you no longer use.';
+  return `This ${noun} is ${formatMb(bytes)}, over the ${formatMb(LIMITS.docBytes)} limit, so it was not saved to the Semaphore folder. ${fix}`;
+}
 
 export function emptyBehavior(): Behavior {
   return { onClick: 'none', ignore: [], thresholds: [] };
@@ -190,7 +227,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     hoist: {
       version: 1,
       id: str(raw.id).slice(0, 64) || 'hoist',
-      title: str(raw.title).slice(0, 200) || 'Untitled hoist',
+      title: str(raw.title).slice(0, LIMITS.titleChars) || 'Untitled hoist',
       brief: brief.slice(0, LIMITS.briefChars),
       grid: { cols },
       filters,
@@ -240,7 +277,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   const flag: Flag = {
     id,
     kind,
-    title: str(raw.title).slice(0, 200),
+    title: str(raw.title).slice(0, LIMITS.titleChars),
     brief: str(raw.brief).slice(0, LIMITS.briefChars),
     layout,
     binding,

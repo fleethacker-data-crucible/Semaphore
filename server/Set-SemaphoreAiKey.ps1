@@ -25,8 +25,11 @@ $here = $PSScriptRoot
 
 $path = Get-SemAiKeyPath
 if ($Clear) {
+    $had = $false
+    try { $had = [bool](Read-SemAiCredential) } catch { $had = $false }
     Remove-SemAiCredential
-    if ([IO.File]::Exists($path)) { [IO.File]::Delete($path); Write-Host 'Removed the stored Fairlead key. Semaphore drafts with local rules until you set one again.' }
+    if ([IO.File]::Exists($path)) { [IO.File]::Delete($path); $had = $true }
+    if ($had) { Write-Host 'Removed the stored Fairlead key. Semaphore drafts with local rules until you set one again.' }
     else { Write-Host 'No Fairlead key was stored.' }
     return
 }

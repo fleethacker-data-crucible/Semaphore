@@ -3,13 +3,15 @@
 // measures and fields or teach them more words. Every change is checked before it is used.
 
 import { useEffect, useRef, useState } from 'react';
-import { Database, FileSpreadsheet, Network, Plus, Trash2, X } from 'lucide-react';
+import { Database, FileSpreadsheet, Network, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { profileTables, type ServerInfo } from '../lib/api.ts';
 import type { DataContext } from '../lib/data.ts';
 import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
 import { useModal } from '../lib/modal.ts';
+import { recordSkill, takeDataTab } from '../lib/skills.ts';
+import { EmptyState, emptyActionClass } from './EmptyState.tsx';
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -36,7 +38,8 @@ export interface DataPanelProps {
 export function DataPanel(p: DataPanelProps) {
   const dialogRef = useRef<HTMLElement>(null);
   useModal(dialogRef, p.onClose);
-  const [tab, setTab] = useState<'sources' | 'measures' | 'fields' | 'clean' | 'relationships'>('sources');
+  // The Signal Book's "Try it" can ask for a tab (lib/skills.ts).
+  const [tab, setTab] = useState<'sources' | 'measures' | 'fields' | 'clean' | 'relationships'>(() => takeDataTab() ?? 'sources');
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-ink/20" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
       <aside ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="Data and catalog" className="flex h-full w-[520px] max-w-full flex-col border-l border-line bg-panel shadow-xl">
@@ -80,6 +83,10 @@ function Sources(p: DataPanelProps) {
   const [tables, setTables] = useState<Record<string, string[] | string>>({});
   const [pick, setPick] = useState<Record<string, string>>({});
   const inCatalog = new Set(p.catalog.sources.map((s) => s.id));
+  const addFiles = (files: FileList) => {
+    p.onAddCsv(files);
+    recordSkill('csv');
+  };
   useEffect(() => {
     for (const s of p.server?.sources ?? []) {
       if (tables[s.id]) continue;
@@ -114,8 +121,24 @@ function Sources(p: DataPanelProps) {
               </li>
             );
           })}
-          {p.catalog.sources.length === 0 && <li className="text-sm text-ink-3">No sources yet.</li>}
         </ul>
+        {p.catalog.sources.length === 0 && (
+          <div className="rounded-[10px] border border-dashed border-line">
+            <EmptyState
+              compact
+              icon={Database}
+              headline="No data yet."
+              body="Add a CSV and Semaphore proposes measures and fields for you to check."
+              action={
+                <label className={emptyActionClass}>
+                  <Upload size={15} /> Add CSV
+                  <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && addFiles(e.target.files)} />
+                </label>
+              }
+              secondary={{ label: 'Load the example', icon: Sparkles, onClick: p.onLoadExample }}
+            />
+          </div>
+        )}
       </section>
 
       <section className="space-y-2">
@@ -126,13 +149,13 @@ function Sources(p: DataPanelProps) {
             <span className="font-medium">CSV files and Fleet exports</span>
             <span className="block text-[11px] text-ink-3">CSV, Halyard's backlog-health files, or the JSON exports of PacketRat and Eight Bells (or any list of records). Read in this page and kept in this browser. Semaphore proposes measures and fields for you to check.</span>
           </span>
-          <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && p.onAddCsv(e.target.files)} />
+          <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && addFiles(e.target.files)} />
         </label>
         <button type="button" onClick={p.onImportQlik} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
           <span className="font-medium">Import from Qlik</span>
           <span className="block text-[11px] text-ink-3">Paste a load script and chart expressions: tables, field names and measures come across for you to check.</span>
         </button>
-        {!inCatalog.has('maint') && (
+        {!inCatalog.has('maint') && p.catalog.sources.length > 0 && (
           <button type="button" onClick={p.onLoadExample} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
             <span className="font-medium">Fleet maintenance example</span>
             <span className="block text-[11px] text-ink-3">Generated sample data, to try Semaphore out.</span>

@@ -17,7 +17,7 @@ Semaphore-CLI.bat refresh run
 | `--yes` | Required for commands that change saved data. |
 | `--dry-run` | Check the command and its options and show what it would do, without doing it. |
 
-Exit codes: **0** success, **1** the command failed, **2** a usage error (unknown command, missing or unknown option, a missing `--yes`). Nothing waits on a dialog.
+Exit codes: **0** success, **1** the command failed, **2** a usage error (unknown command, missing or unknown option, a missing `--yes`). Nothing waits on a dialog; only `vault pair` asks for its code in the console.
 
 ## Commands
 
@@ -33,12 +33,14 @@ The same list is served by the running server at `GET /api/commands` and by `com
 | (same nouns) `delete --id <id> --yes` | Move a document to the `.trash` folder (not erased). |
 | `refresh run` | Refresh every playbook snapshot headless and stop (the same run as `Start-Semaphore.ps1 --refresh`). Refuses while Semaphore is open. Needs a machine that can reach the sources. |
 | `refresh report` | The report of the last refresh. |
-| `vault status` | Whether Lazarette is found, and which source names which vault item. Never a secret. A command-line run never unlocks the vault. |
+| `vault status` | Whether Semaphore is paired with Lazarette, whether Lazarette is running and unlocked, which source reads which share, and which names Lazarette has for Semaphore. Names only, never a value. |
+| `vault pair` | Pair Semaphore with Lazarette ([VAULT.md](VAULT.md)): paste the code from Lazarette (Settings > Tools > Pair tool). This is the one command that asks for input: the code is read without echo, never printed, logged or written to a transcript, and stored DPAPI-protected for your Windows account. |
+| `vault unpair` | Forget the pairing on this computer. Remove Semaphore in Lazarette (Settings > Tools) as well. |
 | `ai status` | Whether drafting goes through Fairlead, the address and where the key comes from. Never the key. |
 | `session stop --yes` | Stop every running copy of Semaphore on this computer. |
 
 ## What is not a command, and why
 
-Only headless work is offered. The routes the browser session needs have no command, and the registry lists each with its reason (`uiOnly` in `commands --json`): heartbeat and leaving (tab presence), end (use `session stop`), query and profile (the page plans the SQL and holds the session token), and the AI check and relay (they carry the browser session). `tests/server/Commands.Tests.ps1` fails when a route in `server/Routes.ps1` or a `/api` path in the UI has neither a command nor a reason, so a new route cannot arrive without one.
+Only headless work is offered. The routes the browser session needs have no command, and the registry lists each with its reason (`uiOnly` in `commands --json`): heartbeat and leaving (tab presence), launch (the launch link's single-use code), end (use `session stop`), query and profile (the page plans the SQL and holds the session token), and the AI check and relay (they carry the browser session). `tests/server/Commands.Tests.ps1` fails when a route in `server/Routes.ps1` or a `/api` path in the UI has neither a command nor a reason, so a new route cannot arrive without one.
 
 Run on Windows PowerShell 5.1; not tried on a real workstation folder.

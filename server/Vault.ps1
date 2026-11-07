@@ -1,197 +1,267 @@
 #requires -Version 5.1
 # =============================================================================
-# The Lazarette vault bridge: database secrets and AWS sessions come from the vault, not from
-# files or the environment.
+# Database secrets and AWS sessions from Lazarette, read BY NAME over this computer's loopback
+# (Lazarette docs/TOOLS.md). Semaphore never loads the Lazarette engine and never holds the vault key:
+# server/Lazarette.Client.ps1 (a copy of Lazarette's tools/Lazarette.Client.ps1) sends a one-time HMAC
+# proof to POST /peer/tools/v1/secrets on the running Lazarette and opens the sealed answer.
 #
-# A source in <home>\sources.json names a vault ITEM, never a secret:
+# Set up once: Lazarette > Settings > Tools > Pair tool "Semaphore", then `Semaphore-CLI.bat vault pair`
+# (the code is read without echo and kept DPAPI-protected for this Windows account). In Lazarette,
+# share each item with Semaphore under the variable name a source asks for.
+#
+# A source in <home>\sources.json names one shared VARIABLE per role, never a secret and never an item:
 #   { "id": "maint", "kind": "postgres", "provider": "odbc", "connection": "Driver={PostgreSQL Unicode};Server=db;Database=maint",
-#     "vault": { "item": "maint-db" } }
+#     "vault": { "password": "SMDATS_PASSWORD", "user": "SMDATS_USER" } }
 #   { "id": "lake", "kind": "aws-athena", "provider": "athena", "region": "us-gov-west-1", "database": "maint",
-#     "vault": { "item": "aws-semaphore" } }
-# "vault.fields" renames the item's fields per role, e.g. { "user": "Login", "password": "Token" }.
-# Roles and their default fields (the item's own secret is the password):
-#   odbc / oledb : password = the item's secret; user = field "Username" (optional; used when the connection has no UID)
-#   athena       : accessKeyId = "AccessKeyId", secretAccessKey = "SecretAccessKey", sessionToken = "SessionToken" (optional)
+#     "vault": { "accessKeyId": "AWS_ACCESS_KEY_ID", "secretAccessKey": "AWS_SECRET_ACCESS_KEY", "sessionToken": "AWS_SESSION_TOKEN" } }
+# Roles per provider ($script:SemVaultRoles). A required role with no value stops the request with a sentence;
+# an optional role with no value leaves a note (in the log, on the query answer and on a connect error).
 #
-# Lazarette contract (Lazarette docs/INTEGRATION.md): lib\Lazarette.ps1 is dot-sourced once per process (by Start-Semaphore, only
-# when a source uses the vault) and
-# Get-LazaretteSecret reads the item. Unlocking is interactive by design, so a source that uses the vault
-# needs `Launch-Semaphore.bat --console` (the passphrase is asked in that console, never in the
-# browser). The vault is open only in the main runspace, so the main loop resolves the secrets for
-# the one source a request names and hands the values to the worker with that request. They live in
-# memory for that request only, are never logged, returned or written, and are scrubbed from error text.
+# The main loop reads the secrets for the one source a request names (Resolve-SemVaultSecrets, the one seam)
+# and hands the values to the worker with that request. They live in memory for that request only, are
+# never logged, returned or written, and are scrubbed from error text (Get-SemVaultSafeText).
 # =============================================================================
 
-$script:SemVaultState = @{ Loaded = $false; Problem = $null }
-# Worker side: the values the main loop resolved for this request: role -> string. $null when the source uses no vault.
+. (Join-Path $PSScriptRoot 'Lazarette.Client.ps1')
+
+# The name Semaphore is paired under in Lazarette (Settings > Tools) and the pairing file's name.
+$script:SemVaultTool = 'Semaphore'
+# Worker side: the values the main loop resolved for this request: @{ Values = @{ role = string }; Notes = @() }. $null when the source uses no vault.
 $script:SemVaultRequest = $null
-$script:SemVaultItemRx = '\A[A-Za-z0-9][A-Za-z0-9 ._@:/\-]{0,127}\z'
-$script:SemVaultFieldRx = '\A[A-Za-z0-9][A-Za-z0-9 _.\-]{0,63}\z'
+# A share name as Lazarette accepts it (lib/integrations/Tools.ps1): an environment-variable name.
+$script:SemVaultNameRx = '\A[A-Za-z_][A-Za-z0-9_]{0,79}\z'
 
-# Roles per provider. Field = $null means the item's own secret. Optional roles are skipped when the item lacks the field.
+# Roles per provider (synapse sources are odbc by the time they are checked). Optional roles may be left out of the block.
+$script:SemVaultDbRoles = @(@{ Role = 'password'; Optional = $false }, @{ Role = 'user'; Optional = $true })
+$script:SemVaultAwsRoles = @(@{ Role = 'accessKeyId'; Optional = $false }, @{ Role = 'secretAccessKey'; Optional = $false }, @{ Role = 'sessionToken'; Optional = $true })
 $script:SemVaultRoles = @{
-    odbc   = @(@{ Role = 'password'; Field = $null; Optional = $false }, @{ Role = 'user'; Field = 'Username'; Optional = $true })
-    oledb  = @(@{ Role = 'password'; Field = $null; Optional = $false }, @{ Role = 'user'; Field = 'Username'; Optional = $true })
-    athena = @(@{ Role = 'accessKeyId'; Field = 'AccessKeyId'; Optional = $false }, @{ Role = 'secretAccessKey'; Field = 'SecretAccessKey'; Optional = $false }, @{ Role = 'sessionToken'; Field = 'SessionToken'; Optional = $true })
-}
-
-function Register-SemVaultRoles {
-    # Lets a connector declare which roles its provider needs from the vault item.
-    param([string]$Provider, [object[]]$Roles)
-    $script:SemVaultRoles[$Provider.ToLowerInvariant()] = @($Roles)
+    odbc            = $script:SemVaultDbRoles
+    oledb           = $script:SemVaultDbRoles
+    athena          = $script:SemVaultAwsRoles
+    'redshift-data' = $script:SemVaultAwsRoles
+    foundry         = @(@{ Role = 'token'; Optional = $false })
 }
 
 # ---------------------------------------------------------------------------
 # sources.json: the vault block
 # ---------------------------------------------------------------------------
+function Get-SemRawVault {
+    # The "vault" block of a sources.json entry (a PSCustomObject), or $null.
+    param($Raw)
+    return (Get-SemJsonProp $Raw 'vault')
+}
+
 function Test-SemVaultBlock {
-    # $null when the vault block of a sources.json entry is acceptable, else the reason it is refused.
-    param($Vault, [string]$Provider)
-    if ($null -eq $Vault) { return $null }
-    if ($Vault -isnot [Management.Automation.PSCustomObject]) { return 'The vault setting must be an object like { "item": "name" }.' }
-    if ($null -ne (Get-SemJsonProp $Vault 'conflict')) { return 'Give "vault" or "vaultItem", not both.' }
-    $item = Get-SemJsonProp $Vault 'item'
-    if ($item -isnot [string] -or $item -cnotmatch $script:SemVaultItemRx) { return 'The vault setting needs "item": the name of a Lazarette item (letters, digits, space and . _ @ : / -).' }
-    if (-not $script:SemVaultRoles.ContainsKey($Provider)) { return "The $Provider provider does not use the vault." }
-    $fields = Get-SemJsonProp $Vault 'fields'
-    if ($null -ne $fields) {
-        if ($fields -isnot [Management.Automation.PSCustomObject]) { return 'vault.fields must map a role to a field name.' }
-        $known = @($script:SemVaultRoles[$Provider] | ForEach-Object { $_.Role })
-        foreach ($p in $fields.PSObject.Properties) {
-            if ($known -cnotcontains $p.Name) { return ('vault.fields has an unknown role "' + $p.Name + '" (use ' + ($known -join ', ') + ').') }
-            if ($p.Value -isnot [string] -or $p.Value -cnotmatch $script:SemVaultFieldRx) { return ('vault.fields.' + $p.Name + ' is not a valid field name.') }
-        }
+    # $null when the vault settings of a sources.json entry are acceptable, else the reason the source is refused.
+    param($Raw, [string]$Provider)
+    if ($null -ne (Get-SemJsonProp $Raw 'vaultItem')) { return '"vaultItem" is no longer read: Semaphore reads the secrets Lazarette shares with it, by variable name. Write "vault": { "password": "SMDATS_PASSWORD", "user": "SMDATS_USER" } (docs/VAULT.md).' }
+    $vault = Get-SemRawVault $Raw
+    if ($null -eq $vault) { return $null }
+    $roles = $script:SemVaultRoles[$Provider]
+    if ($null -eq $roles) { return "The $Provider provider does not use Lazarette." }
+    $known = @($roles | ForEach-Object { $_.Role })
+    if ($vault -isnot [Management.Automation.PSCustomObject]) { return ('The vault setting must be an object that names a Lazarette share per role, like { "' + $known[0] + '": "SMDATS_PASSWORD" }.') }
+    $seen = @{}
+    foreach ($p in $vault.PSObject.Properties) {
+        if (@('item', 'fields') -ccontains $p.Name) { return 'vault.item and vault.fields are no longer read: name the variable each role is shared under in Lazarette, like { "password": "SMDATS_PASSWORD", "user": "SMDATS_USER" } (docs/VAULT.md).' }
+        if ($known -cnotcontains $p.Name) { return ('Unknown vault role "' + $p.Name + '" for the ' + $Provider + ' provider (use ' + ($known -join ', ') + ').') }
+        if ($p.Value -isnot [string] -or $p.Value -cnotmatch $script:SemVaultNameRx) { return ('vault.' + $p.Name + ' must be the variable name the item is shared under in Lazarette: letters, digits and _, not starting with a digit (for example SMDATS_PASSWORD). Never the secret itself.') }
+        $u = $p.Value.ToUpperInvariant()
+        if ($seen.ContainsKey($u)) { return ('vault.' + $p.Name + ' and vault.' + $seen[$u] + ' name the same share; each role needs its own.') }
+        $seen[$u] = $p.Name
     }
-    foreach ($p in $Vault.PSObject.Properties) { if (@('item', 'fields') -cnotcontains $p.Name) { return ('Unknown vault setting "' + $p.Name + '". A vault block holds only "item" and "fields", never a secret.') } }
+    foreach ($r in $roles) {
+        if (-not $r.Optional -and $null -eq $vault.PSObject.Properties[$r.Role]) { return ('The vault block needs "' + $r.Role + '": the variable name Lazarette shares it under.') }
+    }
     return $null
 }
 
-function Get-SemRawVault {
-    # The vault block of a sources.json entry. "vaultItem": "name" is the short form of "vault": { "item": "name" }
-    # (the field name Lazarette's docs/FLEET-ITEMS.md gives for Semaphore). Both at once is refused by Test-SemVaultBlock.
-    param($Raw)
-    $block = Get-SemJsonProp $Raw 'vault'
-    $short = Get-SemJsonProp $Raw 'vaultItem'
-    if ($null -ne $block -and $null -ne $short) { return [pscustomobject]@{ item = $null; conflict = $true } }
-    if ($null -ne $short) { return [pscustomobject]@{ item = $short } }
-    return $block
-}
-
 function Get-SemSourceVault {
-    # The validated vault block of a source from Get-SemSources, or $null.
+    # The vault block of a source from Get-SemSources (already checked), or $null.
     param($Source)
     if ($null -eq $Source -or $null -eq $Source.raw) { return $null }
     return (Get-SemRawVault $Source.raw)
 }
 
 function Get-SemVaultNeeds {
-    # What the source needs from its vault item: @{ Item; Roles = @(@{ Role; Field; Optional }) }, or $null.
+    # What the source reads from Lazarette: @{ Roles = @(@{ Role; Name; Optional }) } for the roles its block names, or $null.
     param($Source)
     $vault = Get-SemSourceVault $Source
     if ($null -eq $vault) { return $null }
-    $fields = Get-SemJsonProp $vault 'fields'
-    $roles = foreach ($r in $script:SemVaultRoles[[string]$Source.provider]) {
-        $f = $r.Field
-        $over = Get-SemJsonProp $fields $r.Role
-        if ($over) { $f = [string]$over }
-        @{ Role = $r.Role; Field = $f; Optional = $r.Optional }
+    $roles = foreach ($r in @($script:SemVaultRoles[[string]$Source.provider])) {
+        $name = Get-SemJsonProp $vault $r.Role
+        if ($name) { @{ Role = $r.Role; Name = [string]$name; Optional = [bool]$r.Optional } }
     }
-    return @{ Item = [string](Get-SemJsonProp $vault 'item'); Roles = @($roles) }
+    return @{ Roles = @($roles) }
 }
 
 # ---------------------------------------------------------------------------
-# Finding and opening Lazarette (main runspace)
+# The Lazarette client (main runspace)
 # ---------------------------------------------------------------------------
-function Find-SemLazaretteRoot {
-    # The one discovery rule (Lazarette docs/INTEGRATION.md): LAZARETTE_PATH, a Lazarette folder next to the Semaphore folder,
-    # then %USERPROFILE%\Projects\Lazarette. The folder must contain lib\Lazarette.ps1.
-    param([string]$Root = '')
-    $cands = New-Object System.Collections.Generic.List[string]
-    $v = [Environment]::GetEnvironmentVariable('LAZARETTE_PATH'); if ($v) { $cands.Add($v) }
-    if ($Root) { $cands.Add((Join-Path (Split-Path -Parent $Root) 'Lazarette')) }
-    if ($env:USERPROFILE) { $cands.Add((Join-Path (Join-Path $env:USERPROFILE 'Projects') 'Lazarette')) }
-    foreach ($c in $cands) {
-        if ($c -and [IO.File]::Exists([IO.Path]::Combine($c, 'lib', 'Lazarette.ps1'))) { return [IO.Path]::GetFullPath($c) }
-    }
-    return $null
+function Test-SemVaultPaired {
+    # $true when this Windows account holds a Semaphore pairing code (it is not checked against Lazarette here).
+    try { return [bool](Test-LazaretteToolPairing -Tool $script:SemVaultTool) } catch { return $false }
 }
 
-function Get-SemLazaretteLibPath {
-    # Path of Lazarette's lib\Lazarette.ps1, or $null. The caller dot-sources it at script scope (a function cannot:
-    # what a function dot-sources disappears when it returns):  $lib = Get-SemLazaretteLibPath -Root $root; if ($lib) { . $lib }
-    param([string]$Root = '')
-    $found = Find-SemLazaretteRoot -Root $Root
-    if ($found) { return [IO.Path]::Combine($found, 'lib', 'Lazarette.ps1') }
-    return $null
+function Test-SemVaultRunning {
+    # $true when something listens on Lazarette's loopback port (LAZARETTE_PORT, else 8765). Sends nothing.
+    $tcp = New-Object Net.Sockets.TcpClient
+    try {
+        $ar = $tcp.BeginConnect('127.0.0.1', (Get-LzClientPort), $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne(500)) { return $false }
+        $tcp.EndConnect($ar)
+        return [bool]$tcp.Connected
+    } catch { return $false } finally { $tcp.Close() }
 }
 
 function Initialize-SemVault {
-    # Records whether Lazarette's functions are loaded in this runspace. Returns the state.
+    # The pairing state, for the status route: @{ Paired; Problem }.
     param([string]$Root = '')
-    $st = $script:SemVaultState
-    if (Get-Command Get-LazaretteSecret -ErrorAction SilentlyContinue) { $st.Loaded = $true; $st.Problem = $null; return $st }
-    $st.Loaded = $false
-    if (Get-SemLazaretteLibPath -Root $Root) { $st.Problem = 'Lazarette was found but is not loaded in this Semaphore process.' }
-    else { $st.Problem = 'Lazarette was not found. Set LAZARETTE_PATH to the Lazarette folder (the one with lib\Lazarette.ps1), or keep it next to the Semaphore folder.' }
-    return $st
+    $paired = Test-SemVaultPaired
+    $problem = $null
+    if (-not $paired) { $problem = 'Semaphore is not paired with Lazarette. In Lazarette open Settings > Tools, pair a tool named Semaphore, then run Semaphore-CLI.bat vault pair and paste the code.' }
+    return @{ Paired = $paired; Problem = $problem }
 }
 
-function Test-SemVaultOpen {
-    $st = $script:SemVaultState
-    if (-not $st.Loaded) { return $false }
-    try { return [bool](Test-LazaretteVaultUnlocked) } catch { return $false }
+function ConvertTo-SemVaultError {
+    # A message thrown by Lazarette.Client.ps1 as @{ Status; Code; Message } with a sentence the analyst can act on.
+    param([string]$Message, [string]$SourceId = '')
+    $m = [string]$Message
+    $who = 'Semaphore'; if ($SourceId) { $who = "Source '$SourceId'" }
+    $pairHow = 'In Lazarette open Settings > Tools, pair Semaphore again, then run Semaphore-CLI.bat vault pair.'
+    if ($m -like 'Lazarette is not running*') {
+        return @{ Status = 501; Code = 'vault-unavailable'; Message = "$who takes its secrets from Lazarette, which is not running on this computer. Start Lazarette, unlock it, and try again." }
+    }
+    if ($m -like 'No Lazarette pairing*') {
+        return @{ Status = 424; Code = 'vault-not-paired'; Message = "$who takes its secrets from Lazarette, but Semaphore is not paired with it yet. In Lazarette open Settings > Tools, pair a tool named Semaphore, then run Semaphore-CLI.bat vault pair." }
+    }
+    if ($m -match '\(locked\)') {
+        return @{ Status = 423; Code = 'vault-locked'; Message = "$who takes its secrets from Lazarette, which is locked. Unlock Lazarette in its window and try again." }
+    }
+    if ($m -match '\(not-paired\)') {
+        return @{ Status = 424; Code = 'vault-not-paired'; Message = "Lazarette does not know Semaphore's pairing (it was removed or paired again). $pairHow" }
+    }
+    if ($m -match '\(peer-unverified\)' -and $m -like '*different program*') {
+        return @{ Status = 424; Code = 'vault-other-program'; Message = "Lazarette refused: a different program used Semaphore's pairing first. $pairHow" }
+    }
+    $safe = Get-SemVaultSafeText $m
+    if ($m -match '\(rate-limited\)') { return @{ Status = 424; Code = 'vault-refused'; Message = ('Lazarette is refusing requests for a while after several failed ones: ' + $safe) } }
+    if ($m -match '\(clock\)') { return @{ Status = 424; Code = 'vault-refused'; Message = "Lazarette refused the request because this computer's clock looks wrong. Check the time and try again." } }
+    $for = 'Semaphore'; if ($SourceId) { $for = "source '$SourceId'" }
+    return @{ Status = 424; Code = 'vault-error'; Message = ("Lazarette could not give the secrets for {0}: {1}" -f $for, $safe) }
 }
 
-function Request-SemVaultUnlock {
-    # At start-up, with a console: asks Lazarette's own prompt (passphrase or smart card PIN, then the authenticator code).
-    # Without a console nothing is asked and the vault sources report 'vault-locked'. Returns $true when the vault is open.
-    param([string]$Root = '', [bool]$Interactive = $true)
-    $st = Initialize-SemVault -Root $Root
-    if (-not $st.Loaded) { return $false }
-    if (Test-SemVaultOpen) { return $true }
-    if (-not $Interactive) { return $false }
-    try { $ok = [bool](Unlock-LazaretteVaultInteractive) } catch { $ok = $false }
-    return $ok
+function Get-SemVaultStateText {
+    # Why a share has no value, from the answer's per-name state.
+    param([string]$State)
+    switch ($State) {
+        'not-shared' { return 'it is not shared with Semaphore' }
+        'empty' { return 'the shared item has no value, was deleted, or is marked PHI, PII, CUI or endpoint' }
+        default { return 'Lazarette did not return it' }
+    }
 }
 
+function Get-SemVaultEmptyNote {
+    # The note left when an optional role resolves empty. Names the share, never a value.
+    param([string]$SourceId, [string]$Role, [string]$Name, [string]$State)
+    $why = Get-SemVaultStateText $State
+    switch ($Role) {
+        'user' { return ("Lazarette has no user for source '{0}' ({1}: {2}), so it signs in with the user in its DSN or with Windows authentication." -f $SourceId, $Name, $why) }
+        'sessionToken' { return ("Lazarette has no session token for source '{0}' ({1}: {2}), so AWS requests are signed with the key pair alone." -f $SourceId, $Name, $why) }
+        default { return ("Lazarette has no {0} for source '{1}' ({2}: {3}); it goes on without it." -f $Role, $SourceId, $Name, $why) }
+    }
+}
+
+function Get-SemVaultPurpose {
+    # The purpose Lazarette logs with each read (at most 120 characters, no control characters).
+    param([string]$SourceId)
+    $p = 'Semaphore query on source ' + $SourceId
+    if ($p.Length -gt 120) { $p = $p.Substring(0, 120) }
+    return $p
+}
+
+# ---------------------------------------------------------------------------
+# Status (GET /api/vault, vault status): names and states only, never a value
+# ---------------------------------------------------------------------------
 function Get-SemVaultStatus {
-    # For GET /api/vault: never names an item's value.
+    # paired / running / locked, which source reads which share, and which shares Lazarette has for Semaphore.
+    # When paired and running it asks Lazarette once for every share the sources name; the values are dropped at once.
     param([string]$HomeDir)
-    $st = $script:SemVaultState
-    $items = New-Object System.Collections.Generic.List[string]
-    foreach ($s in @(Get-SemSources -HomeDir $HomeDir)) { $n = Get-SemVaultNeeds $s; if ($n) { $items.Add(('{0} -> {1}' -f $s.id, $n.Item)) } }
-    return [ordered]@{ found = [bool]$st.Loaded; unlocked = (Test-SemVaultOpen); problem = $st.Problem; sources = @($items) }
+    $sources = New-Object System.Collections.Generic.List[object]
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($s in @(Get-SemSources -HomeDir $HomeDir)) {
+        $n = Get-SemVaultNeeds $s
+        if ($null -eq $n) { continue }
+        $roles = [ordered]@{}
+        foreach ($r in $n.Roles) {
+            $roles[$r.Role] = $r.Name
+            if (@($names | Where-Object { $_.ToUpperInvariant() -eq $r.Name.ToUpperInvariant() }).Count -eq 0) { $names.Add($r.Name) }
+        }
+        $sources.Add([ordered]@{ id = $s.id; shares = $roles })
+    }
+    $init = Initialize-SemVault
+    $out = [ordered]@{ tool = $script:SemVaultTool; paired = [bool]$init.Paired; running = (Test-SemVaultRunning); locked = $null; problem = $init.Problem; sources = $sources.ToArray(); shared = @(); notShared = @() }
+    if (-not $out.running) { $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.'; if (-not $out.paired) { $out.problem += ' ' + $init.Problem } }
+    if (-not $out.paired -or -not $out.running -or $names.Count -eq 0) { return $out }
+    $shared = New-Object System.Collections.Generic.List[string]
+    $missing = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $names.Count; $i += 32) {
+        $chunk = @($names.GetRange($i, [Math]::Min(32, $names.Count - $i)))
+        $got = $null
+        try { $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names $chunk -Purpose 'Semaphore status check' }
+        catch {
+            $e = ConvertTo-SemVaultError -Message ([string]$_.Exception.Message)
+            $out.locked = ($e.Code -eq 'vault-locked')
+            if ($e.Code -eq 'vault-unavailable') { $out.running = $false }
+            $out.problem = $e.Message
+            return $out
+        }
+        foreach ($n in $chunk) {
+            $state = [string]$got['__state'][$n]
+            if ($state -eq 'ok') { $shared.Add($n) } else { $missing.Add([ordered]@{ name = $n; state = $state }) }
+        }
+        $got = $null
+    }
+    $out.locked = $false
+    $out.problem = $null
+    $out.shared = $shared.ToArray()
+    $out.notShared = $missing.ToArray()
+    return $out
 }
 
 # ---------------------------------------------------------------------------
 # Resolving a request's secrets (main runspace) and using them (worker)
 # ---------------------------------------------------------------------------
 function Resolve-SemVaultSecrets {
-    # @{ Values = @{ role = string } } for a source that uses the vault, @{ Values = $null } for one that does not,
-    # or @{ Error = @{ Status; Code; Message } }. Messages never contain a secret.
+    # @{ Values = @{ role = string }; Notes = @(string) } for a source that uses Lazarette, @{ Values = $null } for one that does not,
+    # or @{ Error = @{ Status; Code; Message } }. Messages and notes name shares, never a value.
     param($Source)
     $needs = Get-SemVaultNeeds $Source
     if ($null -eq $needs) { return @{ Values = $null } }
-    $st = $script:SemVaultState
-    if (-not $st.Loaded) {
-        $st = Initialize-SemVault -Root (Split-Path -Parent $PSScriptRoot)
-        if (-not $st.Loaded) { return @{ Error = @{ Status = 501; Code = 'vault-unavailable'; Message = [string]$st.Problem } } }
-    }
-    if (-not (Test-SemVaultOpen)) {
-        return @{ Error = @{ Status = 423; Code = 'vault-locked'; Message = "Source '$($Source.id)' takes its secret from Lazarette, which is locked. Start Semaphore with Launch-Semaphore.bat --console and unlock Lazarette when it asks." } }
-    }
+    $id = [string]$Source.id
+    $names = @($needs.Roles | ForEach-Object { $_.Name })
+    $got = $null
+    try { $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names $names -Purpose (Get-SemVaultPurpose $id) }
+    catch { return @{ Error = (ConvertTo-SemVaultError -Message ([string]$_.Exception.Message) -SourceId $id) } }
     $values = @{}
-    foreach ($r in $needs.Roles) {
-        try {
-            if ($r.Field) { $v = Get-LazaretteSecret -Service $needs.Item -Field $r.Field } else { $v = Get-LazaretteSecret -Service $needs.Item }
-        } catch {
-            if ($r.Optional) { continue }
-            return @{ Error = @{ Status = 424; Code = 'vault-item'; Message = ("Lazarette could not give '{0}' for source '{1}': {2}" -f $needs.Item, $Source.id, (Get-SemVaultSafeText ([string]$_.Exception.Message) @())) } }
+    $notes = New-Object System.Collections.Generic.List[string]
+    $absent = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($r in $needs.Roles) {
+            $v = $got[$r.Name]
+            $state = 'missing'
+            if ($null -ne $got['__state'] -and $got['__state'].ContainsKey($r.Name)) { $state = [string]$got['__state'][$r.Name] }
+            if ($null -ne $v -and ([string]$v).Length -gt 0) { $values[$r.Role] = [string]$v; continue }
+            if ($r.Optional) { $notes.Add((Get-SemVaultEmptyNote -SourceId $id -Role $r.Role -Name $r.Name -State $state)) }
+            else { $absent.Add(('{0} ({1})' -f $r.Name, (Get-SemVaultStateText $state))) }
         }
-        if ($null -ne $v -and "$v".Length -gt 0) { $values[$r.Role] = [string]$v }
-        elseif (-not $r.Optional) { return @{ Error = @{ Status = 424; Code = 'vault-item'; Message = ("Lazarette's item '{0}' has no value for the {1}." -f $needs.Item, $r.Role) } } }
+    } finally { $got = $null }
+    if ($absent.Count -gt 0) {
+        $values = $null
+        return @{ Error = @{ Status = 424; Code = 'vault-not-shared'; Message = ("Source '{0}' needs {1} from Lazarette. In Lazarette open Settings > Tools > Semaphore and share the item under that name." -f $id, ($absent -join ', ')) } }
     }
-    return @{ Values = $values }
+    foreach ($n in $notes) { Write-SemLog 'WARN' $n }
+    return @{ Values = $values; Notes = $notes.ToArray() }
 }
 
 function Get-SemVaultForRequest {
@@ -204,7 +274,7 @@ function Get-SemVaultForRequest {
     $r = Resolve-SemVaultSecrets -Source $src
     if ($r.ContainsKey('Error')) { return @{ Error = $r.Error } }
     if ($null -eq $r.Values) { return $null }
-    return @{ Values = $r.Values }
+    return @{ Values = $r.Values; Notes = @($r.Notes) }
 }
 
 function Set-SemVaultRequest {
@@ -227,6 +297,20 @@ function Get-SemVaultError {
     return $null
 }
 
+function Get-SemVaultNotes {
+    # Worker: the notes about optional roles that resolved empty (no values in them).
+    $c = $script:SemVaultRequest
+    if ($null -eq $c -or -not $c.ContainsKey('Notes') -or $null -eq $c.Notes) { return @() }
+    return @($c.Notes)
+}
+
+function Get-SemVaultNoteText {
+    # The notes as one sentence to append to an error message ('' when there are none).
+    $n = @(Get-SemVaultNotes)
+    if ($n.Count -eq 0) { return '' }
+    return (' ' + ($n -join ' '))
+}
+
 function Get-SemVaultSecretValues {
     # Every secret of the current request (for scrubbing messages); short values are skipped so ordinary words survive.
     $c = $script:SemVaultRequest
@@ -241,6 +325,28 @@ function Get-SemVaultSafeText {
     $all = @(Get-SemVaultSecretValues) + @($Extra | Where-Object { $_ -and $_.Length -ge 4 })
     foreach ($v in ($all | Sort-Object { $_.Length } -Descending)) { $Text = $Text.Replace([string]$v, '***') }
     return $Text
+}
+
+# ---------------------------------------------------------------------------
+# Pairing (semaphore vault pair / unpair)
+# ---------------------------------------------------------------------------
+function Register-SemVaultPairing {
+    # Stores the pairing code from a SecureString, DPAPI-protected the way Lazarette.Client.ps1 does it. The code is never echoed or returned.
+    param([Parameter(Mandatory = $true)][Security.SecureString]$Code)
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Code)
+    $plain = $null
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if (-not $plain -or $plain.Trim() -notmatch '^lztl1\.') { throw 'That is not a Lazarette tool pairing code. In Lazarette open Settings > Tools, pair Semaphore and copy the code that starts with lztl1.' }
+        return (Register-LazaretteToolPairing -Tool $script:SemVaultTool -Code $plain)
+    } finally {
+        $plain = $null
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+function Unregister-SemVaultPairing {
+    return [bool](Unregister-LazaretteToolPairing -Tool $script:SemVaultTool)
 }
 
 # ---------------------------------------------------------------------------
@@ -259,7 +365,7 @@ function Add-SemVaultToConnectionString {
     if ($null -eq $Values -or $Values.Count -eq 0) { return $ConnectionString }
     $cs = $ConnectionString.TrimEnd().TrimEnd(';')
     $user = $Values['user']; $pass = $Values['password']
-    foreach ($v in @($user, $pass)) { if ($v -and -not (Test-SemSecretText $v)) { throw 'A vault value contains control characters and cannot be used in a connection string.' } }
+    foreach ($v in @($user, $pass)) { if ($v -and -not (Test-SemSecretText $v)) { throw 'A value from Lazarette contains control characters and cannot be used in a connection string.' } }
     if ($Provider -eq 'odbc') {
         if ($user -and $cs -notmatch '(?i)(^|;)\s*(UID|User ID)\s*=') { $cs += ';UID={' + $user.Replace('}', '}}') + '}' }
         if ($pass) { $cs += ';PWD={' + $pass.Replace('}', '}}') + '}' }

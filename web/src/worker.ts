@@ -3,7 +3,7 @@
 // (aggregated rows, value counts, a profile). Same code as the page would run: src/core.
 
 import { type Catalog, indexCatalog } from '../../src/core/catalog.ts';
-import { readCsv } from '../../src/core/csv.ts';
+import { checkCsvSize, readCsv } from '../../src/core/csv.ts';
 import { runPlan, type TableRows } from '../../src/core/engine.ts';
 import type { QueryPlan } from '../../src/core/planner.ts';
 import { countValues, findDuplicates } from '../../src/core/quality.ts';
@@ -11,17 +11,19 @@ import { countValues, findDuplicates } from '../../src/core/quality.ts';
 const tables: TableRows = {};
 
 type Request =
-  | { id: number; type: 'load'; name: string; text: string }
+  | { id: number; type: 'load'; name: string; blob: Blob }
   | { id: number; type: 'drop'; name: string }
   | { id: number; type: 'clear' }
   | { id: number; type: 'run'; plan: QueryPlan; catalog: Catalog; today: string }
   | { id: number; type: 'values'; table: string; column: string }
   | { id: number; type: 'duplicates'; catalog: Catalog; source: string; table: string };
 
-function answer(m: Request): unknown {
+async function answer(m: Request): Promise<unknown> {
   switch (m.type) {
     case 'load': {
-      const t = readCsv(m.name, m.text);
+      // The Blob is read here, so the page never holds the text; it is let go once the rows are built.
+      checkCsvSize(m.blob.size);
+      const t = readCsv(m.name, await m.blob.text());
       tables[t.name] = t.rows;
       return { name: t.name, rows: t.rows.length, columns: t.columns, profile: t.profile, notes: t.notes };
     }
@@ -43,11 +45,13 @@ function answer(m: Request): unknown {
 // The page tsconfig has the DOM library, not the WebWorker one: the two members used here, typed.
 const scope = self as unknown as { onmessage: ((e: MessageEvent<Request>) => void) | null; postMessage(message: unknown): void };
 
+// One request at a time, in order: a flag asked for while a file is still being read waits for it.
+let queue: Promise<void> = Promise.resolve();
+
 scope.onmessage = (e: MessageEvent<Request>) => {
   const m = e.data;
-  try {
-    scope.postMessage({ id: m.id, ok: true, value: answer(m) });
-  } catch (err) {
-    scope.postMessage({ id: m.id, ok: false, error: (err as Error).message, name: (err as Error).name });
-  }
+  queue = queue.then(() => answer(m)).then(
+    (value) => scope.postMessage({ id: m.id, ok: true, value }),
+    (err: Error) => scope.postMessage({ id: m.id, ok: false, error: err.message, name: err.name }),
+  );
 };

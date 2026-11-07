@@ -168,9 +168,18 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
   else if (groupBy.length) sql = sql.replace(/^SELECT /, 'SELECT DISTINCT ');
   sql += orderBy;
-  if (dialect === 'postgres' || dialect === 'ansi') sql += ` LIMIT ${limit}`;
+  if (dialect === 'postgres' || dialect === 'ansi' || dialect === 'spark') sql += ` LIMIT ${limit}`;
   else if (dialect === 'oracle') sql += ` FETCH FIRST ${limit} ROWS ONLY`;
   return { dialect, sql, params };
+}
+
+/**
+ * Today as Semaphore's date functions read it: the local calendar date at 00:00 UTC. The core reads
+ * dates with UTC getters, so passing new Date() itself would move "today" to tomorrow in the
+ * evening west of Greenwich (9 pm in Norfolk is already the next day in UTC).
+ */
+export function calendarToday(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
 }
 
 export function filterSql(f: Filter, col: string, type: FieldType, bind: (p: SqlParam) => string, today: Date): string {

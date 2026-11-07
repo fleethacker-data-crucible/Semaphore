@@ -22,13 +22,15 @@ export function useHoistHistory(initial: Hoist): HoistHistory {
   const lastGroup = useRef<{ group: string; at: number } | null>(null);
 
   const change = useCallback((next: Hoist | ((h: Hoist) => Hoist), group?: string) => {
+    // Decided here, not in the updater: React may call an updater twice (StrictMode), and a ref
+    // written there would make the second call see its own group and merge two undo steps.
+    const now = Date.now();
+    const continuing = !!group && lastGroup.current?.group === group && now - lastGroup.current.at < 1500;
+    lastGroup.current = group ? { group, at: now } : null;
     setState((s) => {
       const value = typeof next === 'function' ? next(s.hoist) : next;
       if (value === s.hoist) return s;
       const stamped = { ...value, updated: new Date().toISOString() };
-      const now = Date.now();
-      const continuing = group && lastGroup.current?.group === group && now - lastGroup.current.at < 1500;
-      lastGroup.current = group ? { group, at: now } : null;
       if (continuing) return { ...s, hoist: stamped, future: [] };
       return { hoist: stamped, past: [...s.past, s.hoist].slice(-LIMIT), future: [] };
     });

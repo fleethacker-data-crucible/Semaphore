@@ -1,12 +1,14 @@
 // Lineage on screen: sources → tables → fields → measures → flags, left to right. Click anything to
 // see what feeds it and what it feeds; joins between tables are the dashed arcs.
 
-import { useMemo, useRef, useState } from 'react';
-import { Network, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Network, Workflow, X } from 'lucide-react';
 import type { Catalog } from '../../../src/core/catalog.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { buildLineage, connected, LINEAGE_COLUMNS, type LineageKind, type LineageNode } from '../../../src/core/lineage.ts';
 import { useModal } from '../lib/modal.ts';
+import { recordSkill } from '../lib/skills.ts';
+import { EmptyState } from './EmptyState.tsx';
 
 const COL_W = 210;
 const BOX_W = 176;
@@ -25,6 +27,9 @@ export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoi
   const [all, setAll] = useState(false);
   const [focus, setFocus] = useState<string | null>(null);
   const lineage = useMemo(() => buildLineage(catalog, hoist, all), [catalog, hoist, all]);
+  useEffect(() => {
+    if (lineage.nodes.length) recordSkill('lineage', { hoistId: hoist.id });
+  }, [lineage.nodes.length, hoist.id]);
 
   // Order each column by the average position of what it connects to on the right, so lines cross less.
   const layout = useMemo(() => {
@@ -65,7 +70,13 @@ export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoi
         <p className="px-4 pt-2 text-xs text-ink-2">Click a box to see what feeds it and what it feeds. Dashed arcs are joins between tables.{focus ? ' Click it again to clear.' : ''}</p>
         <div className="overflow-x-auto p-4">
           {lineage.nodes.length === 0 ? (
-            <p className="text-sm text-ink-3">No flag on this page reads data yet.</p>
+            <EmptyState
+              compact
+              icon={Workflow}
+              headline="Nothing to trace yet."
+              body="No flag on this page reads data yet. Wire a flag, or tick Whole catalog to see every source, table, field and measure."
+              action={catalog.metrics.length ? { label: 'Show the whole catalog', onClick: () => setAll(true) } : undefined}
+            />
           ) : (
             <svg width={width} height={layout.height} role="img" aria-label="Lineage graph" style={{ fontFamily: 'inherit' }}>
               {LINEAGE_COLUMNS.map((k, i) => (

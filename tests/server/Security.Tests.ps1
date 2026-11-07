@@ -86,13 +86,26 @@ Describe 'Host and Origin gate' {
         (Invoke-TestRequest -Path '/' -Headers @{ Host = 'attacker.example:8800' } -NoHost).Status | Should -Be 403
     }
 
-    It 'sends the security headers on every response' {
-        $r = Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)
-        $r.Head | Should -Match "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-        $r.Head | Should -Match 'X-Content-Type-Options: nosniff'
-        $r.Head | Should -Match 'Referrer-Policy: no-referrer'
-        $r.Head | Should -Match 'Cache-Control: no-store'
-        (Invoke-TestRequest -Path '/assets/app.js').Head | Should -Match 'X-Content-Type-Options: nosniff'
+    It 'sends exactly the security header set on every response' {
+        $csp = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        $want = @(
+            $csp,
+            'X-Content-Type-Options: nosniff',
+            'Referrer-Policy: no-referrer',
+            'X-Frame-Options: DENY',
+            'Cross-Origin-Resource-Policy: same-origin',
+            'Cross-Origin-Opener-Policy: same-origin',
+            'Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
+        )
+        foreach ($r in @((Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)), (Invoke-TestRequest -Path '/assets/app.js'), (Invoke-TestRequest -Path '/'), (Invoke-TestRequest -Path '/api/info'))) {
+            $lines = @($r.Head -split "`r`n" | Select-Object -Skip 1)
+            $security = @($lines | Where-Object { $_ -notmatch '^(Content-Type|Content-Length|Connection|Cache-Control|ETag):' })
+            ($security -join "`n") | Should -Be ($want -join "`n")
+            @($lines | Where-Object { $_ -match '^Cache-Control:' }).Count | Should -Be 1
+        }
+        (Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)).Head | Should -Match 'Cache-Control: no-store'
+        $script:SemCsp | Should -Not -Match "style-src 'self' 'unsafe-inline'"
+        $script:SemCsp | Should -Not -Match "script-src[^;]*unsafe"
     }
 }
 
@@ -135,6 +148,48 @@ Describe 'Session token' {
         (Invoke-TestRequest -Method 'POST' -Path '/api/leaving' -Body '{"token":"nope","tab":"t1"}').Status | Should -Be 401
         (Invoke-TestRequest -Method 'POST' -Path '/api/heartbeat' -Body $body).Status | Should -Be 401
         (Invoke-TestRequest -Method 'POST' -Path '/api/info' -Body $body).Status | Should -Be 401
+    }
+
+    It 'trades a launch code for the token once' {
+        $code = New-SemLaunchCode
+        $code | Should -Not -Be $script:Sem.Token
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $code + '"}')
+        $r.Status | Should -Be 200
+        $r.Head | Should -Match 'Cache-Control: no-store'
+        ($r.Body | ConvertFrom-Json).token | Should -Be $script:Sem.Token
+        $again = Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $code + '"}')
+        $again.Status | Should -Be 401
+        $again.Body | Should -Not -Match ([regex]::Escape($script:Sem.Token))
+    }
+
+    It 'refuses an unknown, expired, missing or non-POST launch code' {
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body '{"code":"nope"}').Status | Should -Be 401
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body '{}').Status | Should -Be 401
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $script:Sem.Token + '"}')).Status | Should -Be 401
+        (Invoke-TestRequest -Method 'GET' -Path '/api/launch').Status | Should -Be 405
+        $old = New-SemLaunchCode
+        $script:Sem.LaunchCodes[$old] = (Get-Date).ToUniversalTime().AddSeconds(-1)
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Body ('{"code":"' + $old + '"}')).Status | Should -Be 401
+        $script:Sem.LaunchCodes.ContainsKey($old) | Should -BeFalse
+    }
+
+    It 'refuses a launch code from another origin' {
+        $code = New-SemLaunchCode
+        (Invoke-TestRequest -Method 'POST' -Path '/api/launch' -Headers @{ Origin = 'http://evil.example' } -Body ('{"code":"' + $code + '"}')).Status | Should -Be 403
+    }
+
+    It 'puts a launch code, never the token, in the launch link' {
+        $src = [IO.File]::ReadAllText([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server', 'Start-Semaphore.ps1'))
+        $src | Should -Not -Match '\?session='
+        $src | Should -Not -Match 'Sem\.Token\s*\+'
+        $src | Should -Match '\?launch='
+    }
+
+    It 'tells a source-code copy where the ready-to-run zip is' {
+        $page = Get-SemNotBuiltPage
+        $page | Should -Match 'releases/latest'
+        $page | Should -Match 'Semaphore-0\.2\.0\.zip'
+        $page | Should -Match 'Unblock'
     }
 
     It 'never reads the token from the query string' {
@@ -188,10 +243,107 @@ Describe 'Static files' {
             $script:Sem.WebRoot = $empty
             $r = Invoke-TestRequest -Path '/'
             $r.Status | Should -Be 200
-            $r.Body | Should -Match 'npm ci &amp;&amp; npm run build'
+            $r.Body | Should -Match 'npm ci</code> then <code>npm run build'
             (Invoke-TestRequest -Path '/app/route').Status | Should -Be 200
             (Invoke-TestRequest -Path '/x.js').Status | Should -Be 404
         } finally { $script:Sem.WebRoot = $old; Remove-Item -LiteralPath $empty -Recurse -Force }
+    }
+}
+
+Describe 'Caching (hashed assets)' {
+    BeforeAll {
+        foreach ($n in 'app.c3a35325b2.js', 'app.c3a35325b2.css', 'index-AB12cd34.js', 'worker.c030cbd1d1.js', 'short.ab12.js') {
+            [IO.File]::WriteAllText([IO.Path]::Combine($script:TestWeb, 'assets', $n), 'x')
+        }
+        [IO.File]::WriteAllText((Join-Path $script:TestWeb 'favicon.ico'), 'x')
+        [void][IO.Directory]::CreateDirectory((Join-Path $script:TestWeb 'brand'))
+        [IO.File]::WriteAllText([IO.Path]::Combine($script:TestWeb, 'brand', 'logo.12345678.png'), 'x')
+    }
+
+    It 'serves hashed files under /assets/ as immutable: <P>' -TestCases @(
+        @{ P = '/assets/app.c3a35325b2.js' }, @{ P = '/assets/app.c3a35325b2.css' }, @{ P = '/assets/index-AB12cd34.js' }, @{ P = '/assets/worker.c030cbd1d1.js' }
+    ) {
+        $r = Invoke-TestRequest -Path $P
+        $r.Status | Should -Be 200
+        $r.Head | Should -Match 'Cache-Control: public, max-age=31536000, immutable'
+    }
+
+    It 'revalidates files without a hash, or outside /assets/: <P>' -TestCases @(
+        @{ P = '/assets/app.js' }, @{ P = '/assets/short.ab12.js' }, @{ P = '/favicon.ico' }, @{ P = '/brand/logo.12345678.png' }
+    ) {
+        $r = Invoke-TestRequest -Path $P
+        $r.Status | Should -Be 200
+        $r.Head | Should -Match 'Cache-Control: no-cache'
+        $r.Head | Should -Not -Match 'immutable'
+    }
+
+    It 'never caches index.html, the app-route fallback or the API' {
+        (Invoke-TestRequest -Path '/').Head | Should -Match 'Cache-Control: no-store'
+        (Invoke-TestRequest -Path '/index.html').Head | Should -Match 'Cache-Control: no-store'
+        (Invoke-TestRequest -Path '/hoist/fleet').Head | Should -Match 'Cache-Control: no-store'
+        (Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)).Head | Should -Match 'Cache-Control: no-store'
+    }
+
+    It 'allows the "not built" page''s own style element by its hash only' {
+        $csp = Get-SemNotBuiltCsp
+        $csp | Should -Match "style-src 'self' 'sha256-[A-Za-z0-9+/]{43}=';"
+        $csp | Should -Not -Match "style-src [^;]*'unsafe-inline'"
+        (Get-SemNotBuiltPage) | Should -Match ('<style>' + [regex]::Escape($script:SemNotBuiltStyle) + '</style>')
+    }
+}
+
+Describe 'Client error log' {
+    BeforeEach {
+        $script:SemClientLogTimes.Clear()
+        $script:SemLogPath = Join-Path $script:TestHome ('client-' + [guid]::NewGuid().ToString('N') + '.log')
+    }
+    AfterEach { $script:SemLogPath = $null }
+
+    It 'writes one line with message, view and stack, and answers 204' {
+        $body = '{"level":"error","message":"Cannot read x","stack":"at A (app.js:1)\nat B (app.js:2)","view":"builder","rows":[{"secret":"value-123"}]}'
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body $body
+        $r.Status | Should -Be 204
+        $lines = @([IO.File]::ReadAllLines($script:SemLogPath))
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Match '\[ERROR\] Page error: Cannot read x \(view: builder\) stack: at A \(app\.js:1\) \| at B \(app\.js:2\)$'
+        $lines[0] | Should -Not -Match 'value-123'
+    }
+
+    It 'cannot forge a log line with CR or LF in any field' {
+        $forged = '{"level":"warn","message":"ok\r\n2026-11-06 10:00:00  [INFO] Saved hoist evil","view":"a\rb\u2028c","stack":"s\n\n[ERROR] x"}'
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body $forged).Status | Should -Be 204
+        $text = [IO.File]::ReadAllText($script:SemLogPath)
+        @([IO.File]::ReadAllLines($script:SemLogPath)).Count | Should -Be 1
+        ($text.TrimEnd("`r", "`n")) | Should -Not -Match "[`r`n]"
+        $text | Should -Match '\[WARN\] Page warn: ok \| 2026-11-06'
+    }
+
+    It 'needs the session token' {
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Body '{"level":"error","message":"x"}').Status | Should -Be 401
+        [IO.File]::Exists($script:SemLogPath) | Should -BeFalse
+    }
+
+    It 'refuses a body over 4 KB, a bad level, a missing message and other methods' {
+        $big = '{"level":"error","message":"' + ('m' * 4100) + '"}'
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body $big).Status | Should -Be 413
+        $max = '{"level":"error","message":"' + ('m' * (4096 - 30)) + '"}'
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body $max).Status | Should -Be 204
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body '{"level":"info","message":"x"}').Status | Should -Be 400
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body '{"level":"error"}').Status | Should -Be 400
+        (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body '{"level":"error","message":{"a":1}}').Status | Should -Be 400
+        (Invoke-TestRequest -Method 'GET' -Path '/api/client-log' -Headers (Get-Auth)).Status | Should -Be 405
+    }
+
+    It 'takes 20 reports a minute, then answers 429' {
+        for ($i = 0; $i -lt 20; $i++) {
+            (Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body ('{"level":"warn","message":"n' + $i + '"}')).Status | Should -Be 204
+        }
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/client-log' -Headers (Get-Auth) -Body '{"level":"warn","message":"one more"}'
+        $r.Status | Should -Be 429
+        ($r.Body | ConvertFrom-Json).code | Should -Be 'rate'
+        @([IO.File]::ReadAllLines($script:SemLogPath)).Count | Should -Be 20
+        # A minute later the window has moved on.
+        Test-SemClientLogRate -Now ((Get-Date).AddSeconds(61)) | Should -BeTrue
     }
 }
 
@@ -216,7 +368,7 @@ Describe 'Hoists and catalogs' {
         (Invoke-TestRequest -Path '/api/hoists' -Headers $a).Body | Should -Be '[]'
         $r = Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/h1' -Headers $a -Body $body
         $r.Status | Should -Be 200
-        $r.Body | Should -Be '{"ok":true}'
+        $r.Body | Should -Be ('{"ok":true,"etag":"' + (Get-SemSha256Hex ([Text.Encoding]::UTF8.GetBytes($body))) + '"}')
         $list = (Invoke-TestRequest -Path '/api/hoists' -Headers $a).Body | ConvertFrom-Json
         @($list).Count | Should -Be 1
         $list[0].id | Should -Be 'h1'
@@ -321,5 +473,82 @@ Describe 'SQL guard and parameters' {
         Test-SemConnectionString 'DSN=X;PWD=s' | Should -Not -BeNullOrEmpty
         Test-SemConnectionString 'Driver={x};Server=y; password = s' | Should -Not -BeNullOrEmpty
         Get-SemSafeMessage -Message 'login failed for DSN=X;UID=bob;PWD=s' -Source ([pscustomobject]@{ connection = 'DSN=Z' }) | Should -Not -Match 'bob|=s'
+    }
+}
+
+Describe 'Save conflicts (ETag and If-Match) for every document kind' {
+    BeforeAll {
+        function script:Get-Etag([string]$Head) { if ($Head -match '(?m)^ETag: "([0-9a-f]{64})"\r?$') { return $Matches[1] }; return $null }
+        function script:Hash([string]$Text) { return (Get-SemSha256Hex ([Text.Encoding]::UTF8.GetBytes($Text))) }
+    }
+
+    It 'sends the sha256 of the stored bytes as ETag and in the PUT answer: <Kind>' -TestCases @(
+        @{ Kind = 'hoists' }, @{ Kind = 'catalogs' }, @{ Kind = 'playbook' }, @{ Kind = 'snapshots' }, @{ Kind = 'questions' }, @{ Kind = 'team' }
+    ) {
+        $a = Get-Auth
+        $id = 'etag-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $body = '{"version":1,"title":"A"}'
+        $put = Invoke-TestRequest -Method 'PUT' -Path "/api/$Kind/$id" -Headers $a -Body $body
+        $put.Status | Should -Be 200
+        ($put.Body | ConvertFrom-Json).etag | Should -Be (Hash $body)
+        $get = Invoke-TestRequest -Path "/api/$Kind/$id" -Headers $a
+        $get.Status | Should -Be 200
+        Get-Etag $get.Head | Should -Be (Hash $body)
+        $stored = [IO.File]::ReadAllBytes([IO.Path]::Combine($script:Sem.Home, $Kind, "$id.json"))
+        Get-Etag $get.Head | Should -Be (Get-SemSha256Hex $stored)
+    }
+
+    It 'answers 409 "version" to the second of two saves from the same base, and keeps the first: <Kind>' -TestCases @(
+        @{ Kind = 'hoists' }, @{ Kind = 'catalogs' }, @{ Kind = 'playbook' }, @{ Kind = 'snapshots' }, @{ Kind = 'questions' }, @{ Kind = 'team' }
+    ) {
+        $a = Get-Auth
+        $id = 'race-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $base = '{"version":1,"title":"Base"}'
+        (Invoke-TestRequest -Method 'PUT' -Path "/api/$Kind/$id" -Headers $a -Body $base).Status | Should -Be 200
+        $etag = Get-Etag (Invoke-TestRequest -Path "/api/$Kind/$id" -Headers $a).Head
+        $mine = $a.Clone(); $mine['If-Match'] = '"' + $etag + '"'
+        $first = Invoke-TestRequest -Method 'PUT' -Path "/api/$Kind/$id" -Headers $mine -Body '{"version":1,"title":"Tab one"}'
+        $first.Status | Should -Be 200
+        $second = Invoke-TestRequest -Method 'PUT' -Path "/api/$Kind/$id" -Headers $mine -Body '{"version":1,"title":"Tab two"}'
+        $second.Status | Should -Be 409
+        $j = $second.Body | ConvertFrom-Json
+        $j.code | Should -Be 'version'
+        $j.error | Should -Not -BeNullOrEmpty
+        $j.etag | Should -Be (Hash '{"version":1,"title":"Tab one"}')
+        (Invoke-TestRequest -Path "/api/$Kind/$id" -Headers $a).Body | Should -Be '{"version":1,"title":"Tab one"}'
+        # With the new ETag (after "Load theirs") the save goes through.
+        $mine['If-Match'] = '"' + $j.etag + '"'
+        (Invoke-TestRequest -Method 'PUT' -Path "/api/$Kind/$id" -Headers $mine -Body '{"version":1,"title":"Tab two"}').Status | Should -Be 200
+    }
+
+    It 'writes without If-Match (CLI, first save), with If-Match: *, and with If-Match on a new document' {
+        $a = Get-Auth
+        (Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/nomatch' -Headers $a -Body '{"version":1,"n":1}').Status | Should -Be 200
+        (Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/nomatch' -Headers $a -Body '{"version":1,"n":2}').Status | Should -Be 200
+        $any = $a.Clone(); $any['If-Match'] = '*'
+        (Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/nomatch' -Headers $any -Body '{"version":1,"n":3}').Status | Should -Be 200
+        $stale = $a.Clone(); $stale['If-Match'] = '"' + ('0' * 64) + '"'
+        (Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/brand-new' -Headers $stale -Body '{"version":1}').Status | Should -Be 200
+        (Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/nomatch' -Headers $stale -Body '{"version":1,"n":4}').Status | Should -Be 409
+        (Invoke-TestRequest -Path '/api/hoists/nomatch' -Headers $a).Body | Should -Be '{"version":1,"n":3}'
+    }
+
+    It 'leaves no temp files behind' {
+        $dir = Join-Path $script:Sem.Home 'hoists'
+        @(Get-ChildItem -LiteralPath $dir -Force -File | Where-Object { $_.Name -like '.*.tmp' -or $_.Name -like '.*.old' }).Count | Should -Be 0
+    }
+}
+
+Describe 'Atomic save' {
+    BeforeEach {
+        $script:Dir = Join-Path $script:TestHome ('atomic-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($script:Dir)
+    }
+
+    It 'creates, then replaces, a document through a temp file in the same folder' {
+        Save-SemDoc -Dir $script:Dir -Id 'a' -Bytes ([Text.Encoding]::UTF8.GetBytes('{"version":1,"n":1}'))
+        Save-SemDoc -Dir $script:Dir -Id 'a' -Bytes ([Text.Encoding]::UTF8.GetBytes('{"version":1,"n":2}'))
+        [IO.File]::ReadAllText((Join-Path $script:Dir 'a.json')) | Should -Be '{"version":1,"n":2}'
+        @(Get-ChildItem -LiteralPath $script:Dir -Force -File).Name | Should -Be @('a.json')
     }
 }

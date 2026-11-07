@@ -8,6 +8,7 @@
 // schedule the analyst accepted) and edition-<hoist>-<date> (one edition).
 
 import type { Briefing } from './briefing.ts';
+import type { DrillStep } from './drill.ts';
 import type { Flag } from './hoist.ts';
 
 export type Cadence = { every: 'week'; weekday: number } | { every: 'month'; day: number };
@@ -37,12 +38,32 @@ export interface ReportSchedule {
 }
 
 /** A flag's answer frozen for an edition or a shared report: what FlagView needs and no more. */
+/** One level a reader can open in a shared report: the flag after these drill steps, as computed when the report was saved. */
+export interface FrozenDrillNode {
+  steps: DrillStep[];
+  /** The computed result (lib/data FlagResult without its SQL and raw rows). */
+  result: unknown;
+}
+
+/** Stable text for a list of drill steps, so a click can find its level. */
+export function drillKey(steps: readonly DrillStep[]): string {
+  return JSON.stringify(steps.map((s) => [s.field, s.grain ?? '', s.value === null ? null : String(s.value)]));
+}
+
+/** The saved level for these steps, or null when it is not in the file (past the budget, or the detail rows). */
+export function findDrillNode(f: Pick<FrozenFlag, 'drill'>, steps: readonly DrillStep[]): FrozenDrillNode | null {
+  const want = drillKey(steps);
+  return f.drill?.find((n) => drillKey(n.steps) === want) ?? null;
+}
+
 export interface FrozenFlag {
   flag: Flag;
   /** The computed result (lib/data FlagResult without its SQL), or null when it could not run. */
   result: unknown;
   error?: string;
   insights: Array<{ tone: string; text: string }>;
+  /** Levels a reader can drill into in a shared report (web/src/lib/report-drill.ts). Absent in editions. */
+  drill?: FrozenDrillNode[];
 }
 
 export interface Edition {

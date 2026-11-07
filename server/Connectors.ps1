@@ -6,23 +6,21 @@
 #   Synapse    "provider": "synapse"         Azure Synapse / Azure SQL through ODBC Driver 17/18 for SQL Server; this
 #                                            file only builds the safe connection string, Query.ps1 runs it as ODBC.
 #   Foundry    "provider": "foundry"         Palantir Foundry SQL queries API (POST /api/v2/sqlQueries/execute, getStatus,
-#                                            getResults as CSV), bearer token from the Lazarette vault.
+#                                            getResults as CSV), bearer token shared by Lazarette.
 #
 # Sources in <home>\sources.json:
 #   { "id": "wh", "kind": "aws-redshift", "provider": "redshift-data", "region": "us-gov-west-1", "database": "dev",
-#     "clusterId": "maint-cluster", "dbUser": "semaphore_ro", "vault": { "item": "aws-semaphore" } }
+#     "clusterId": "maint-cluster", "dbUser": "semaphore_ro",
+#     "vault": { "accessKeyId": "AWS_ACCESS_KEY_ID", "secretAccessKey": "AWS_SECRET_ACCESS_KEY", "sessionToken": "AWS_SESSION_TOKEN" } }
 #       (serverless: "workgroup": "maint-wg" instead of clusterId/dbUser; or "secretArn" instead of dbUser)
 #   { "id": "syn", "kind": "azure-synapse", "provider": "synapse", "server": "ws-ondemand.sql.azuresynapse.net",
 #     "database": "maint", "authentication": "ActiveDirectoryIntegrated" }
 #   { "id": "fnd", "kind": "foundry", "provider": "foundry", "host": "https://acme.palantirfoundry.com",
 #     "branch": "master", "datasets": { "ops.work_orders": "/Acme/Maintenance/work_orders" },
-#     "vault": { "item": "foundry-token" } }
-# Secrets are never in sources.json: see Vault.ps1 and docs/VAULT.md. Every connector is tested here against a
+#     "vault": { "token": "FOUNDRY_TOKEN" } }
+# Secrets are never in sources.json: see Vault.ps1 (which also lists each provider's roles) and docs/VAULT.md. Every connector is tested here against a
 # simulated service only (docs/CONNECTORS.md lists what still needs a real account).
 # =============================================================================
-
-Register-SemVaultRoles -Provider 'redshift-data' -Roles @(@{ Role = 'accessKeyId'; Field = 'AccessKeyId'; Optional = $false }, @{ Role = 'secretAccessKey'; Field = 'SecretAccessKey'; Optional = $false }, @{ Role = 'sessionToken'; Field = 'SessionToken'; Optional = $true })
-Register-SemVaultRoles -Provider 'foundry' -Roles @(@{ Role = 'token'; Field = $null; Optional = $false })
 
 $script:SemSynapseHostRx = '\A[A-Za-z0-9][A-Za-z0-9-]{0,62}(\.[A-Za-z0-9-]{1,63}){1,5}\z'
 $script:SemSynapseSuffixes = @('.sql.azuresynapse.net', '.sql.azuresynapse.usgovcloudapi.net', '.database.windows.net', '.database.usgovcloudapi.net', '.sql.azuresynapse.azure.cn', '.database.chinacloudapi.cn')
@@ -39,7 +37,7 @@ function Test-SemHttpsBase {
 # ---------------------------------------------------------------------------
 function New-SemSynapseConnection {
     # The ODBC connection string for a synapse source entry (a PSCustomObject). Throws a readable message.
-    # Encrypted, certificate checked, read intent. A password-based sign-in needs a vault block (user and password).
+    # Encrypted, certificate checked, read intent. A password-based sign-in needs a vault block naming both the user and the password shares.
     param($Raw)
     $server = [string](Get-SemJsonProp $Raw 'server')
     $okHost = $server -cmatch $script:SemSynapseHostRx
@@ -51,7 +49,8 @@ function New-SemSynapseConnection {
     $allowed = @('ActiveDirectoryIntegrated', 'ActiveDirectoryInteractive', 'ActiveDirectoryMsi', 'ActiveDirectoryPassword', 'SqlPassword')
     if ($allowed -cnotcontains $auth) { throw ('Synapse "authentication" must be one of: ' + ($allowed -join ', ') + '.') }
     $needsPassword = @('ActiveDirectoryPassword', 'SqlPassword') -ccontains $auth
-    if ($needsPassword -and $null -eq (Get-SemRawVault $Raw)) { throw ($auth + ' needs a "vault" block: the user and password come from Lazarette, never from sources.json.') }
+    $vault = Get-SemRawVault $Raw
+    if ($needsPassword -and ($null -eq $vault -or -not (Get-SemJsonProp $vault 'user') -or -not (Get-SemJsonProp $vault 'password'))) { throw ($auth + ' needs a "vault" block with "user" and "password": the shares Lazarette gives Semaphore, like { "user": "SYN_USER", "password": "SYN_PASSWORD" }. They never go in sources.json.') }
     $driver = [string](Get-SemJsonProp $Raw 'driver'); if (-not $driver) { $driver = 'ODBC Driver 18 for SQL Server' }
     if ($driver -cnotmatch '\AODBC Driver (17|18) for SQL Server\z') { throw 'The Synapse "driver" must be "ODBC Driver 17 for SQL Server" or "ODBC Driver 18 for SQL Server".' }
     foreach ($forbidden in @('password', 'pwd', 'uid', 'user', 'secret')) { if ($Raw.PSObject.Properties[$forbidden]) { throw 'Credentials do not belong in sources.json. Use a "vault" block.' } }
@@ -80,7 +79,7 @@ function Get-SemRedshiftSettings {
     if ($workgroup -and $dbUser) { throw 'A serverless Redshift source signs in as the IAM identity; remove "dbUser" or use "secretArn".' }
     $endpoint = [string](Get-SemJsonProp $Raw 'endpoint')
     if ($endpoint) { if (-not (Test-SemHttpsBase $endpoint)) { throw 'The Redshift endpoint must be https (or http on 127.0.0.1 for a simulator) without user info.' }; $endpoint = $endpoint.TrimEnd('/') }
-    foreach ($forbidden in @('accessKey', 'accessKeyId', 'secretKey', 'secretAccessKey', 'sessionToken', 'password')) { if ($Raw.PSObject.Properties[$forbidden]) { throw 'Keys and passwords do not belong in sources.json. Use a "vault" block or the environment.' } }
+    foreach ($forbidden in @('accessKey', 'accessKeyId', 'secretKey', 'secretAccessKey', 'sessionToken', 'password')) { if ($Raw.PSObject.Properties[$forbidden]) { throw 'Keys and passwords do not belong in sources.json. Share them from Lazarette with a "vault" block, or use the environment.' } }
     return @{ Region = $region; Database = $database; ClusterId = $cluster; Workgroup = $workgroup; DbUser = $dbUser; SecretArn = $secretArn; Endpoint = $endpoint }
 }
 
@@ -282,7 +281,7 @@ function Invoke-SemFoundryRequest {
     param([hashtable]$Foundry, [string]$Method, [string]$Path, [string]$Body = '', [int]$TimeoutSec = 70)
     $token = Get-SemVaultValue 'token'
     if (-not $token) { $token = [Environment]::GetEnvironmentVariable('FOUNDRY_TOKEN') }
-    if (-not $token) { throw 'No Foundry token: name a Lazarette item with a "vault" block, or set FOUNDRY_TOKEN in the environment that started Semaphore.' }
+    if (-not $token) { throw 'No Foundry token: share it from Lazarette with a "vault": { "token": "FOUNDRY_TOKEN" } block, or set FOUNDRY_TOKEN in the environment that started Semaphore.' }
     $req = [Net.HttpWebRequest]::Create($Foundry.Host + $Path)
     $req.Method = $Method; $req.Timeout = $TimeoutSec * 1000; $req.ReadWriteTimeout = $TimeoutSec * 1000
     $req.AllowAutoRedirect = $false; $req.UserAgent = 'Semaphore'

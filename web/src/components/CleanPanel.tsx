@@ -5,7 +5,7 @@
 // Relationships between tables are found the same way: proposed from names, checked on the data.
 
 import { useState } from 'react';
-import { Link2, Sparkles, Trash2, Undo2, Wand2, X } from 'lucide-react';
+import { Link2, ShieldCheck, Sparkles, Table2, Trash2, Undo2, Wand2, X } from 'lucide-react';
 import type { Catalog, Field } from '../../../src/core/catalog.ts';
 import type { CleaningStep } from '../../../src/core/cleaning.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
@@ -26,6 +26,8 @@ import {
   withoutMapEntry,
 } from '../../../src/core/quality.ts';
 import { type DataContext, runAnywhere } from '../lib/data.ts';
+import { recordSkill } from '../lib/skills.ts';
+import { EmptyState } from './EmptyState.tsx';
 
 interface Props {
   catalog: Catalog;
@@ -58,6 +60,7 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
 
   const accept = (step: CleaningStep, findingId?: string) => {
     onCatalog({ ...catalog, cleaning: [...steps, step] });
+    recordSkill('clean');
     if (findingId) setFindings((all) => all?.filter((x) => x.id !== findingId) ?? null);
   };
   const undo = (id: string) => onCatalog({ ...catalog, cleaning: steps.filter((s) => s.id !== id) });
@@ -114,6 +117,8 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
   const labelOf = (key: string) => catalog.fields.find((f) => f.key === key)?.label ?? key;
   const aiReady = provider.id !== 'local' && !!provider.runTask;
 
+  if (tables.length === 0) return <EmptyState compact icon={Table2} headline="No tables to check yet." body="Add a CSV or profile a database table on the Sources tab, then check it here for messy values." />;
+
   return (
     <div className="space-y-5">
       <section className="space-y-2">
@@ -137,7 +142,7 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
       {findings && (
         <section className="space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">What Semaphore found</h3>
-          {findings.length === 0 && <p className="text-sm text-ink-2">Nothing messy found in this table.</p>}
+          {findings.length === 0 && <EmptyState compact tone="success" icon={ShieldCheck} headline="Clean bill of health." body="No stray spaces, duplicate labels or mixed dates in this table." />}
           {findings.map((x) => (
             <FindingCard key={x.id} finding={x} onAccept={(s) => accept(s, x.id)} onSkip={() => setFindings((all) => all?.filter((y) => y.id !== x.id) ?? null)} />
           ))}
@@ -267,6 +272,7 @@ export function RelationshipsTab({ catalog, ctx, onCatalog }: Omit<Props, 'provi
       else {
         const r: Relationship = rel ?? { id: `rel-${a.table}-${a.column}-${b.table}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-'), source: a.source, from: { table: a.table, column: a.column }, to: { table: b.table, column: b.column }, match: check.match };
         onCatalog({ ...catalog, relationships: [...rels.filter((x) => x.id !== r.id), { ...r, origin: 'analyst' }] });
+        recordSkill('link');
         setProgress(`Added. ${Math.round(check.match * 100)}% of values match.`);
       }
     } catch (e) {
@@ -314,7 +320,7 @@ export function RelationshipsTab({ catalog, ctx, onCatalog }: Omit<Props, 'provi
               <p className="text-sm">{describeRelationship(rel)}</p>
               <p className="text-[11px] text-ink-3">{check}</p>
             </div>
-            <button type="button" onClick={() => (onCatalog({ ...catalog, relationships: [...rels, rel] }), setFound((f) => f?.filter((x) => x.rel.id !== rel.id) ?? null))} className="rounded-md bg-accent px-2 py-0.5 text-xs font-semibold text-panel">
+            <button type="button" onClick={() => (onCatalog({ ...catalog, relationships: [...rels, rel] }), recordSkill('link'), setFound((f) => f?.filter((x) => x.rel.id !== rel.id) ?? null))} className="rounded-md bg-accent px-2 py-0.5 text-xs font-semibold text-panel">
               Add
             </button>
           </div>
@@ -359,6 +365,7 @@ function DrillPaths({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: C
   const add = () => {
     const id = `path-${picked.join('-')}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
     onCatalog({ ...catalog, hierarchies: [...paths.filter((h) => h.id !== id), { id, label: picked.map(label).join(' → '), levels: picked }] });
+    recordSkill('drill-path');
     setLevels(['', '']);
   };
   return (

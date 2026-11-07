@@ -2,12 +2,14 @@
 // what remapped to what and what could not be matched before anything is added.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowRight, Check, CircleSlash, Download, Package, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, CircleSlash, Download, LayoutDashboard, Package, Upload, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { applyKit, exportKit, type FlagOutcome, type FlagReport, type Kit, kitId, KIT_LIMITS, makeKit, type Mapping, parseKitText } from '../../../src/core/kits.ts';
 import type { KitStore } from '../lib/kits.ts';
 import { download } from '../lib/share.ts';
+import { recordSkill } from '../lib/skills.ts';
+import { EmptyState } from './EmptyState.tsx';
 
 export interface KitsPanelProps {
   store: KitStore;
@@ -147,6 +149,7 @@ export function KitsPanel({ store, hoist, index, onApply, onClose }: KitsPanelPr
                 }
                 try {
                   await store.save(kit);
+                  recordSkill('kit', { hoistId: hoist.id });
                   setSelectedId(kit.id);
                   setMessage({ tone: 'good', text: [`Saved the kit "${kit.name}" with ${kit.flags.length} flag${kit.flags.length === 1 ? '' : 's'}.`, ...warnings] });
                 } catch (e) {
@@ -163,9 +166,11 @@ export function KitsPanel({ store, hoist, index, onApply, onClose }: KitsPanelPr
               onSelect={setSelectedId}
               onApply={(h, summary) => {
                 onApply(h, summary);
+                recordSkill('fly', { hoistId: hoist.id });
                 onClose();
               }}
               onMessage={setMessage}
+              onSaveTab={() => setTab('save')}
             />
           )}
         </div>
@@ -206,7 +211,7 @@ function SaveTab({ hoist, index, existing, onSave }: { hoist: Hoist; index: Cata
     setDescription('');
   };
 
-  if (candidates.length === 0) return <p className="text-sm text-ink-2">This page has no flags yet. Add and wire some flags, then save them as a kit.</p>;
+  if (candidates.length === 0) return <EmptyState compact icon={LayoutDashboard} headline="No flags on this page yet." body="Add and wire some flags, then save the ones you reuse as a kit." />;
 
   return (
     <form
@@ -266,7 +271,9 @@ function ApplyTab({
   onSelect,
   onApply,
   onMessage,
+  onSaveTab,
 }: {
+  onSaveTab: () => void;
   store: KitStore;
   kit: Kit | null;
   hoist: Hoist;
@@ -284,7 +291,7 @@ function ApplyTab({
   const result = useMemo(() => (kit ? applyKit(kit, hoist, index, { closeMatches, pageFilters }) : null), [kit, hoist, index, closeMatches, pageFilters]);
 
   if (!kit || !result) {
-    return <p className="text-sm text-ink-2">No kits yet. Save some of this page's flags as a kit, or import a kit file.</p>;
+    return <EmptyState compact icon={Package} headline="No kits yet." body="Save flags you reuse as a kit and fly them on any page. You can also import a kit file." action={{ label: "Save this page's flags as a kit", onClick: onSaveTab }} />;
   }
   const { report } = result;
   const c = report.counts;

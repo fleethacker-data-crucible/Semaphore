@@ -4,17 +4,20 @@
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, BadgeCheck, CalendarOff, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, Wand2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
 import { ReportsShelf } from './Reports.tsx';
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { describeFlag, formatNumber } from '../../../src/core/describe.ts';
 import { type Hoist, toneFor } from '../../../src/core/hoist.ts';
 import { findInsights, type Insight } from '../../../src/core/insights.ts';
-import { type Answer, answerQuestion, entryFlag, followUps, newQuestion, normalizeQuestion, recordUse } from '../../../src/core/playbook.ts';
+import { hasBz } from '../../../src/core/impact.ts';
+import { addAsker, type Answer, answerQuestion, entryFlag, followUps, newQuestion, normalizeQuestion, type QuestionItem, withAskers } from '../../../src/core/playbook.ts';
 import { answerFromSnapshots } from '../../../src/core/snapshot.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
+import { readLocal, writeLocal } from '../lib/storage.ts';
+import { EmptyState } from './EmptyState.tsx';
 import { FlagView } from './FlagView.tsx';
 
 export interface AskViewProps {
@@ -51,6 +54,12 @@ function ago(iso: string): string {
   return `${Math.round(h / 24)} days ago`;
 }
 
+const SEEN_KEY = 'semaphore.askSeen';
+
+function dayMonth(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
 function asOfText(iso: string): string {
   const d = new Date(iso);
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
@@ -62,6 +71,18 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
   const counter = useRef(0);
   const input = useRef<HTMLInputElement>(null);
   const live = playbook.entries.filter((e) => e.status !== 'retired');
+
+  // Your questions: answered since you asked, and not yet seen here (semaphore.askSeen).
+  const [seen, setSeen] = useState<string[]>(() => readLocal<string[]>(SEEN_KEY) ?? []);
+  const markSeen = (id: string) => {
+    const next = [...seen.filter((x) => x !== id), id].slice(-200);
+    setSeen(next);
+    writeLocal(SEEN_KEY, next);
+  };
+  const answeredForMe = playbook.questions
+    .filter((x) => x.status === 'answered' && !seen.includes(x.id) && (x.askedBy === user || withAskers(x).askers.includes(user)))
+    .sort((a, b) => b.updated.localeCompare(a.updated))
+    .slice(0, 3);
 
   const popular = useMemo(
     () =>
@@ -154,13 +175,18 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
     }
     if (answer.trust === 'drafted' || patch.state === 'unanswered') patch.queued = await queue(text, patch.state === 'unanswered' ? 'none' : 'drafted', answer.reasons);
     update(patch);
-    if (answer.entry && patch.state === 'ready') playbook.saveEntries([recordUse(answer.entry)]).catch(() => undefined);
+    if (answer.entry && patch.state === 'ready') playbook.recordAsk(answer.entry.id);
   };
 
   const queue = async (text: string, shown: 'drafted' | 'none', notes: string[]): Promise<boolean> => {
     const asked = normalizeQuestion(text);
-    if (playbook.questions.some((x) => x.status === 'open' && normalizeQuestion(x.title) === asked)) return true;
+    const already = playbook.questions.find((x) => x.status === 'open' && normalizeQuestion(x.title) === asked);
     try {
+      // Asked again: count this asker too, so the analysts see how many people want it.
+      if (already) {
+        await playbook.saveQuestion(addAsker(already, user));
+        return true;
+      }
       await playbook.saveQuestion(newQuestion(text, user, shown, notes));
       return true;
     } catch {
@@ -210,6 +236,22 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               </span>
             </p>
           ))}
+          {answeredForMe.length > 0 && (
+            <section aria-label="Your questions" className="space-y-1.5">
+              {answeredForMe.map((x) => (
+                <AnsweredNotice
+                  key={x.id}
+                  q={x}
+                  by={playbook.entries.find((e) => e.id === x.entryId)?.acceptedBy}
+                  onShow={() => {
+                    markSeen(x.id);
+                    void ask(x.title);
+                  }}
+                  onDismiss={() => markSeen(x.id)}
+                />
+              ))}
+            </section>
+          )}
           <ReportsShelf editions={playbook.editions} index={index} themeKey={themeKey} />
           <form
             onSubmit={(e) => {
@@ -248,6 +290,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                 <button key={g.title} type="button" onClick={() => void ask(g.question)} className="rounded-2xl border border-line bg-panel p-4 text-left shadow-sm hover:border-accent">
                   <span className="block text-xs text-ink-3">{g.title}</span>
                   <span className={`mt-1 block text-2xl font-semibold tabular-nums ${g.tone === 'bad' ? 'text-bad' : g.tone === 'warn' ? 'text-warn' : g.tone === 'good' ? 'text-good' : 'text-ink'}`}>{formatNumber(g.value, g.format)}</span>
+                  {g.tone && <ToneWord tone={g.tone} />}
                   {typeof g.value === 'number' && typeof g.before === 'number' && g.before !== 0 && (
                     <span className="text-xs text-ink-2">
                       {g.value >= g.before ? '▲' : '▼'} {Math.abs(Math.round(((g.value - g.before) / Math.abs(g.before)) * 100))}% on before
@@ -259,7 +302,14 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
           )}
 
           {answers.map((a) => (
-            <AnswerCard key={a.key} shown={a} index={index} onAsk={(x) => void ask(x)} themeKey={themeKey} />
+            <AnswerCard
+              key={a.key}
+              shown={a}
+              index={index}
+              onAsk={(x) => void ask(x)}
+              themeKey={themeKey}
+              bz={playbook.social.bz && a.answer.entry ? { given: hasBz(playbook.bz, user, a.answer.entry.id), give: () => playbook.giveBz(a.answer.entry!.id) } : null}
+            />
           ))}
 
           {briefing.length > 0 && (
@@ -272,7 +322,13 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                 {briefing.map((b, i) => (
                   <li key={i}>
                     <button type="button" onClick={() => void ask(b.question)} className="group flex w-full items-start gap-3 py-2.5 text-left">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${b.insight.tone === 'bad' ? 'bg-bad' : b.insight.tone === 'warn' ? 'bg-warn' : 'bg-accent'}`} />
+                      {b.insight.tone === 'bad' ? (
+                        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-bad" aria-label="Needs attention" />
+                      ) : b.insight.tone === 'warn' ? (
+                        <AlertCircle size={15} className="mt-0.5 shrink-0 text-warn" aria-label="Worth a look" />
+                      ) : (
+                        <Info size={15} className="mt-0.5 shrink-0 text-accent" aria-label="For information" />
+                      )}
                       <span className="flex-1">
                         <span className="block text-sm text-ink">{b.insight.text}</span>
                         <span className="text-xs text-ink-3">{b.title}</span>
@@ -285,13 +341,13 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
             </section>
           )}
 
-          {playbook.loaded && live.length === 0 && (
-            <section className="rounded-2xl border border-dashed border-line p-6 text-center text-sm text-ink-2">
-              <Wand2 size={20} className="mx-auto mb-2 text-brass" />
-              <p className="font-medium text-ink">No reviewed answers yet.</p>
-              <p className="mt-1">
-                When analysts accept flags in the builder, those answers appear here. You can still ask: Semaphore drafts from the catalog, labels it as not reviewed, and sends the question to the analysts.
-              </p>
+          {playbook.loaded && live.length === 0 && answers.length === 0 && (
+            <section className="rounded-2xl border border-dashed border-line">
+              <EmptyState
+                icon={Wand2}
+                headline="No reviewed answers yet."
+                body="When analysts accept flags in the builder, their answers appear here. You can still ask: Semaphore drafts from the catalog, labels it as not reviewed, and sends the question to the analysts."
+              />
             </section>
           )}
         </div>
@@ -307,7 +363,49 @@ const TRUST: Record<Answer['trust'], { label: string; tone: string; icon: typeof
   none: { label: "Can't answer yet", tone: 'bg-panel-2 text-ink-2', icon: Inbox },
 };
 
-function AnswerCard({ shown, index, onAsk, themeKey }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; themeKey: string }) {
+/** "Answered: <question>, reviewed by A. Reyes, 4 Nov [Show]": the loop closed for the asker. */
+function AnsweredNotice({ q, by, onShow, onDismiss }: { q: QuestionItem; by?: string | undefined; onShow: () => void; onDismiss: () => void }) {
+  return (
+    <div role="status" className="flex items-center gap-3 rounded-xl border border-good/40 bg-good-soft px-3 py-2 text-sm">
+      <CircleCheck size={16} className="shrink-0 text-good" />
+      <p className="min-w-0 flex-1">
+        <b className="text-good">Answered:</b> <span className="text-ink">"{q.title}"</span>
+        <span className="text-ink-2">
+          {by ? `, reviewed by ${by}` : ''}, {dayMonth(q.updated)}
+        </span>
+      </p>
+      <button type="button" onClick={onShow} className="min-h-8 shrink-0 rounded-md bg-accent px-3 text-xs font-semibold text-panel hover:opacity-90">
+        Show
+      </button>
+      <button type="button" onClick={onDismiss} aria-label={`Dismiss: ${q.title}`} className="grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-panel">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+/** "BZ: this helped": rates the answer's usefulness, not the person. Once per answer per week. */
+function BzButton({ given, give }: { given: boolean; give: () => Promise<boolean> }) {
+  const [state, setState] = useState<'idle' | 'sent' | 'failed'>(given ? 'sent' : 'idle');
+  if (state === 'sent')
+    return (
+      <span className="flex items-center gap-1 text-xs text-good" role="status">
+        <Check size={13} /> Bravo Zulu sent. The analyst who built it will see it.
+      </span>
+    );
+  return (
+    <button
+      type="button"
+      onClick={() => give().then(() => setState('sent'), () => setState('failed'))}
+      title="Tell the analysts this answer helped. It rates the answer, not a person."
+      className="flex min-h-8 items-center gap-1.5 rounded-full border border-line px-3 text-xs text-ink-2 hover:border-accent hover:text-ink"
+    >
+      <ThumbsUp size={13} /> BZ: this helped{state === 'failed' ? ' (could not save, try again)' : ''}
+    </button>
+  );
+}
+
+function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
   const [why, setWhy] = useState(false);
   const { answer, result } = shown;
   const t = TRUST[shown.state === 'unanswered' && answer.trust !== 'none' ? 'none' : answer.trust];
@@ -363,6 +461,11 @@ function AnswerCard({ shown, index, onAsk, themeKey }: { shown: Shown; index: Ca
               ))}
             </ul>
           )}
+          {bz && (answer.trust === 'reviewed' || answer.trust === 'adjusted') && (
+            <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">
+              <BzButton given={bz.given} give={bz.give} />
+            </div>
+          )}
           {chips.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
               <span className="text-xs text-ink-3">Then ask:</span>
@@ -377,4 +480,12 @@ function AnswerCard({ shown, index, onAsk, themeKey }: { shown: Shown; index: Ca
       )}
     </article>
   );
+}
+
+/** A tile's status in an icon and a word, never colour alone (WCAG 1.4.1). */
+function ToneWord({ tone }: { tone: string }) {
+  if (tone === 'bad') return <span className="flex items-center gap-1 text-xs font-semibold text-bad"><AlertTriangle size={12} aria-hidden="true" /> Breaks its red rule</span>;
+  if (tone === 'warn') return <span className="flex items-center gap-1 text-xs font-semibold text-warn"><AlertCircle size={12} aria-hidden="true" /> In its amber band</span>;
+  if (tone === 'good') return <span className="flex items-center gap-1 text-xs font-semibold text-good"><CheckCircle2 size={12} aria-hidden="true" /> Within its rule</span>;
+  return null;
 }
