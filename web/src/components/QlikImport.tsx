@@ -10,6 +10,7 @@ import type { AiQlikResult } from '../../../src/core/intelligence/tasks.ts';
 import { parseLoadScript, parseQlikExpression, qlikAssociations, qlikLabels, qlikMappings, type QlikScript } from '../../../src/core/qlik.ts';
 import type { ServerSource } from '../lib/api.ts';
 import { useModal } from '../lib/modal.ts';
+import { recordSkill } from '../lib/skills.ts';
 
 export interface QlikImportPlan {
   tables: Array<{ source: string; table: string; labels: Map<string, string>; qlik: string }>;
@@ -95,7 +96,9 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, ai, onReadW
     const tables = importable
       .filter((t) => picked[t.label] && sourceFor(t.connection))
       .map((t) => ({ source: sourceFor(t.connection), table: t.from!.split('.').pop()!, labels: labels.get(t.from!) ?? new Map<string, string>(), qlik: t.label }));
-    setResult(await onImport({ tables, expressions, script: read }));
+    const lines = await onImport({ tables, expressions, script: read });
+    setResult(lines);
+    if (tables.length || expressions.trim()) recordSkill('qlik');
   };
 
   return (

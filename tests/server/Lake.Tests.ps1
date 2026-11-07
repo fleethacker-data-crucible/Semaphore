@@ -15,7 +15,7 @@ BeforeAll {
         [void]$ps.AddScript({
             param($Listener, $State, $TableBytes, $RunningPolls, $Partitioned)
             while ($true) {
-                $c = $Listener.AcceptTcpClient()
+                try { $c = $Listener.AcceptTcpClient() } catch { break }   # the listener was stopped
                 try {
                     $s = $c.GetStream(); $s.ReadTimeout = 5000
                     $buf = New-Object byte[] 65536; $raw = ''

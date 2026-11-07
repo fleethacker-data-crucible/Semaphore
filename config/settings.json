@@ -3,11 +3,16 @@
     "port": 0,
     "browser": "auto",
     "appWindow": true,
-    "heartbeatTimeoutSec": 20,
+    "heartbeatTimeoutSec": 90,
     "leavingGraceSec": 5,
     "firstHeartbeatSec": 120,
     "queryWorkers": 4,
     "view": "builder",
     "playbookReviewer": "",
-    "refreshTimeoutMin": 30
+    "refreshTimeoutMin": 30,
+    "signalBook": true,
+    "impact": true,
+    "teamLog": true,
+    "showAskers": true,
+    "bz": true
 }

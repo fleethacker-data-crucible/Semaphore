@@ -8,7 +8,7 @@
 # Providers: odbc (System.Data.Odbc) and oledb (System.Data.OleDb, e.g. Access through the ACE
 # provider already on the machine). Both ship with .NET Framework: no third-party DLLs.
 # A connection string with PWD= or Password= is refused: credentials belong in the DSN, integrated
-# authentication or the Lazarette vault (a "vault" block names an item; see Vault.ps1). Connection strings are never logged or returned.
+# authentication or Lazarette (a "vault" block names the shares Lazarette gives Semaphore; see Vault.ps1). Connection strings are never logged or returned.
 #
 # SQL comes from Semaphore's own planner; the guard below is defence in depth: one SELECT, no ';',
 # '--' or '/*', at most 100 KB and 2000 parameters. Values are always bound ('?' placeholders).
@@ -27,7 +27,7 @@ function Test-SemConnectionString {
     param([string]$Connection)
     if ([string]::IsNullOrWhiteSpace($Connection)) { return 'The source has no connection string.' }
     if ($Connection -match '(?i)(^|;)\s*(PWD|Password)\s*=') {
-        return 'The connection string contains a password (PWD= or Password=). Semaphore refuses it: keep credentials in the ODBC DSN, use integrated authentication, or name a Lazarette item with a "vault" block (docs/VAULT.md).'
+        return 'The connection string contains a password (PWD= or Password=). Semaphore refuses it: keep credentials in the ODBC DSN, use integrated authentication, or share the password from Lazarette with a "vault" block (docs/VAULT.md).'
     }
     return $null
 }
@@ -56,7 +56,7 @@ function Get-SemSources {
             elseif ($provider -eq 'foundry') { [void](Get-SemFoundrySettings $s) }
             elseif ($provider -eq 'synapse') { $connection = New-SemSynapseConnection $s; $provider = 'odbc' }   # an ODBC source from here on
         } catch { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $_.Exception.Message); continue }
-        $badVault = Test-SemVaultBlock -Vault (Get-SemRawVault $s) -Provider $provider
+        $badVault = Test-SemVaultBlock -Raw $s -Provider $provider
         if ($badVault) { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $badVault); continue }
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
@@ -437,7 +437,7 @@ function Write-SemReaderResult {
 # ---------------------------------------------------------------------------
 function Get-SemEffectiveConnectionString {
     # The string handed to the driver: sources.json's connection (never a password), read-only flags, and the
-    # vault's user and password when the source names an item. Lives in memory for the call; never logged or returned.
+    # user and password Lazarette shares for the source. Lives in memory for the call; never logged or returned.
     param([Parameter(Mandatory = $true)]$Source)
     $cs = [string]$Source.connection
     if ($Source.provider -eq 'odbc') {
@@ -448,7 +448,7 @@ function Get-SemEffectiveConnectionString {
     $vals = $null
     if ($null -ne $script:SemVaultRequest) { $vals = $script:SemVaultRequest.Values }
     if ($null -ne (Get-SemSourceVault $Source)) {
-        if ($null -eq $vals) { throw 'vault-locked: the vault secrets for this source were not resolved.' }
+        if ($null -eq $vals) { throw 'The Lazarette secrets for this source were not resolved.' }
         $cs = Add-SemVaultToConnectionString -ConnectionString $cs -Provider ([string]$Source.provider) -Values $vals
     }
     return $cs
@@ -525,7 +525,7 @@ function Get-SemQueryError {
     if ($msg.StartsWith('provider-unavailable:')) { return @{ Status = 501; Code = 'provider-unavailable'; Message = $msg.Substring(21).Trim() } }
     if ($msg -match '(?i)time\s*out|timed out|timeout expired|operation cancelled|canceled') { return @{ Status = 504; Code = 'timeout'; Message = 'The query took longer than its time limit.' } }
     $safe = Get-SemSafeMessage -Message $msg -Source $Source
-    if ($Stage -eq 'connect') { return @{ Status = 502; Code = 'source-unavailable'; Message = ("Could not connect to source '{0}': {1}" -f $Source.id, $safe) } }
+    if ($Stage -eq 'connect') { return @{ Status = 502; Code = 'source-unavailable'; Message = ("Could not connect to source '{0}': {1}" -f $Source.id, $safe) + (Get-SemVaultNoteText) } }
     return @{ Status = 422; Code = 'query-failed'; Message = ("The source rejected the query: {0}" -f $safe) }
 }
 
@@ -575,6 +575,8 @@ function Invoke-SemQueryOnConnection {
             $truncated = Write-SemReaderResult -Reader $reader -RowCap $Plan.RowCap -Sb $sb
             if ($truncated) { try { $cmd.Cancel() } catch { } }   # do not drain the rest of the rows
         } finally { $reader.Dispose() }
+        $notes = @(Get-SemVaultNotes)   # optional Lazarette roles that came back empty (Vault.ps1)
+        if ($notes.Count -gt 0) { [void]$sb.Append(',"notes":[').Append((@($notes | ForEach-Object { ConvertTo-SemJsonString $_ }) -join ',')).Append(']') }
         [void]$sb.Append(',"ms":').Append([string][long]$Clock.ElapsedMilliseconds).Append('}')
         return $sb.ToString()
     } finally { $cmd.Dispose() }
@@ -796,7 +798,7 @@ function Start-SemWorkerRequest {
     param($Req)
     $ctx = $script:Sem.WorkerContext.Clone()
     $ctx.Port = $script:Sem.Port
-    # The vault is open only in this (main) runspace: resolve this request's secrets here and hand them over.
+    # Lazarette is asked from this (main) runspace: resolve this request's secrets here and hand them over (Vault.ps1).
     $ctx.Vault = $null
     if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { $ctx.Vault = Get-SemVaultForRequest -Req $Req -HomeDir $script:Sem.Home }
     $ps = [powershell]::Create()

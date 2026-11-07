@@ -13,6 +13,7 @@ import { writeBriefingWithAi } from '../../../src/core/intelligence/tasks.ts';
 import { loadItem } from './api.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from './data.ts';
 import type { PlaybookState } from './playbook.ts';
+import { DRILL_NODES_PER_REPORT, freezeDrill } from './report-drill.ts';
 
 /** Editions kept per page; older ones are removed when a new one is saved. */
 export const EDITIONS_KEPT = 12;
@@ -21,8 +22,9 @@ export const EDITIONS_KEPT = 12;
 /** Rows kept per flag for offline filtering in a shared report; a flag with more is shown as it stands. */
 export const RAW_ROWS_MAX = 20_000;
 
-export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean } = {}): Promise<FrozenFlag[]> {
+export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean; keepDrill?: boolean } = {}): Promise<FrozenFlag[]> {
   const out: FrozenFlag[] = [];
+  const drillBudget = { left: DRILL_NODES_PER_REPORT };
   for (const flag of hoist.flags) {
     // A flag not set up yet has nothing to say to a reader.
     if (!flag.binding && flag.kind !== 'text') continue;
@@ -39,7 +41,9 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
       const { sql: _sql, raw, previousRaw, ...kept } = r;
       const keep = options.keepRaw && raw && raw.length <= RAW_ROWS_MAX;
       const keepEarlier = keep && previousRaw && previousRaw.rows.length <= RAW_ROWS_MAX;
-      out.push({ flag, result: keep ? { ...kept, raw, ...(keepEarlier ? { previousRaw } : {}) } : kept, insights });
+      // A shared report can also carry the levels below a drillable flag, worked out now (report-drill.ts).
+      const drill = options.keepDrill ? await freezeDrill(hoist, flag, r, ctx, index, drillBudget) : [];
+      out.push({ flag, result: keep ? { ...kept, raw, ...(keepEarlier ? { previousRaw } : {}) } : kept, insights, ...(drill.length ? { drill } : {}) });
     } catch (e) {
       out.push({ flag, result: null, error: (e as Error).message.slice(0, 300), insights: [] });
     }

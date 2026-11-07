@@ -1,0 +1,4 @@
+{
+  "initialJsBytes": 1252790,
+  "note": "Initial JS of the first ESM build (1193133 bytes, one entry) plus 5 %. Lower it as panels move behind import()."
+}

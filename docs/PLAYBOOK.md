@@ -99,6 +99,27 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 - **Semaphore flags problems itself:** an entry is marked **needs review** when it stops running, when a measure or field it uses changes in the catalog, or when nobody has used it for six months. Needs-review entries are still answered, labelled as such.
 - **One named reviewer** (`playbookReviewer` in settings, by default the lead analyst) sees the needs-review list first, so it cannot fall between the cracks.
 
+## Closing the loop, and keeping it humane
+
+Leadership and analysts should see that the other side is there. Every feature below can be switched off for a deployment in `config/settings.json`, and none ranks or compares people.
+
+| Feature | What it does | Switch |
+| --- | --- | --- |
+| **Your questions** | At the top of the Ask view, an asker sees their questions that were answered since they asked ("Answered: … reviewed by A. Reyes, 4 Nov [Show]"). Seen ones are remembered in this browser (`semaphore.askSeen`). | always on |
+| **Demand** | A question asked again counts the new asker instead of being dropped (`askers`, `askCount` on the question). The analysts' queue sorts by how many people asked, then by how long it has waited: "Asked by 4 people · most recently Cdr Hale". | `showAskers: false` shows only how many asked, never names |
+| **Bravo Zulu** | "BZ: this helped" on a reviewed answer. It rates the answer, not the person, and there is no thumbs-down: a wrong answer goes through **Flag for review** with a reason. One mark per answer per person per week. | `bz` |
+| **Impact** | In the playbook, "Your flags answered 12 leadership questions this week (up from 7). Most asked: …", only when there is something positive or actionable; a quiet week says "Quiet week" or nothing. Each answer gets an 8-week sparkline. | `impact` |
+| **This week** | The playbook's first tab: new reviewed answers (credited to whoever built each one, in date order), questions answered, coverage toward "every measure has a reviewed answer" and the gaps worth covering. A one-time "Full hoist" note when coverage is complete. Computed from the playbook alone. | `teamLog` |
+| **Signal Book** | A private collection of 20 maritime signal flags (A to T), each earned by the first real use of a capability (a comparison, a cleaning fix, a Qlik import, an away notice…), each with how to earn it and a **Try it**. First use only: nothing to repeat. These are not qualifications or a training record. | `signalBook` |
+| **Watch log** | Inside the Signal Book: the last 12 weeks, one watch per ISO week. A week is stood by accepting or refreshing a flag, answering a question or marking an answer "Still right"; weeks covered by an away notice are excused automatically. Positive copy only, no daily counters and no streaks to lose. It can be hidden. | `signalBook` |
+
+**What is stored, and where.**
+
+- **Ask counts** are one small file per asker per ISO week in the team folder, `team\asks-<user>-<isoWeek>.json`: `{ "counts": { "<entry id>": <number> } }` plus the user and the week. Nothing else: no question text and nothing finer than a week. Each person only ever writes their own file, so two people asking at the same moment never lose a count. Files older than 26 weeks are removed by their owner. An entry's `uses` and `lastUsed` (the Monday of the latest week) are read from these files; entry files are no longer rewritten when someone asks.
+- **Bravo Zulu** marks are `team\bz-<user>-<isoWeek>.json`: the entry ids that person marked that week, each at most once.
+- **The Signal Book and watch log** stay in the analyst's browser (`semaphore.signalBook`, `semaphore.watchLog`) and are never put in the shared playbook. An opt-in copy, `team\signalbook-<user>.json` (flags and dates only), lets the book survive a browser reset; anyone who can open the Semaphore folder could open that file.
+- Without a server, all of this lives in the browser's localStorage instead.
+
 ## Decisions (2026-10-26)
 
 1. **Unreviewed answers for leadership: shown**, always labelled "Drafted by Semaphore, not reviewed", and also queued for the analyst to review.

@@ -105,12 +105,12 @@ Describe 'Launcher, version, settings and port block' {
             Copy-Item ([IO.Path]::Combine($script:Root, 'config', 'settings.json')) (Join-Path $tmp 'config')
             $s = Read-SemSettings -Root $tmp
             $s.browser | Should -Be 'auto'
-            $s.heartbeatTimeoutSec | Should -Be 20
+            $s.heartbeatTimeoutSec | Should -Be 90
             [IO.File]::WriteAllText([IO.Path]::Combine($tmp, 'config', 'settings.local.json'), '{ "browser": "chrome", "leavingGraceSec": 7, "queryWorkers": "x" }')
             $s = Read-SemSettings -Root $tmp
             $s.browser | Should -Be 'chrome'
             $s.leavingGraceSec | Should -Be 7
-            $s.heartbeatTimeoutSec | Should -Be 20
+            $s.heartbeatTimeoutSec | Should -Be 90
             $s.queryWorkers | Should -Be 4
         } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
     }

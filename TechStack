@@ -40,7 +40,7 @@ A loopback app that keeps running after its tab closes is a defect: it hides, ho
 
 | Rule | Requirement |
 | --- | --- |
-| Tab owns the server | UI sends `POST /api/heartbeat` every 5 s and a `navigator.sendBeacon` "leaving" signal on `pagehide`. Server stops itself 20 s after the last heartbeat, or 5 s after a leaving signal with no new heartbeat. A reload sends a fresh heartbeat inside the grace period, so nothing happens. |
+| Tab owns the server | UI sends `POST /api/heartbeat` every 5 s, again at once on `pageshow` and when the tab becomes visible, and a `navigator.sendBeacon` "leaving" signal on `pagehide`. Server stops itself 90 s after the last heartbeat (Edge and Chrome throttle a hidden tab's timers to about once a minute, so a shorter limit stops the server under a tab that is still open), or 5 s after a leaving signal with no new heartbeat. A reload sends a fresh heartbeat inside the grace period, so nothing happens. |
 | Never stop mid-write | Auto-stop waits while a background job (save, export, sync, send) runs, then stops on the next tick. |
 | Way out in the UI | An *End session* (or *Quit*) control in the main navigation stops the server cleanly. Tray apps also get *Exit* in the tray menu. |
 | Way out from the shell | `Stop-<App>.ps1` finds and stops every running instance without knowing PIDs. |

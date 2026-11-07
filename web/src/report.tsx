@@ -7,7 +7,10 @@ import { Lock, X } from 'lucide-react';
 import { indexCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 
+import { type DrillStep, drillLabel, drillView } from '../../src/core/drill.ts';
 import { dimensionKey } from '../../src/core/hoist.ts';
+import { findDrillNode } from '../../src/core/reports.ts';
+import type { FlagResult } from './lib/data.ts';
 import { FlagView, formatDim } from './components/FlagView.tsx';
 import { reportView } from './lib/report-view.ts';
 import { deriveKey, type ReportPayload, type Sealed, unb64 } from './lib/share.ts';
@@ -58,6 +61,8 @@ function Unlock({ sealed, onOpen }: { sealed: Sealed; onOpen: (r: ReportPayload)
 function Report({ report }: { report: ReportPayload }) {
   const index = useMemo(() => indexCatalog(report.catalog), [report.catalog]);
   const [selections, setSelections] = useState<Selections>({});
+  // Levels opened by clicking a drillable flag: this flag only, as on the page (levels saved in the file, lib/report-drill.ts).
+  const [drills, setDrills] = useState<Record<string, DrillStep[]>>({});
   document.documentElement.dataset.theme = report.theme;
   const select = (key: string, value: Cell, additive: boolean) =>
     setSelections((s) => {
@@ -101,15 +106,41 @@ function Report({ report }: { report: ReportPayload }) {
       <main className="p-5">
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${report.cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
           {report.flags.map((f) => {
-            const v = reportView(f, selections);
+            const steps = drills[f.flag.id] ?? [];
+            const drillable = !!f.drill && f.flag.behavior.onClick === 'drill';
+            const view = steps.length ? drillView(f.flag, steps, index) : { flag: f.flag, detail: false };
+            const level = steps.length ? findDrillNode(f, steps) : null;
+            const v = steps.length ? { result: (level?.result ?? null) as FlagResult | null, note: Object.keys(selections).length ? 'Page filters do not apply below the top level in this file.' : undefined } : reportView(f, selections);
+            const missing = steps.length > 0 && !level ? (view.detail ? 'The rows behind this value are not saved in the file.' : 'This level was not saved in the file (it needs the database).') : null;
+            const pick = (key: string, value: Cell, additive: boolean) => {
+              const first = view.flag.binding?.dimensions[0];
+              if (drillable && !view.detail && first && dimensionKey(first) === key) {
+                setDrills((d) => ({ ...d, [f.flag.id]: [...steps, { field: first.field, ...(first.grain ? { grain: first.grain } : {}), value }] }));
+                return;
+              }
+              select(key, value, additive);
+            };
             return (
               <article key={f.flag.id} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${f.flag.layout.x + 1} / span ${f.flag.layout.w}`, gridRow: `${f.flag.layout.y + 1} / span ${f.flag.layout.h}` }}>
                 <h2 className="truncate px-1 text-[13px] font-semibold">{f.flag.title}</h2>
+                {steps.length > 0 && (
+                  <nav aria-label="Drill path" className="flex items-center gap-1 px-1 text-[11px] text-ink-3">
+                    <button type="button" onClick={() => setDrills((d) => ({ ...d, [f.flag.id]: steps.slice(0, -1) }))} className="rounded px-1 hover:bg-panel-2 hover:text-ink" title="Back up one level">
+                      Back
+                    </button>
+                    <button type="button" onClick={() => setDrills((d) => ({ ...d, [f.flag.id]: [] }))} className="rounded px-1 hover:bg-panel-2 hover:text-ink">
+                      {f.flag.title}
+                    </button>
+                    <span className="truncate">› {drillLabel(steps)}</span>
+                  </nav>
+                )}
                 <div className="min-h-0 flex-1">
                   {f.flag.kind === 'text' ? (
                     <p className="whitespace-pre-wrap p-1 text-sm text-ink-2">{f.flag.text || f.flag.brief}</p>
+                  ) : missing ? (
+                    <p role="status" className="p-1 text-xs text-warn">{missing}</p>
                   ) : v.result ? (
-                    <FlagView flag={f.flag} result={v.result} index={index} selections={selections} onSelect={select} themeKey={report.theme} />
+                    <FlagView flag={view.flag} result={v.result} index={index} selections={steps.length ? {} : selections} onSelect={pick} themeKey={report.theme} />
                   ) : (
                     <p className="p-1 text-xs text-warn">{f.error ?? 'No data.'}</p>
                   )}

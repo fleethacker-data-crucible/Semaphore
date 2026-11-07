@@ -2,12 +2,13 @@
 // Clicking a mark on a flag that filters the page selects that value for every other flag.
 
 import { useMemo, useState } from 'react';
-import { ArrowDownRight, ArrowUpRight, Search } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2, Search } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { EChartsCoreOption } from 'echarts/core';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, DisplayRow, Selections } from '../../../src/core/crossfilter.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
-import { type Flag, type TimeGrain, toneFor } from '../../../src/core/hoist.ts';
+import { type Behavior, type Flag, type Threshold, type TimeGrain, type Tone, toneFor } from '../../../src/core/hoist.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { EChart, themeColors } from './Chart.tsx';
 
@@ -18,6 +19,8 @@ export interface FlagViewProps {
   selections: Selections;
   onSelect: (key: string, value: Cell, additive: boolean) => void;
   themeKey: string;
+  /** Id of an element describing the flag in words, for the chart's aria-describedby. */
+  describedBy?: string;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -52,11 +55,45 @@ function metricFormat(index: CatalogIndex, key: string) {
   return index.metric(key)?.format;
 }
 
+/** The colour rule a value breaks (the first that matches, as toneFor decides). */
+export function ruleFor(behavior: Behavior, metric: string, value: number): Threshold | null {
+  for (const t of behavior.thresholds) {
+    if (t.metric !== metric) continue;
+    const hit = t.op === 'lt' ? value < t.value : t.op === 'lte' ? value <= t.value : t.op === 'gt' ? value > t.value : value >= t.value;
+    if (hit) return t;
+  }
+  return null;
+}
+
+const TONE_ICON: Record<Tone, LucideIcon> = { bad: AlertTriangle, warn: AlertCircle, good: CheckCircle2 };
+const TONE_WORD: Record<Tone, string> = { bad: 'red', warn: 'amber', good: 'green' };
+
+/** A colour rule in words: "Over $5M rule". */
+export function ruleText(t: Threshold, format: 'number' | 'currency' | 'percent' | undefined): string {
+  return `${t.op === 'gt' || t.op === 'gte' ? 'Over' : 'Under'} ${formatNumber(t.value, format)} rule`;
+}
+
+/**
+ * A status never shown by colour alone (WCAG 1.4.1): an icon and a word, with the colour named
+ * for screen readers. Reads the same in greyscale.
+ */
+export function RuleBadge({ rule, format, compact }: { rule: Threshold; format: 'number' | 'currency' | 'percent' | undefined; compact?: boolean }) {
+  const Icon = TONE_ICON[rule.tone];
+  const text = ruleText(rule, format);
+  return (
+    <span className={`inline-flex items-center gap-1 font-medium text-${rule.tone}`} title={`${text}: shown ${TONE_WORD[rule.tone]}`}>
+      <Icon size={compact ? 12 : 14} aria-hidden="true" className="shrink-0" />
+      {compact ? <span className="sr-only">{text}</span> : text}
+    </span>
+  );
+}
+
 function Kpi({ flag, result, index }: FlagViewProps) {
   const key = flag.binding!.metrics[0]!;
   const v = result.display.rows[0]?.values[key] ?? null;
   const before = result.previous?.[0]?.[key];
   const tone = typeof v === 'number' ? toneFor(flag.behavior, key, v) : null;
+  const rule = typeof v === 'number' ? ruleFor(flag.behavior, key, v) : null;
   const toneClass = tone === 'bad' ? 'text-bad' : tone === 'warn' ? 'text-warn' : tone === 'good' ? 'text-good' : 'text-ink';
   const change = typeof v === 'number' && typeof before === 'number' && before !== 0 ? (v - before) / Math.abs(before) : null;
   const others = flag.binding!.metrics.slice(1);
@@ -65,6 +102,11 @@ function Kpi({ flag, result, index }: FlagViewProps) {
       <div className={`text-3xl font-semibold tabular-nums tracking-tight ${toneClass}`} title={typeof v === 'number' ? v.toLocaleString('en-US') : ''}>
         {formatNumber(v, metricFormat(index, key))}
       </div>
+      {rule && (
+        <div className="text-xs">
+          <RuleBadge rule={rule} format={metricFormat(index, key)} />
+        </div>
+      )}
       {change !== null && (
         <div className="flex items-center gap-1 text-xs text-ink-2">
           {change >= 0 ? <ArrowUpRight size={14} className="text-accent" /> : <ArrowDownRight size={14} className="text-brass" />}
@@ -87,7 +129,7 @@ function isSelected(selections: Selections, key: string, v: Cell): boolean | nul
   return sel.some((x) => String(x) === String(v));
 }
 
-function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: FlagViewProps) {
+function ChartFlag({ flag, result, index, selections, onSelect, themeKey, describedBy }: FlagViewProps) {
   const b = flag.binding!;
   const plan = result.plan;
   const ownDims = plan.dimensions.filter((d) => plan.own.includes(d.key));
@@ -96,12 +138,41 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
   const rows = result.display.rows;
   const clickable = flag.behavior.onClick !== 'none';
 
+  // Distinct categories along the chart, in order: the keyboard's filter buttons list these too.
+  const categories = useMemo(() => {
+    const out: Cell[] = [];
+    for (const r of rows) {
+      const v = r.dims[x.key] ?? null;
+      if (!out.some((c2) => String(c2) === String(v))) out.push(v);
+    }
+    return out;
+  }, [rows, x.key]);
+  // The colour rules some mark breaks, for the legend under the chart (pattern + words).
+  const broken = useMemo(() => {
+    const out: Threshold[] = [];
+    if (series) return out;
+    for (const k of b.metrics) {
+      for (const r of rows) {
+        const v = r.values[k];
+        const t = typeof v === 'number' ? ruleFor(flag.behavior, k, v) : null;
+        if (t && !out.includes(t)) out.push(t);
+      }
+    }
+    return out;
+  }, [rows, b.metrics, flag.behavior, series]);
+
   const option = useMemo<EChartsCoreOption>(() => {
     const c = themeColors();
+    // Marks that break a colour rule carry a pattern as well as the colour, so they read in greyscale.
+    const decal = (tone: Tone) =>
+      tone === 'bad'
+        ? { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: c.panel }
+        : tone === 'warn'
+          ? { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: c.panel }
+          : { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[1, 3]], dashArrayY: [3, 1], color: c.panel };
     const fmt = (k: string) => (n: number) => formatNumber(n, b.share ? 'percent' : metricFormat(index, k));
     const share = (k: string, v: number | null) => (b.share && typeof v === 'number' && result.display.totals[k] ? v / (result.display.totals[k] as number) : v);
     const base = {
-      animationDuration: 250,
       textStyle: { color: c.ink2, fontFamily: 'Segoe UI, system-ui, sans-serif' },
       tooltip: { trigger: flag.kind === 'pie' ? 'item' : 'axis', backgroundColor: c.panel, borderColor: c.line, textStyle: { color: c.ink } },
       color: c.series,
@@ -125,11 +196,6 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
           },
         ],
       };
-    }
-    const categories: Cell[] = [];
-    for (const r of rows) {
-      const v = r.dims[x.key] ?? null;
-      if (!categories.some((c2) => String(c2) === String(v))) categories.push(v);
     }
     const isLine = flag.kind === 'line' || flag.kind === 'area';
     const seriesList: Array<Record<string, unknown>> = [];
@@ -171,7 +237,7 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
             const tone = typeof v === 'number' ? toneFor(flag.behavior, k, v) : null;
             const sel = isSelected(selections, x.key, cat);
             const color = tone ? c[tone] : undefined;
-            return { value: share(k, v), itemStyle: { ...(color ? { color } : {}), ...(sel === false ? { opacity: 0.35 } : {}) }, raw: cat, i };
+            return { value: share(k, v), itemStyle: { ...(color ? { color } : {}), ...(tone && !isLine ? { decal: decal(tone) } : {}), ...(sel === false ? { opacity: 0.35 } : {}) }, raw: cat, i };
           }),
         });
         if (result.previous && mi === 0) {
@@ -226,26 +292,66 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey }: Flag
       series: seriesList,
     };
     // themeKey is a dependency so a theme switch re-reads the colour tokens.
-  }, [flag, result, index, selections, themeKey, x, series, rows, b]);
+  }, [flag, result, index, selections, themeKey, x, series, rows, b, categories]);
 
+  const fieldLabel = index.field(x.field)?.label ?? x.field;
+  const drills = flag.behavior.onClick === 'drill';
+  // One tab stop for the whole list (the first selected value, else the first); arrows move along it.
+  const stop = Math.max(0, categories.findIndex((v) => isSelected(selections, x.key, v) === true));
+  const rove = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const to = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? at + 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? at - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : null;
+    if (to === null || at < 0) return;
+    // The page's own arrow keys move the selected flag; here they move along the list instead.
+    e.preventDefault();
+    e.stopPropagation();
+    const next = buttons[Math.max(0, Math.min(buttons.length - 1, to))]!;
+    for (const btn of buttons) btn.tabIndex = btn === next ? 0 : -1;
+    next.focus();
+  };
   return (
-    <EChart
-      option={option}
-      label={flag.title}
-      onClick={
-        clickable
-          ? (e) => {
-              const cats: Cell[] = [];
-              for (const r of rows) {
-                const v = r.dims[x.key] ?? null;
-                if (!cats.some((c2) => String(c2) === String(v))) cats.push(v);
-              }
-              const v = flag.kind === 'pie' ? (rows[e.dataIndex]?.dims[x.key] ?? null) : (cats[e.dataIndex] ?? null);
-              onSelect(x.key, v, false);
-            }
-          : undefined
-      }
-    />
+    <div className="flex h-full flex-col">
+      <div className="relative min-h-0 flex-1">
+        <EChart
+          option={option}
+          label={flag.title || 'Chart'}
+          {...(describedBy ? { describedBy } : {})}
+          onClick={
+            clickable
+              ? (e) => {
+                  const v = flag.kind === 'pie' ? (rows[e.dataIndex]?.dims[x.key] ?? null) : (categories[e.dataIndex] ?? null);
+                  onSelect(x.key, v, false);
+                }
+              : undefined
+          }
+        />
+        {clickable && categories.length > 0 && (
+          // The chart's clicks, for the keyboard: hidden until focus reaches them, then shown over the chart.
+          <div role="group" aria-label={`${drills ? 'Drill into' : 'Filter the page by'} ${fieldLabel}`} className="kbd-filter" onKeyDown={rove}>
+            {categories.slice(0, 200).map((v, i) => {
+              const sel = isSelected(selections, x.key, v);
+              return (
+                <button key={String(v)} type="button" tabIndex={i === stop ? 0 : -1} aria-pressed={drills ? undefined : sel === true} onClick={() => onSelect(x.key, v, false)} className="kbd-filter-chip">
+                  {formatDim(v, x.grain)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {broken.length > 0 && (
+        <ul aria-label="Colour rules" className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-[11px] text-ink-2">
+          {broken.map((t) => (
+            <li key={`${t.metric}-${t.op}-${t.value}`} className="flex items-center gap-1">
+              <span aria-hidden="true" className={`rule-swatch rule-swatch-${t.tone}`} />
+              {b.metrics.length > 1 ? `${index.metric(t.metric)?.label ?? t.metric}: ` : ''}
+              {ruleText(t, metricFormat(index, t.metric))}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -296,10 +402,13 @@ function Table({ flag, result, index, selections, onSelect }: FlagViewProps) {
                 ))}
                 {b.metrics.map((k) => {
                   const v = r.values[k] ?? null;
-                  const tone = typeof v === 'number' ? toneFor(flag.behavior, k, v) : null;
+                  const rule = typeof v === 'number' ? ruleFor(flag.behavior, k, v) : null;
                   return (
-                    <td key={k} className={`border-b border-line/60 px-2 py-1 text-right tabular-nums ${tone ? `text-${tone} font-medium` : ''}`}>
-                      {formatNumber(v, metricFormat(index, k))}
+                    <td key={k} className={`border-b border-line/60 px-2 py-1 text-right tabular-nums ${rule ? `text-${rule.tone} font-medium` : ''}`}>
+                      <span className="inline-flex items-center justify-end gap-1">
+                        {rule && <RuleBadge rule={rule} format={metricFormat(index, k)} compact />}
+                        {formatNumber(v, metricFormat(index, k))}
+                      </span>
                     </td>
                   );
                 })}

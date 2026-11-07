@@ -1,0 +1,107 @@
+name: Release
+# Builds the ready-to-run Semaphore-<version>.zip (build\Build-Semaphore.ps1), smoke-tests it the way
+# the workstation runs it (build\Test-SemaphoreZip.ps1), and attaches the zip and its SHA-256 to the
+# GitHub release v<VERSION>, titled "prebuilt" so it is never confused with "Source code (zip)" (#66).
+# Push a tag vX.Y.Z that matches VERSION, or run it by hand (it then releases v<VERSION>).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, windows, powershell51, headless]
+    timeout-minutes: 30
+    env:
+      SEMAPHORE_TAG: ${{ github.ref_name }}
+      SEMAPHORE_EVENT: ${{ github.event_name }}
+      SEMAPHORE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Check the tag matches VERSION
+        shell: powershell
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          if ($env:SEMAPHORE_EVENT -eq 'push' -and $env:SEMAPHORE_TAG -ne ('v' + $v)) { Write-Host ('::error::Tag ' + $env:SEMAPHORE_TAG + ' does not match VERSION ' + $v); exit 1 }
+          Write-Host ('Releasing Semaphore ' + $v)
+
+      - name: Build the zip (typecheck, tests, UI build, self-check)
+        shell: powershell
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File build\Build-Semaphore.ps1
+          exit $LASTEXITCODE
+
+      - name: Smoke-test the zip (extract, start, launch code, /api/info, stop)
+        shell: powershell
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File build\Test-SemaphoreZip.ps1 -ZipPath ('dist\Semaphore-' + $v + '.zip')
+          exit $LASTEXITCODE
+
+      - name: SHA-256
+        shell: powershell
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          $name = 'Semaphore-' + $v + '.zip'
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $name)).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path (Get-Location) ('dist\' + $name + '.sha256')), ($hash + '  ' + $name + "`n"), (New-Object Text.UTF8Encoding $false))
+          Write-Host ($name + ' SHA-256 ' + $hash)
+
+      - name: Publish to the GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          $v = (Get-Content VERSION -Raw).Trim()
+          $tag = 'v' + $v
+          $repo = $env:GITHUB_REPOSITORY
+          $api = 'https://api.github.com/repos/' + $repo
+          $h = @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $title = 'Semaphore ' + $v + ' (prebuilt)'
+          $zipName = 'Semaphore-' + $v + '.zip'
+          $hash = ((Get-Content -LiteralPath ('dist\' + $zipName + '.sha256') -Raw).Split(' ')[0]).Trim()
+          $notes = 'Download **' + $zipName + '** (the prebuilt copy, ready to run), not "Source code (zip)". Right-click it, choose Properties, tick Unblock if it is there, then Extract All and double-click Launch-Semaphore.bat. SHA-256: `' + $hash + '`'
+          if (Test-Path CHANGELOG.md) {
+            $c = Get-Content CHANGELOG.md -Raw
+            $m = [regex]::Match($c, '(?ms)^## .*?(?=^## |\z)')
+            if ($m.Success) { $notes = $notes + "`n`n" + $m.Value.Trim() }
+          }
+          $rel = $null
+          try { $rel = Invoke-RestMethod -Method Get -Uri ($api + '/releases/tags/' + $tag) -Headers $h } catch { $rel = $null }
+          if ($null -eq $rel) {
+            $body = @{ tag_name = $tag; target_commitish = $env:SEMAPHORE_SHA; name = $title; body = $notes; draft = $false; prerelease = $false } | ConvertTo-Json
+            $rel = Invoke-RestMethod -Method Post -Uri ($api + '/releases') -Headers $h -Body $body -ContentType 'application/json'
+            Write-Host ('Created release ' + $tag)
+          } else {
+            $body = @{ name = $title } | ConvertTo-Json
+            $rel = Invoke-RestMethod -Method Patch -Uri ($api + '/releases/' + $rel.id) -Headers $h -Body $body -ContentType 'application/json'
+            Write-Host ('Updating release ' + $tag)
+          }
+          $upload = $rel.upload_url -replace '\{.*\}', ''
+          foreach ($pair in @(@($zipName, ('Semaphore ' + $v + ' prebuilt (zip)')), @(($zipName + '.sha256'), ('SHA-256 of ' + $zipName)))) {
+            $name = $pair[0]
+            foreach ($old in @($rel.assets | Where-Object { $_.name -eq $name })) {
+              Invoke-RestMethod -Method Delete -Uri ($api + '/releases/assets/' + $old.id) -Headers $h | Out-Null
+              Write-Host ('Replaced the old ' + $name)
+            }
+            $type = 'application/octet-stream'
+            if ($name.EndsWith('.zip')) { $type = 'application/zip' } elseif ($name.EndsWith('.sha256')) { $type = 'text/plain' }
+            $uri = '{0}?name={1}&label={2}' -f $upload, [Uri]::EscapeDataString($name), [Uri]::EscapeDataString($pair[1])
+            Invoke-RestMethod -Method Post -Uri $uri -Headers $h -InFile (Join-Path 'dist' $name) -ContentType $type | Out-Null
+            Write-Host ('Uploaded ' + $name)
+          }
+          Write-Host ('Release: ' + $rel.html_url)

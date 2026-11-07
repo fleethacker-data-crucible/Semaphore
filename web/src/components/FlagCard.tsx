@@ -1,23 +1,34 @@
 // One flag on the hoist: a header with its title and state, its face (the data), and its back
 // (what it shows in plain English, why Semaphore drafted it that way, and the SQL it runs).
+//
+// A card is a keyboard stop in reading order: focusing it selects it, and its handles show while
+// it holds focus. It redraws only when its own numbers can change (lib/relevance.ts): `hoist` is
+// the planning slice of the page, and `selections` only those this flag can use.
 
-import { Component, type ReactNode, memo, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles } from 'lucide-react';
+import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, Flag as FlagIcon, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles, Table2 } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
 import { dimensionKey, type Flag, type Hoist } from '../../../src/core/hoist.ts';
 import { type DrillStep, drillLabel, drillView, nextLevel } from '../../../src/core/drill.ts';
 import { findInsights } from '../../../src/core/insights.ts';
+import { shortDate, useReviewedAt } from '../lib/accept.ts';
 import { ApprovalNeeded, approveQuery, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
+import { toggleFlipped, useFlipped } from '../lib/flag-keys.ts';
+import { markStep } from '../lib/onboarding.ts';
+import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.ts';
+import { recordSkill } from '../lib/skills.ts';
 import { FlagView } from './FlagView.tsx';
 import { sqlLanguage } from '../lib/sql-language.ts';
 
 export interface FlagCardProps {
+  /** The page as planning sees it (lib/relevance.ts planSlice): the same object while that is unchanged. */
   hoist: Hoist;
   flag: Flag;
   ctx: DataContext;
   index: CatalogIndex;
+  /** Only the selections this flag can use (lib/relevance.ts). */
   selections: Selections;
   selected: boolean;
   themeKey: string;
@@ -29,34 +40,44 @@ export interface FlagCardProps {
 
 type Load = { state: 'idle' } | { state: 'loading'; last?: FlagResult } | { state: 'ready'; result: FlagResult } | { state: 'error'; error: string; approve?: () => void };
 
+const CHART_KINDS = new Set(['bar', 'line', 'area', 'pie']);
+
 function formatBytes(n: number): string {
   if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
   if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
-/** Only the selections that can change this flag's numbers, so unrelated clicks do not reload it. */
-function relevant(selections: Selections, flag: Flag): string {
-  const out: Selections = {};
-  for (const [k, v] of Object.entries(selections)) if (v.length && !flag.behavior.ignore.includes(k.split('@')[0]!)) out[k] = v;
-  return JSON.stringify(out);
-}
-
+/**
+ * A flag's numbers for the current page. Recomputes only when the plan or a selection this flag can
+ * use changes; a result already in the cache arrives without a loading flash.
+ */
 export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext): Load {
   const [load, setLoad] = useState<Load>({ state: 'idle' });
   const [attempt, setAttempt] = useState(0);
-  const selKey = relevant(selections, flag);
-  const planKey = JSON.stringify([flag.kind, flag.binding, flag.behavior.ignore, hoist.filters, hoist.flags.map((f) => [f.id, f.kind, f.behavior.onClick, f.binding?.dimensions])]);
+  // The page part of the key is worked out once per hoist object, however many cards ask (#83).
+  const sliceKey = cachedSliceKey(hoist);
+  const planKey = useMemo(() => JSON.stringify([flag.id, flag.kind, flag.binding, flag.behavior.ignore, sliceKey]), [flag.id, flag.kind, flag.binding, flag.behavior.ignore, sliceKey]);
+  const relevant = useMemo(() => relevantSelections(selections, flagKeys(hoist, sliceKey, flag, ctx.index), flag.behavior), [selections, hoist, sliceKey, flag, ctx.index]);
+  const selKey = JSON.stringify(relevant);
   useEffect(() => {
     if (!flag.binding || flag.kind === 'text') {
       setLoad({ state: 'idle' });
       return;
     }
     let live = true;
-    setLoad((l) => ({ state: 'loading', ...(l.state === 'ready' ? { last: l.result } : l.state === 'loading' && l.last ? { last: l.last } : {}) }));
-    computeFlag(hoist, flag, selections, ctx).then(
-      (result) => live && setLoad({ state: 'ready', result }),
+    let settled = false;
+    // Show "loading" only when the answer does not come straight from the cache.
+    const slow = window.setTimeout(() => {
+      if (live && !settled) setLoad((l) => ({ state: 'loading', ...(l.state === 'ready' ? { last: l.result } : l.state === 'loading' && l.last ? { last: l.last } : {}) }));
+    }, 0);
+    computeFlag(hoist, flag, relevant, ctx).then(
+      (result) => {
+        settled = true;
+        if (live) setLoad({ state: 'ready', result });
+      },
       (e: Error) => {
+        settled = true;
         if (!live) return;
         // A lake query the cost guard is holding: the card asks, and Run approves and retries it.
         if (e instanceof ApprovalNeeded) {
@@ -66,6 +87,7 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
     );
     return () => {
       live = false;
+      window.clearTimeout(slow);
     };
     // Recompute on what changes the numbers, not on every new object identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,7 +96,8 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
 }
 
 function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
-  const [flipped, setFlipped] = useState(false);
+  const flipped = useFlipped(own.id);
+  const [asTable, setAsTable] = useState(false);
   // Drilling narrows this flag only, for as long as the page is open; the flag itself is unchanged.
   const [drill, setDrill] = useState<DrillStep[]>([]);
   const bindingKey = JSON.stringify(own.binding);
@@ -93,21 +116,62 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     () => (result && flag.kind !== 'filter' ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: ctx.today }, index) : []),
     [result, flag, index, ctx.today],
   );
+  const described = useMemo(() => (flag.kind === 'text' ? '' : describeFlag(flag, hoist, index).join(' ')), [flag, hoist, index]);
+  const descId = useId();
   const lowConfidence = flag.status === 'drafted' && (flag.confidence ?? 1) < 0.6;
+  const reviewedAt = useReviewedAt(hoist.id, own.id);
+
+  // The moments this card sees happen: a first draft (shakedown step 2) and an accept (the brass
+  // flag runs up, once, in 180 ms or less; not at all under reduced motion).
+  const prev = useRef({ bound: !!own.binding, status: own.status });
+  const [justAccepted, setJustAccepted] = useState(false);
+  useEffect(() => {
+    const was = prev.current;
+    if (!was.bound && own.binding && own.status === 'drafted') {
+      markStep('describe');
+      recordSkill('draft', { hoistId: hoist.id, flagId: own.id });
+    }
+    if (was.status !== 'ready' && own.status === 'ready' && own.kind !== 'text') {
+      setJustAccepted(true);
+      const t = window.setTimeout(() => setJustAccepted(false), 400);
+      prev.current = { bound: !!own.binding, status: own.status };
+      return () => window.clearTimeout(t);
+    }
+    prev.current = { bound: !!own.binding, status: own.status };
+    return undefined;
+  }, [own.binding, own.status, own.kind, own.id, hoist.id]);
+
+  const chartLike = CHART_KINDS.has(flag.kind) && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
+  const shownFlag = asTable && chartLike ? { ...flag, kind: 'table' as const } : flag;
+  const reviewedLabel = reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed';
 
   return (
     <article
+      data-flag-card={own.id}
       aria-label={flag.title || 'Untitled flag'}
+      aria-current={selected ? 'true' : undefined}
+      aria-describedby={described ? descId : undefined}
+      tabIndex={0}
+      onFocus={(e) => {
+        // Keyboard focus selects the flag; a mouse click inside it does not (that stays a click on the data).
+        if (e.target === e.currentTarget && !selected && e.currentTarget.matches(':focus-visible')) onSelectFlag(own.id);
+      }}
       onDoubleClick={() => onSelectFlag(flag.id)}
-      className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-panel shadow-sm transition-shadow ${selected ? 'border-accent shadow-md ring-2 ring-accent/25' : 'border-line hover:shadow-md'} ${flag.status === 'drafted' ? 'border-dashed' : ''}`}
+      className={`flag-card group relative flex h-full flex-col overflow-hidden rounded-xl border bg-panel shadow-sm transition-shadow focus-visible:outline-2 focus-visible:outline-offset-2 ${selected ? 'border-accent shadow-md ring-2 ring-accent/25' : 'border-line hover:shadow-md'} ${flag.status === 'drafted' ? 'border-dashed' : ''}`}
     >
-      <header className="flex cursor-pointer items-center gap-1.5 px-3 pt-2" onClick={(e) => e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined}>
+      {described && (
+        <p id={descId} className="sr-only">
+          {described}
+        </p>
+      )}
+      <header className="flex cursor-pointer items-center gap-1 px-2 pt-2" onClick={(e) => (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined)}>
         <button
           type="button"
           aria-label="Move flag"
-          title="Drag to move"
+          title="Drag to move (or select the flag and use the arrow keys)"
+          tabIndex={-1}
           onPointerDown={(e) => onDragStart(e, flag.id, 'move')}
-          className="-ml-1 cursor-grab touch-none rounded p-0.5 text-ink-3 opacity-0 group-hover:opacity-100 focus:opacity-100 active:cursor-grabbing"
+          className="flag-handle -my-1.5 flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center rounded text-ink-3 active:cursor-grabbing"
         >
           <GripHorizontal size={14} />
         </button>
@@ -125,16 +189,24 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
         )}
         {result?.requeried.length ? (
           <span title="This flag asked its source again for the current selection" className="text-ink-3">
-            <RefreshCcw size={12} />
+            <RefreshCcw size={12} aria-hidden="true" />
+            <span className="sr-only">Re-queried for the selection</span>
+          </span>
+        ) : null}
+        {result && result.display.live.some((k) => !k.includes('@')) ? (
+          <span title="A blank or true/false selection on another flag could not be applied to this one; it shows its numbers without that selection" className="text-warn">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span className="sr-only">A selection could not be applied</span>
           </span>
         ) : null}
         {result?.display.truncated && (
           <span title="The result hit the row cap, so totals may be incomplete" className="text-warn">
-            <AlertTriangle size={13} />
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span className="sr-only">Row cap reached</span>
           </span>
         )}
         {flag.status === 'drafted' && (
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-0.5">
             <span
               className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${lowConfidence ? 'bg-warn-soft text-warn' : 'bg-accent-soft text-accent'}`}
               title={`Drafted by Semaphore${flag.confidence !== undefined ? `, ${Math.round(flag.confidence * 100)}% sure` : ''}. Flip it over to check, then accept.`}
@@ -142,30 +214,49 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
               {lowConfidence ? 'Verify' : 'Draft'}
               {flag.confidence !== undefined ? ` ${Math.round(flag.confidence * 100)}%` : ''}
             </span>
-            <button type="button" onClick={() => onAccept(flag.id)} className="rounded p-0.5 text-ink-3 hover:bg-good-soft hover:text-good" aria-label="Accept draft" title="Accept this draft">
-              <Check size={14} />
+            <button type="button" onClick={() => onAccept(own.id)} className="-my-1.5 flex h-8 w-8 items-center justify-center rounded-md text-ink-2 hover:bg-good-soft hover:text-good" aria-label="Accept draft" title="Accept this draft (A)">
+              <Check size={16} />
             </button>
+          </span>
+        )}
+        {flag.status === 'ready' && flag.kind !== 'text' && (
+          <span className="reviewed-chip" title={reviewedAt ? `${reviewedLabel}: accepted in this browser` : 'Reviewed: accepted by an analyst'}>
+            <FlagIcon size={12} aria-hidden="true" className={`shrink-0 ${justAccepted ? 'flag-run' : ''}`} />
+            <span className={reviewedAt ? 'reviewed-text' : 'sr-only'}>{reviewedLabel}</span>
           </span>
         )}
         {insights.length > 0 && !flipped && (
           <span className="text-brass" title={insights.map((i) => i.text).join('\n')}>
-            <Lightbulb size={13} />
+            <Lightbulb size={13} aria-hidden="true" />
+            <span className="sr-only">Worth a look: {insights[0]!.text}</span>
           </span>
+        )}
+        {chartLike && !flipped && (
+          <button
+            type="button"
+            onClick={() => setAsTable((t) => !t)}
+            aria-pressed={asTable}
+            aria-label="Show as table"
+            title={asTable ? 'Show the chart' : 'Show as table'}
+            className={`-my-1.5 flex h-8 w-8 items-center justify-center rounded-md hover:bg-panel-2 ${asTable ? 'text-accent' : 'text-ink-3'}`}
+          >
+            <Table2 size={14} />
+          </button>
         )}
         <button
           type="button"
-          onClick={() => setFlipped((f) => !f)}
-          className={`rounded p-0.5 hover:bg-panel-2 ${flipped ? 'text-accent' : 'text-ink-3'}`}
+          onClick={() => toggleFlipped(own.id)}
+          className={`-my-1.5 flex h-8 w-8 items-center justify-center rounded-md hover:bg-panel-2 ${flipped ? 'text-accent' : 'text-ink-3'}`}
           aria-pressed={flipped}
           aria-label={flipped ? 'Show the data' : 'Flip over: what this shows and the SQL'}
-          title={flipped ? 'Show the data' : 'Flip over: what this shows and the SQL'}
+          title={flipped ? 'Show the data (F)' : 'Flip over: what this shows and the SQL (F)'}
         >
           <FlipHorizontal2 size={14} />
         </button>
       </header>
       <div key={flipped ? 'back' : 'front'} className={`relative min-h-0 flex-1 px-3 pb-2 pt-1 ${flipped ? 'flip-enter' : ''}`}>
         {flipped ? (
-          <Back flag={flag} hoist={hoist} index={index} result={result} insights={insights.map((i) => i.text)} />
+          <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} />
         ) : flag.kind === 'text' ? (
           <p className="scroll-thin h-full overflow-auto whitespace-pre-wrap text-sm text-ink-2">{flag.text || flag.brief || 'Write a note in the inspector.'}</p>
         ) : !flag.binding ? (
@@ -203,8 +294,8 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
               </nav>
             )}
             <div className="min-h-0 flex-1">
-              <FlagBoundary resetKey={`${flag.kind}:${JSON.stringify(flag.binding)}`}>
-                <FlagView flag={flag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} />
+              <FlagBoundary resetKey={`${shownFlag.kind}:${JSON.stringify(flag.binding)}`}>
+                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} {...(described ? { describedBy: descId } : {})} />
               </FlagBoundary>
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}
@@ -220,10 +311,10 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
       <button
         type="button"
         aria-label="Resize flag"
-        title="Drag to resize"
+        title="Drag to resize (or select the flag and use Shift and the arrow keys)"
+        tabIndex={-1}
         onPointerDown={(e) => onDragStart(e, flag.id, 'resize')}
-        className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize touch-none opacity-0 group-hover:opacity-100"
-        style={{ background: 'linear-gradient(135deg, transparent 50%, var(--line) 50%)', borderBottomRightRadius: 12 }}
+        className="flag-handle flag-resize absolute bottom-0 right-0 h-6 w-6 cursor-se-resize touch-none"
       />
     </article>
   );
@@ -241,12 +332,12 @@ function Empty({ flag }: { flag: Flag }) {
   );
 }
 
-function Back({ flag, hoist, index, result, insights }: { flag: Flag; hoist: Hoist; index: CatalogIndex; result: FlagResult | undefined; insights: string[] }) {
+function Back({ flag, described, result, insights }: { flag: Flag; described: string; result: FlagResult | undefined; insights: string[] }) {
   return (
     <div className="scroll-thin h-full space-y-2 overflow-auto text-xs">
       <section>
         <h4 className="mb-0.5 font-semibold text-ink-2">What it shows</h4>
-        <p className="text-ink">{describeFlag(flag, hoist, index).join(' ')}</p>
+        <p className="text-ink">{described}</p>
       </section>
       {insights.length > 0 && (
         <section>

@@ -1,6 +1,9 @@
 // The hoist: a 12-column lego grid. Flags snap to whole cells, push others down when they land
 // on them and float up to fill gaps (src/core/layout.ts). Drag a flag by its grip, resize it by
 // its corner, drop a new one from the palette, or move the selected flag with the arrow keys.
+// Cards sit in the page in reading order (top to bottom, left to right), so Tab visits them in the
+// order they are seen. Each card gets only the slice of the page it reads (lib/relevance.ts), so
+// typing a title or picking a value on another table does not redraw it.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
@@ -8,6 +11,8 @@ import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
 import type { FlagKind, Hoist, Layout } from '../../../src/core/hoist.ts';
 import { DEFAULT_SIZE, place } from '../../../src/core/layout.ts';
 import type { DataContext } from '../lib/data.ts';
+import { scrollBehavior } from '../lib/motion.ts';
+import { cachedSliceKey, planSlice, useRelevantSelections, useStableValue } from '../lib/relevance.ts';
 import { FlagCard } from './FlagCard.tsx';
 
 export const ROW_PX = 56;
@@ -83,10 +88,14 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
 
   useEffect(() => {
     if (!selectedId) return;
-    box.current?.querySelector(`[data-flag="${CSS.escape(selectedId)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    box.current?.querySelector(`[data-flag="${CSS.escape(selectedId)}"]`)?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
   }, [selectedId]);
 
   const rows = Math.max(8, ...hoist.flags.map((f) => f.layout.y + f.layout.h)) + 2;
+  const sliceKey = cachedSliceKey(hoist);
+  const slice = useStableValue(sliceKey, () => planSlice(hoist));
+  const selectionsFor = useRelevantSelections(hoist.flags, slice, sliceKey, index, selections);
+  const reading = [...hoist.flags].sort((a, b) => a.layout.y - b.layout.y || a.layout.x - b.layout.x);
 
   return (
     <div
@@ -118,14 +127,14 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
     >
       {hoist.flags.length === 0 && !dropAt && <div className="absolute inset-0">{empty}</div>}
       {dropAt && <div className="pointer-events-none absolute rounded-xl border-2 border-dashed border-accent bg-accent-soft/40" style={px(dropAt)} />}
-      {hoist.flags.map((f) => (
+      {reading.map((f) => (
         <div key={f.id} data-flag={f.id} className="absolute transition-[left,top,width,height] duration-150 ease-out" style={px(f.layout)}>
           <FlagCard
-            hoist={hoist}
+            hoist={slice}
             flag={f}
             ctx={ctx}
             index={index}
-            selections={selections}
+            selections={selectionsFor(f)}
             selected={selectedId === f.id}
             themeKey={themeKey}
             onSelectFlag={onSelectFlag}

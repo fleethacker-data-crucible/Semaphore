@@ -37,6 +37,20 @@ Describe 'Presence and auto-stop' {
         Test-SemShouldAutoStop -Now $script:T0.AddSeconds(35) | Should -BeTrue
     }
 
+    It 'defaults to 90 s after the last heartbeat and keeps the 5 s leaving grace' {
+        # Edge and Chrome wake a hidden tab's timers about once a minute: 90 s survives that (#80).
+        (Get-SemDefaultSettings).heartbeatTimeoutSec | Should -Be 90
+        (Get-SemDefaultSettings).leavingGraceSec | Should -Be 5
+        Initialize-SemPresence -AutoStop $true -Now $script:T0
+        Register-SemPresence -Tab 'a' -Now $script:T0
+        Test-SemShouldAutoStop -Now $script:T0.AddSeconds(65) | Should -BeFalse
+        Test-SemShouldAutoStop -Now $script:T0.AddSeconds(89) | Should -BeFalse
+        Test-SemShouldAutoStop -Now $script:T0.AddSeconds(90) | Should -BeTrue
+        Register-SemPresence -Tab 'a' -Now $script:T0.AddSeconds(100)
+        Register-SemPresence -Tab 'a' -Leaving $true -Now $script:T0.AddSeconds(101)
+        Test-SemShouldAutoStop -Now $script:T0.AddSeconds(106) | Should -BeTrue
+    }
+
     It 'stops 5 s after a leaving signal with no new heartbeat' {
         Register-SemPresence -Tab 'a' -Now $script:T0
         Register-SemPresence -Tab 'a' -Leaving $true -Now $script:T0.AddSeconds(1)
