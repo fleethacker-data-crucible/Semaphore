@@ -15,6 +15,7 @@ import { emptyOverrides, isStyleOverrides, type StyleOverrides } from '../../../
 import { isSnapshot, type Snapshot } from '../../../src/core/snapshot.ts';
 import { api, type ServerInfo } from './api.ts';
 import { readLocal, writeLocal } from './storage.ts';
+import { usePersonalFeatures, withPersonal } from './features.ts';
 import { configureSkills, mergeMirror, noteAway, recordSkill, recordWatch, setSkillMirror } from './skills.ts';
 
 /**
@@ -102,8 +103,10 @@ export interface PlaybookState {
   editions: Edition[];
   saveReportDoc: (doc: UsageLog | ReportSchedule | Edition) => Promise<void>;
   removeReportDoc: (id: string) => Promise<void>;
-  /** The deployment's switches (settings.json via /api/info "social"). */
+  /** What is on for this person: the deployment's switches, less their own (lib/features.ts). */
   social: SocialSettings;
+  /** The deployment's switches alone (settings.json via /api/info "social"). */
+  deployment: SocialSettings;
   /** Weekly ask counts and BZ marks, everyone's (src/core/impact.ts). */
   asks: AskLog[];
   bz: BzLog[];
@@ -117,7 +120,9 @@ export interface PlaybookState {
 export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): PlaybookState {
   const user = server?.user || 'analyst';
   const socialRaw = (server as (ServerInfo & { social?: unknown }) | null)?.social;
-  const social = useMemo(() => socialSettings(socialRaw), [JSON.stringify(socialRaw ?? null)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const deployment = useMemo(() => socialSettings(socialRaw), [JSON.stringify(socialRaw ?? null)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const personal = usePersonalFeatures();
+  const social = useMemo(() => withPersonal(deployment, personal), [deployment, personal]);
   const [stored, setEntries] = useState<PlaybookEntry[]>([]);
   const [asks, setAsks] = useState<AskLog[]>([]);
   const [bz, setBz] = useState<BzLog[]>([]);
@@ -284,12 +289,13 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
 
   const recordAsk = useCallback(
     (entryId: string) => {
+      if (!social.impact) return; // Off means off: no named record of which answers this person viewed.
       const log = bumpAsk(asksRef.current, user, entryId);
       asksRef.current = [...asksRef.current.filter((l) => l.id !== log.id), log];
       setAsks(asksRef.current);
       void put('team', log).catch(() => undefined);
     },
-    [put, user],
+    [put, user, social.impact],
   );
 
   const giveBz = useCallback(
@@ -307,7 +313,7 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
   const entries = useMemo(() => withUses(stored, asks), [stored, asks]);
 
   return {
-    social, asks, bz, recordAsk, giveBz,
+    social, deployment, asks, bz, recordAsk, giveBz,
     entries, questions, snapshots, loaded, where: server ? 'shared folder' : 'this browser',
     saveEntries, saveQuestion, saveSnapshot, styleOverrides, saveStyleOverrides, away, saveAway, removeAway,
     usage, schedules, editions, saveReportDoc, removeReportDoc,

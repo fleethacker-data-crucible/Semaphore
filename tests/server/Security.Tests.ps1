@@ -552,3 +552,66 @@ Describe 'Atomic save' {
         @(Get-ChildItem -LiteralPath $script:Dir -Force -File).Name | Should -Be @('a.json')
     }
 }
+
+Describe 'Pairing with Lazarette from the Settings screen' {
+    BeforeAll {
+        # The pairing file lives under LOCALAPPDATA: never touch the real one.
+        $script:SavedLocal = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = Join-Path $script:TestHome 'local'
+        [void][IO.Directory]::CreateDirectory($env:LOCALAPPDATA)
+        $script:SavedLzPort = $env:LAZARETTE_PORT
+        $closed = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $closed.Start()
+        $env:LAZARETTE_PORT = [string]([Net.IPEndPoint]$closed.LocalEndpoint).Port; $closed.Stop()
+        $secret = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); try { $rng.GetBytes($secret) } finally { $rng.Dispose() }
+        $script:PairCode = 'lztl1.' + [guid]::NewGuid().ToString() + '.' + [Convert]::ToBase64String($secret).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        function script:Get-LogText { $d = Join-Path $script:TestHome 'logs'; if (Test-Path -LiteralPath $d) { return ((Get-ChildItem -LiteralPath $d -File | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n") }; return '' }
+    }
+    AfterAll {
+        $env:LOCALAPPDATA = $script:SavedLocal
+        if ($null -eq $script:SavedLzPort) { Remove-Item Env:\LAZARETTE_PORT -ErrorAction SilentlyContinue } else { $env:LAZARETTE_PORT = $script:SavedLzPort }
+    }
+    It 'refuses a request without the session token, and never stores the code' {
+        $body = @{ code = $script:PairCode } | ConvertTo-Json
+        (Invoke-TestRequest -Method 'POST' -Path '/api/vault/pair' -Body $body).Status | Should -Be 401
+        Test-SemVaultPaired | Should -BeFalse
+    }
+    It 'answers only POST' {
+        (Invoke-TestRequest -Method 'GET' -Path '/api/vault/pair' -Headers (Get-Auth)).Status | Should -Be 405
+        (Invoke-TestRequest -Method 'GET' -Path '/api/vault/unpair' -Headers (Get-Auth)).Status | Should -Be 405
+    }
+    It 'refuses <Why> with a sentence that does not repeat what was sent' -TestCases @(
+        @{ Why = 'another kind of code'; Code = 'lzfl1.not-this-kind-of-code' }
+        @{ Why = 'a right prefix on a wrong shape'; Code = 'lztl1.not-a-real-pairing-value' }
+        @{ Why = 'a very long value'; Code = ('lztl1.' + ('x' * 5000)) }
+    ) {
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/vault/pair' -Headers (Get-Auth) -Body (@{ code = $Code } | ConvertTo-Json)
+        $r.Status | Should -Be 400
+        ($r.Body | ConvertFrom-Json).code | Should -Be 'vault-code'
+        ($r.Body | ConvertFrom-Json).error | Should -BeLike '*Settings > Tools*'
+        $r.Body.Contains($Code) | Should -BeFalse
+        (Get-LogText).Contains($Code) | Should -BeFalse
+        Test-SemVaultPaired | Should -BeFalse
+    }
+    It 'refuses a body with no code' {
+        (Invoke-TestRequest -Method 'POST' -Path '/api/vault/pair' -Headers (Get-Auth) -Body '{}').Status | Should -Be 400
+        (Invoke-TestRequest -Method 'POST' -Path '/api/vault/pair' -Headers (Get-Auth) -Body '{"code":7}').Status | Should -Be 400
+    }
+    It 'stores a good code DPAPI-protected, answers with the status, and shows the code nowhere' {
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/vault/pair' -Headers (Get-Auth) -Body (@{ code = $script:PairCode } | ConvertTo-Json)
+        $r.Status | Should -Be 200
+        ($r.Body | ConvertFrom-Json).paired | Should -BeTrue
+        $r.Body.Contains($script:PairCode) | Should -BeFalse
+        (Get-LogText).Contains($script:PairCode) | Should -BeFalse
+        Test-SemVaultPaired | Should -BeTrue
+        $stored = Get-ChildItem -LiteralPath $env:LOCALAPPDATA -Recurse -File | ForEach-Object { [IO.File]::ReadAllBytes($_.FullName) }
+        [Text.Encoding]::ASCII.GetString([byte[]]$stored).Contains('lztl1.') | Should -BeFalse
+    }
+    It 'forgets the pairing on unpair, and says so again when there is none' {
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/vault/unpair' -Headers (Get-Auth) -Body '{}'
+        $r.Status | Should -Be 200
+        ($r.Body | ConvertFrom-Json).paired | Should -BeFalse
+        Test-SemVaultPaired | Should -BeFalse
+        (Invoke-TestRequest -Method 'POST' -Path '/api/vault/unpair' -Headers (Get-Auth) -Body '{}').Status | Should -Be 200
+    }
+}

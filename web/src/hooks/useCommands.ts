@@ -12,7 +12,7 @@ import type { Command } from '../lib/commands.ts';
 export type ActionId =
   | 'new' | 'open' | 'import' | 'download' | 'share' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
   | 'playbook' | 'data' | 'leadership' | 'home' | 'undo' | 'redo' | 'ask' | 'draft-page' | 'starter' | 'experiment'
-  | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals';
+  | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals' | 'settings';
 
 export type Actions = Record<ActionId, Command>;
 
@@ -61,6 +61,7 @@ export function buildActions(d: CommandDeps): Actions {
     skin: a('skin', `Skin: ${d.skinLabel ?? ''}`, { disabled: d.skinLabel === null, hint: 'Switch to the next skin', keywords: 'look style classic fleet' }),
     ai: a('ai', d.ai?.configured ? (d.ai.on ? 'AI drafting: Fairlead (turn off)' : 'AI drafting: off (turn on)') : 'AI drafting: local rules', { disabled: !d.ai, keywords: 'fairlead model' }),
     examples: a('examples', d.examplesOn ? 'Reviewed examples: on (turn off)' : 'Reviewed examples: off (turn on)', { disabled: d.examplesOn === null, keywords: 'ai privacy' }),
+    settings: a('settings', 'Settings', { hint: 'Look, Lazarette, AI drafting and your feature switches', keywords: 'preferences lazarette pair vault features options' }),
     help: a('help', 'Help and keyboard shortcuts', { shortcut: '?', keywords: 'phrasebook shakedown keys' }),
     palette: a('palette', 'Command palette', { shortcut: 'Ctrl+K' }),
     signals: a('signals', 'Signal Book', { disabled: !d.signalBook, hint: 'Your private flags for what you have tried, and your watch log', keywords: 'skills progress learn watch log' }),

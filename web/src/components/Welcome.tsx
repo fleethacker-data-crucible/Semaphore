@@ -3,7 +3,7 @@
 // On a first run (no `semaphore.onboarding` yet) the primary way in is the shakedown cruise: hoist
 // a first flag of one's own in about a minute (components/Shakedown.tsx); continuing is secondary.
 
-import { Database, FilePlus2, Flag, FolderOpen, MessagesSquare, PenLine } from 'lucide-react';
+import { Database, FilePlus2, Flag, FolderOpen, MessagesSquare, PenLine, Settings2 } from 'lucide-react';
 import { useState } from 'react';
 import { isFirstRun, passFirstRun, startShakedown } from '../lib/onboarding.ts';
 
@@ -26,6 +26,7 @@ export interface WelcomeProps {
   onOpenSaved: () => void;
   onData: () => void;
   onAsk: () => void;
+  onSettings: () => void;
   /** The analyst's choice to open straight on the builder next time. */
   skipNextTime: boolean;
   onSkipNextTime: (skip: boolean) => void;
@@ -42,7 +43,10 @@ export function Welcome(p: WelcomeProps) {
   const secondary = 'inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3.5 py-2 text-sm font-medium text-ink hover:border-accent';
   return (
     // Centred with auto margins, not justify-center: on a short window the top stays reachable by scrolling.
-    <main aria-labelledby="welcome-title" className="flex h-full flex-col overflow-auto bg-bg px-4 py-8 text-center">
+    <main aria-labelledby="welcome-title" className="relative flex h-full flex-col overflow-auto bg-bg px-4 py-8 text-center">
+      <button type="button" onClick={p.onSettings} className="absolute right-4 top-4 inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-sm text-ink-2 hover:border-accent">
+        <Settings2 size={15} aria-hidden="true" /> Settings
+      </button>
       <div className="my-auto flex flex-col items-center gap-4">
       <Emblem className="welcome-emblem" />
       <h1 id="welcome-title" className="font-display text-[28px] font-semibold leading-tight text-ink">

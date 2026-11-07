@@ -1,10 +1,10 @@
 // The builder's header (#77, #85): the brand and the hoist title on the left, undo and redo, the quick
 // chart box, then at most six controls: Hoist ▾ (new, open, import, download, share, brief me, kits,
-// SQL), Playbook, Data, Leadership view, Help and the settings menu (theme, skin, AI, End session).
+// SQL), Playbook, Data, Leadership view, Help and Settings (components/SettingsDialog.tsx).
 // The actions themselves come from the page's one action list, which the command palette shows too.
 
 import type { ReactNode } from 'react';
-import { BookMarked, BookOpen, Bot, ChevronDown, CircleHelp, Database, Download, FileDown, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, Keyboard, MessagesSquare, Moon, Package, Paintbrush, Power, Redo2, ScrollText, Settings2, Sun, TerminalSquare, Undo2, Upload } from 'lucide-react';
+import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
 import { LIMITS } from '../../../src/core/hoist.ts';
 import type { Command } from '../lib/commands.ts';
 import type { Actions } from '../hooks/useCommands.ts';
@@ -25,15 +25,12 @@ export interface HeaderProps {
   askBox: ReactNode;
   /** The page's action list (hooks/useCommands.ts); the menus show these. */
   actions: Actions;
-  theme: 'light' | 'dark';
-  /** On/off settings shown as checkboxes: null hides the item. */
-  aiOn: boolean | null;
-  examplesOn: boolean | null;
   waiting: number;
   onPlaybook: () => void;
   onData: () => void;
   onLeadership: () => void;
   onHelp: () => void;
+  onSettings: () => void;
 }
 
 const pill = 'flex min-h-8 items-center gap-1.5 rounded-md border border-line px-2.5 text-sm hover:border-accent';
@@ -58,28 +55,6 @@ export function Header(p: HeaderProps) {
     { label: 'Share', items: [entry(a.share, <FileDown size={15} />), entry(a.brief, <ScrollText size={15} />)] },
     { label: 'Build', items: [entry(a.kits, <Package size={15} />), entry(a.lineage, <GitBranch size={15} />), ...(a.sql.disabled ? [] : [entry(a.sql, <TerminalSquare size={15} />)])] },
     ...(a.signals.disabled ? [] : [{ label: 'You', items: [entry(a.signals, <BookMarked size={15} />)] }]),
-  ];
-  const settingsMenu: MenuSection[] = [
-    {
-      label: 'Look',
-      items: [
-        { id: 'theme', label: p.theme === 'dark' ? 'Light theme' : 'Dark theme', icon: p.theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />, run: a.theme.run, hint: 'Chart room (light) or Night watch (dark)' },
-        ...(a.skin.disabled ? [] : [entry(a.skin, <Paintbrush size={15} />)]),
-      ],
-    },
-    ...(p.aiOn === null
-      ? []
-      : [
-          {
-            label: 'AI drafting',
-            items: [
-              entry(a.ai, <Bot size={15} />, { label: 'Draft with Fairlead', checked: p.aiOn }),
-              ...(p.examplesOn === null ? [] : [entry(a.examples, <BookOpen size={15} />, { label: 'Send reviewed examples', checked: p.examplesOn })]),
-            ],
-          },
-        ]),
-    { items: [entry(a.help, <CircleHelp size={15} />), entry(a.palette, <Keyboard size={15} />)] },
-    ...(a.end.disabled ? [] : [{ items: [entry(a.end, <Power size={15} />, { danger: true })] }]),
   ];
   return (
     <header className="flex min-h-14 items-center gap-3 border-b border-line bg-panel px-4 py-2">
@@ -149,7 +124,9 @@ export function Header(p: HeaderProps) {
         <IconButton label="Help and keyboard shortcuts (?)" onClick={p.onHelp}>
           <CircleHelp size={16} />
         </IconButton>
-        <MenuButton label="Settings" title="Theme, skin, AI drafting, and End session" sections={settingsMenu} button={<Settings2 size={16} aria-hidden="true" />} />
+        <IconButton label="Settings" onClick={p.onSettings}>
+          <Settings2 size={16} />
+        </IconButton>
       </nav>
     </header>
   );

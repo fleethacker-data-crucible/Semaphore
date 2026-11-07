@@ -34,7 +34,7 @@ test('End session stops the server and says so', async ({ browser, problems }) =
     await page.goto(mock.link);
     await page.getByRole('button', { name: /^Continue/ }).click();
     await page.getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('menuitem', { name: /End session/ }).click();
+    await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: /End session/ }).click();
     // End session asks first.
     await page.getByRole('alertdialog', { name: 'End this session?' }).getByRole('button', { name: 'End session' }).click();
     await expect(page.getByRole('alertdialog', { name: 'Semaphore has stopped' })).toBeVisible();

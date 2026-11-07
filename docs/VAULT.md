@@ -5,9 +5,9 @@ Database passwords, AWS sessions and Foundry tokens can come from Lazarette inst
 ## Set up (once)
 
 1. In Lazarette: **Settings > Tools**, name the tool `Semaphore`, **Pair tool**, and copy the code (`lztl1.…`). It is shown once.
-2. In a console: `Semaphore-CLI.bat vault pair` and paste the code. It is read without echo (`Read-Host -AsSecureString`) and kept DPAPI-protected for your Windows account under `%LOCALAPPDATA%\Lazarette\tools\Semaphore.pairing`, exactly as the client stores it.
+2. In Semaphore: **Settings > Lazarette**, paste the code and choose **Pair**. The box does not show it, and the server neither logs it nor sends it back. Or in a console: `Semaphore-CLI.bat vault pair`, which reads it without echo (`Read-Host -AsSecureString`). Either way it is kept DPAPI-protected for your Windows account under `%LOCALAPPDATA%\Lazarette\tools\Semaphore.pairing`, exactly as the client stores it.
 3. Back in Lazarette, under **Semaphore**, share each item under the variable name its source asks for (below), for example the maintenance database's item as `SMDATS_PASSWORD` and its login as `SMDATS_USER`.
-4. `Semaphore-CLI.bat vault status` shows whether Semaphore is paired, whether Lazarette is running and unlocked, and which names are shared. Names only, never a value.
+4. **Settings > Lazarette** (or `Semaphore-CLI.bat vault status`) shows whether Semaphore is paired, whether Lazarette is running and unlocked, and which names are shared. Names only, never a value.
 
 Lazarette must be running and unlocked when a flag queries a source that uses it. Semaphore itself can start hidden: nothing is asked in its console.
 

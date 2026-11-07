@@ -84,7 +84,7 @@ Run `Launch-Semaphore.bat` from the checkout after `npm run build`, then check:
 3. Run `Launch-Semaphore.bat --no-browser --console`. The console prints a link "works once, for 10 minutes". **Check the PowerShell transcript file: it must not contain the session token.** It contains only the launch code, which is spent once used.
 4. Edit the hoist title, then within 1 s use Hoist ▾ → Open a saved hoist → another one. Then check `%USERPROFILE%\Semaphore\hoists\` (or `SEMAPHORE_HOME`): the first hoist's file holds the edit.
 5. Open two tabs on the same hoist (Ctrl+K → Open, or a second launch link). Edit in both. The second save shows the conflict bar (Load theirs / Save mine as a copy / Overwrite).
-6. Settings (gear icon) → End session → confirm. The "Semaphore has stopped" screen appears, and the process has exited.
+6. Settings (gear icon, or the Settings button on the welcome page) → End session → confirm. The "Semaphore has stopped" screen appears, and the process has exited.
 7. Switch to another app for 10 minutes and come back. The server must still be running (90 s heartbeat timeout plus background-tab beats, #80).
 8. AI: with Fairlead running and a key installed for Semaphore, the AI button shows Fairlead. Stop Fairlead, then start some other program on 8776 (any loopback listener). Expected: "Something other than Fairlead is answering on port 8776; the key was not sent."
 9. Vault (needs Lazarette main, which has Settings → Tools, Lazarette #93):

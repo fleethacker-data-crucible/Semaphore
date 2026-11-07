@@ -119,7 +119,7 @@ function Initialize-SemVault {
     param([string]$Root = '')
     $paired = Test-SemVaultPaired
     $problem = $null
-    if (-not $paired) { $problem = 'Semaphore is not paired with Lazarette. In Lazarette open Settings > Tools, pair a tool named Semaphore, then run Semaphore-CLI.bat vault pair and paste the code.' }
+    if (-not $paired) { $problem = 'Semaphore is not paired with Lazarette. In Lazarette open Settings > Tools, pair a tool named Semaphore, then paste the code in Semaphore under Settings > Lazarette (or run Semaphore-CLI.bat vault pair).' }
     return @{ Paired = $paired; Problem = $problem }
 }
 
@@ -347,6 +347,33 @@ function Register-SemVaultPairing {
 
 function Unregister-SemVaultPairing {
     return [bool](Unregister-LazaretteToolPairing -Tool $script:SemVaultTool)
+}
+
+function Invoke-SemVaultPairRoute {
+    # POST /api/vault/pair { code }, from the Settings screen. Every refusal is the one fixed sentence, so
+    # no error can repeat the code, and the request's copies are dropped before the answer goes out.
+    param($Req)
+    $refusal = 'That is not a Lazarette pairing code. In Lazarette open Settings > Tools, pair Semaphore and copy the code that starts with lztl1.'
+    $raw = $null
+    if ($Req.Json -is [Management.Automation.PSCustomObject] -and $Req.Json.PSObject.Properties['code']) { $raw = $Req.Json.PSObject.Properties['code'].Value }
+    if ($raw -isnot [string] -or $raw.Length -lt 1 -or $raw.Length -gt 256) { $raw = $null; $Req.Json = $null; Send-SemError 400 'vault-code' $refusal; return }
+    $secure = New-Object Security.SecureString
+    $ok = $false
+    try {
+        foreach ($ch in $raw.ToCharArray()) { $secure.AppendChar($ch) }
+        [void](Register-SemVaultPairing -Code $secure)
+        $ok = $true
+    } catch {
+        $ok = $false
+    } finally {
+        $secure.Dispose()
+        $raw = $null
+        $Req.Json = $null
+        if ($Req.Body -is [byte[]]) { [Array]::Clear($Req.Body, 0, $Req.Body.Length) }
+    }
+    if (-not $ok) { Send-SemError 400 'vault-code' $refusal; return }
+    Write-SemLog 'INFO' 'Paired with Lazarette from the Settings screen'
+    Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home)
 }
 
 # ---------------------------------------------------------------------------

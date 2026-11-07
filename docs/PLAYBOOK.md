@@ -101,7 +101,7 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 
 ## Closing the loop, and keeping it humane
 
-Leadership and analysts should see that the other side is there. Every feature below can be switched off for a deployment in `config/settings.json`, and none ranks or compares people.
+Leadership and analysts should see that the other side is there. Every feature below can be switched off for a deployment in `config/settings.json`, and by each person for themselves under Settings > Features (kept in `semaphore.features`, in their browser). A deployment's "off" wins, and what was kept stays. Off stops new records for the Signal Book and for ask counts (Impact); the other switches change only what that person sees. None ranks or compares people.
 
 | Feature | What it does | Switch |
 | --- | --- | --- |

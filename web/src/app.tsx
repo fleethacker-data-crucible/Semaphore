@@ -40,7 +40,7 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, DataPanel, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SqlDesk } from './components/LazyPanels.tsx';
+import { AskView, DataPanel, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
@@ -147,6 +147,7 @@ export function App() {
   const { busy, run: runBusy, say: sayBusy } = useBusy();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [browserNoteHidden, setBrowserNoteHidden] = useState(false);
   // "Why it didn't draft" (#69): kept until the flag's brief changes.
   const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
@@ -975,6 +976,7 @@ export function App() {
           ai: toggleAi,
           examples: toggleExamples,
           help: () => setHelpOpen(true),
+          settings: () => setSettingsOpen(true),
           palette: () => setPaletteOpen(true),
           end: () => void endTheSession(),
         },
@@ -1001,6 +1003,29 @@ export function App() {
   // Over every view: the session's state, toasts and confirmations.
   const overlays = (
     <>
+      {settingsOpen && (
+        <Panel name="settings" onClose={() => setSettingsOpen(false)}>
+          <SettingsDialog
+            onClose={() => setSettingsOpen(false)}
+            theme={theme}
+            onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            skins={SKINS}
+            skin={skin}
+            onSkin={skinFixed ? null : setSkin}
+            hasServer={!!server}
+            ai={ai}
+            aiOn={!!ai?.configured && useAi}
+            onAi={toggleAi}
+            examplesOn={useExamples}
+            onExamples={toggleExamples}
+            deployment={playbook.deployment}
+            onEnd={() => {
+              setSettingsOpen(false);
+              void endTheSession();
+            }}
+          />
+        </Panel>
+      )}
       <SessionScreen session={session} view={currentView === 'ask' ? 'ask' : 'builder'} onRetry={session.retry} />
       <ConfirmHost />
       <Toasts busy={busy} />
@@ -1044,6 +1069,7 @@ export function App() {
             setWelcome(false);
             setView('ask');
           }}
+          onSettings={() => setSettingsOpen(true)}
           skipNextTime={!!readLocal<boolean>(K.skipWelcome)}
           onSkipNextTime={(skip) => writeLocal(K.skipWelcome, skip)}
         />
@@ -1098,14 +1124,12 @@ export function App() {
         onRedo={history.redo}
         askBox={<AskBox index={index} onAsk={setAsked} inputRef={askRef} />}
         actions={actions}
-        theme={theme}
-        aiOn={server && ai ? ai.configured && useAi : null}
-        examplesOn={server && ai?.configured && useAi ? useExamples : null}
         waiting={waiting}
         onPlaybook={actions.playbook.run}
         onData={actions.data.run}
         onLeadership={actions.leadership.run}
         onHelp={actions.help.run}
+        onSettings={actions.settings.run}
       />
       <input ref={importInput} type="file" accept=".json,application/json" tabIndex={-1} aria-hidden="true" className="sr-only" onChange={(e) => {
         const f = e.target.files?.[0];

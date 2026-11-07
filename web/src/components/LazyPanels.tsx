@@ -12,4 +12,5 @@ export const KitsPanel = lazy(() => import('./KitsPanel.tsx').then((m) => ({ def
 export const LineageView = lazy(() => import('./LineageView.tsx').then((m) => ({ default: m.LineageView })));
 export const ShareDialog = lazy(() => import('./ShareDialog.tsx').then((m) => ({ default: m.ShareDialog })));
 export const PlaybookPanel = lazy(() => import('./PlaybookPanel.tsx').then((m) => ({ default: m.PlaybookPanel })));
+export const SettingsDialog = lazy(() => import('./SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })));
 export const AskView = lazy(() => import('./AskView.tsx').then((m) => ({ default: m.AskView })));

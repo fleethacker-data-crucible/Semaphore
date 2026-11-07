@@ -24,6 +24,8 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/ai/check'                  = 'Checks the Fairlead key from the page; "ai status" reports the same without sending the key.'
     '/api/ai/v1/chat/completions'    = 'Relay for the page''s drafting requests: needs the browser session token.'
     '/api/client-log'                = 'The page reports its own script errors to the server log; a CLI reports its errors itself.'
+    '/api/vault/pair'                = 'The Settings screen''s pairing box; the CLI equivalent is "vault pair", which reads the code without showing it.'
+    '/api/vault/unpair'              = 'The Settings screen''s Unpair button; the CLI equivalent is "vault unpair".'
 }
 
 function New-SemCommandInput {
