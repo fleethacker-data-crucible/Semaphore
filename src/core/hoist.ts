@@ -2,6 +2,7 @@
 // flags flown together to send one message, and each flag carries one part of it.
 
 import type { CatalogIndex } from './catalog.ts';
+import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
 import { compact, isValidLayout } from './layout.ts';
 
 export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text';
@@ -94,6 +95,8 @@ export interface Flag {
   text?: string;
   /** false: the analyst marked this flag "do not learn", so the playbook never takes it. */
   learn?: boolean;
+  /** How this flag is drawn, over the page's design. Never changes what it means. */
+  style?: FlagStyle;
 }
 
 export interface Hoist {
@@ -108,6 +111,8 @@ export interface Hoist {
   flags: Flag[];
   /** An experiment page: the analyst is trying things out, so the playbook and the team style never learn from it. */
   experiment?: boolean;
+  /** How the page looks: palette, cards, backdrop, font and chart defaults. */
+  design?: HoistDesign;
   updated: string;
 }
 
@@ -223,6 +228,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
   }
   const brief = str(raw.brief);
   if (brief.length > LIMITS.briefChars) warnings.push(`The hoist brief was cut to ${LIMITS.briefChars} characters.`);
+  const design = parseDesign(raw.design);
   return {
     hoist: {
       version: 1,
@@ -233,6 +239,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
       filters,
       flags,
       ...(raw.experiment === true ? { experiment: true } : {}),
+      ...(design ? { design } : {}),
       updated: str(raw.updated).slice(0, 40) || new Date(0).toISOString(),
     },
     warnings: capWarnings(warnings),
@@ -288,6 +295,8 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (confidence !== undefined) flag.confidence = confidence;
   if (kind === 'text') flag.text = str(raw.text).slice(0, 20000);
   if (raw.learn === false) flag.learn = false;
+  const style = parseFlagStyle(raw.style);
+  if (style) flag.style = style;
   return flag;
 }
 

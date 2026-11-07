@@ -13,7 +13,8 @@ import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/cs
 import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
-import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, LIMITS, oversize, parseHoist } from '../../src/core/hoist.ts';
+import { fileStem } from '../../src/core/export/model.ts';
+import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, LIMITS, oversize, parseHoist, type TimeGrain } from '../../src/core/hoist.ts';
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
 import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
@@ -41,7 +42,7 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, DataPanel, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, DataPanel, DesignDialog, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
@@ -60,12 +61,13 @@ import { useFlagKeys } from './hooks/useFlagKeys.ts';
 import { buildActions, useCommands } from './hooks/useCommands.ts';
 import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
-import { SignalBook } from './components/SignalBook.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
-import { formatDim } from './components/FlagView.tsx';
+import { formatDim } from './lib/chart-option.ts';
+import { chartLookOf, designAttrs, designVars, withoutChartLook } from '../../src/core/design.ts';
+import { cachedSliceKey, flagKeys as pageKeysFor, planSlice, relevantSelections } from './lib/relevance.ts';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
 import { Welcome } from './components/Welcome.tsx';
@@ -157,6 +159,7 @@ export function App() {
   const [sqlOpen, setSqlOpen] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -953,6 +956,7 @@ export function App() {
           import: () => importInput.current?.click(),
           download: exportHoist,
           share: () => setShareOpen(true),
+          design: () => setDesignOpen(true),
           brief: () => void briefMe(),
           kits: () => setKitsOpen(true),
           signals: () => setSignalOpen(true),
@@ -1245,7 +1249,7 @@ export function App() {
               }}
             />
           )}
-          <div className="mx-auto max-w-[1400px] p-4">
+          <div className="mx-auto min-h-full max-w-[1400px] p-4" {...designAttrs(hoist.design)} style={designVars(hoist.design) as React.CSSProperties}>
             <Shakedown catalog={catalog} onAsk={() => setView('ask')} onTypeForMe={(brief) => { const id = newId(); change((h) => withBriefFlag(h, id, brief)); setAutoKinds((a) => ({ ...a, [id]: true })); setSelectedId(id); }} />
             <Canvas
               hoist={hoist}
@@ -1303,6 +1307,18 @@ export function App() {
                   onDelete={() => removeFlag(selected.id)}
                   onClose={() => setSelectedId(null)}
                   onLearn={onLearn}
+                  onOpenDesign={() => setDesignOpen(true)}
+                  onUseForPage={() =>
+                    change((h) => {
+                      const { look: _look, ...rest } = h.design ?? {};
+                      return { ...h, design: { ...rest, charts: { ...rest.charts, ...chartLookOf(selected.style) } }, flags: h.flags.map((f) => ({ ...f, style: withoutChartLook(f.style) })) };
+                    })
+                  }
+                  onSaveFlag={(format, result) => {
+                    void import('./lib/export.ts')
+                      .then(async ({ exportFlagOf, saveFlag }) => saveFlag(format, await exportFlagOf({ flag: selected, result, insights: [] }, index, hoist.design)))
+                      .then((name) => notify(`Saved ${name}.`, { tone: 'success' }), (e: Error) => notify(e.message, { tone: 'error' }));
+                  }}
                 />
               </PanelBoundary>
             </div>
@@ -1329,6 +1345,7 @@ export function App() {
       )}
 
       {signalOpen && (
+        <Panel name="Signal Book" onClose={() => setSignalOpen(false)}>
         <SignalBook hoist={hoist} catalog={catalog} playbook={playbook} user={user} onClose={() => setSignalOpen(false)}
           onTry={(t) => {
             setSignalOpen(false);
@@ -1337,6 +1354,7 @@ export function App() {
             else ({ data: setDataOpen, qlik: setQlikOpen, kits: setKitsOpen, lineage: setLineageOpen })[t.panel](true);
           }}
         />
+        </Panel>
       )}
 
       {kitsOpen && (
@@ -1397,15 +1415,36 @@ export function App() {
         <Panel name="share dialog" onClose={() => setShareOpen(false)}>
           <ShareDialog
             title={hoist.title}
+            selections={Object.values(selections).filter((v) => v.length).length}
             onClose={() => setShareOpen(false)}
-            onSave={async (passphrase) => {
-              const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
-              const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
-              const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
-              download(name, html);
-              return name;
+            onExport={async (format, { passphrase, selectedOnly }) => {
+              if (format === 'html') {
+                const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
+                const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
+                const name = `${fileStem(hoist.title)}-${new Date().toISOString().slice(0, 10)}.html`;
+                download(name, html);
+                return name;
+              }
+              const slice = planSlice(hoist);
+              const sliceKey = cachedSliceKey(hoist);
+              const frozen = await freezeHoist(hoist, ctx, index, selectedOnly ? { selectionsFor: (f) => relevantSelections(selections, pageKeysFor(slice, sliceKey, f, index), f.behavior) } : {});
+              const picked = selectedOnly
+                ? Object.entries(selections).flatMap(([key, values]) => {
+                    const [field, grain] = key.split('@');
+                    return values.length ? [`${index.field(field!)?.label ?? field}: ${values.map((v) => formatDim(v, grain as TimeGrain | undefined)).join(', ')}`] : [];
+                  })
+                : [];
+              const { buildDocument, saveDocument } = await import('./lib/export.ts');
+              const doc = await buildDocument({ title: hoist.title, brief: hoist.brief, by: user, filters: [...hoist.filters.map((f) => filterText(f, index)), ...picked], flags: frozen, index, design: hoist.design });
+              return saveDocument(format, doc);
             }}
           />
+        </Panel>
+      )}
+
+      {designOpen && (
+        <Panel name="page design" onClose={() => setDesignOpen(false)}>
+          <DesignDialog design={hoist.design} onClose={() => setDesignOpen(false)} onChange={(design) => change((h) => ({ ...h, design }), 'design')} />
         </Panel>
       )}
 

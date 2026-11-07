@@ -4,7 +4,8 @@
 
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
-import type { Hoist } from '../../../src/core/hoist.ts';
+import type { Selections } from '../../../src/core/crossfilter.ts';
+import type { Flag, Hoist } from '../../../src/core/hoist.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { type Edition, editionDue, editionId, type FrozenFlag, type ReportSchedule } from '../../../src/core/reports.ts';
 import { type Briefing, briefingFacts } from '../../../src/core/briefing.ts';
@@ -22,7 +23,7 @@ export const EDITIONS_KEPT = 12;
 /** Rows kept per flag for offline filtering in a shared report; a flag with more is shown as it stands. */
 export const RAW_ROWS_MAX = 20_000;
 
-export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean; keepDrill?: boolean } = {}): Promise<FrozenFlag[]> {
+export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean; keepDrill?: boolean; selectionsFor?: (flag: Flag) => Selections } = {}): Promise<FrozenFlag[]> {
   const out: FrozenFlag[] = [];
   const drillBudget = { left: DRILL_NODES_PER_REPORT };
   for (const flag of hoist.flags) {
@@ -33,7 +34,7 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
       continue;
     }
     try {
-      const r: FlagResult = await computeFlag(hoist, flag, {}, ctx);
+      const r: FlagResult = await computeFlag(hoist, flag, options.selectionsFor?.(flag) ?? {}, ctx);
       const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index);
       // Editions are read as they stand; a shared report keeps the pre-split rows to filter offline,
       // and for a comparing flag the earlier window's pre-split rows too, so the comparison can be

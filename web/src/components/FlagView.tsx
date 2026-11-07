@@ -1,16 +1,19 @@
 // The face of a flag: a KPI, a chart, a table, a picker or a note, drawn from its result.
 // Clicking a mark on a flag that filters the page selects that value for every other flag.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2, Search } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { EChartsCoreOption } from 'echarts/core';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, DisplayRow, Selections } from '../../../src/core/crossfilter.ts';
+import { FONT_STACK, type FlagStyle, type HoistDesign, type KpiSize, paletteColors, resolveStyle } from '../../../src/core/design.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
-import { type Behavior, type Flag, type Threshold, type TimeGrain, type Tone, toneFor } from '../../../src/core/hoist.ts';
+import { type Behavior, type Threshold, type Tone, type Flag, toneFor } from '../../../src/core/hoist.ts';
+import { chartCategories, flagChartOption, formatDim, gaugeOption, isSelected } from '../lib/chart-option.ts';
 import type { FlagResult } from '../lib/data.ts';
-import { EChart, themeColors } from './Chart.tsx';
+import { reducedMotion } from '../lib/motion.ts';
+import { EChart, themeColors, themeMode } from './Chart.tsx';
 
 export interface FlagViewProps {
   flag: Flag;
@@ -21,22 +24,8 @@ export interface FlagViewProps {
   themeKey: string;
   /** Id of an element describing the flag in words, for the chart's aria-describedby. */
   describedBy?: string;
-}
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-export function formatDim(v: Cell, grain?: TimeGrain): string {
-  if (v === null || v === undefined || v === '') return '(blank)';
-  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
-  if (!grain) return String(v);
-  const s = String(v);
-  const y = s.slice(0, 4);
-  const m = Number(s.slice(5, 7));
-  if (grain === 'year') return y;
-  if (grain === 'quarter') return `Q${Math.floor((m - 1) / 3) + 1} ${y}`;
-  if (grain === 'month') return `${MONTHS[m - 1]} ${y}`;
-  if (grain === 'week') return `Wk of ${s.slice(5, 10)}`;
-  return s.slice(0, 10);
+  /** The page's design; the flag's own style goes over it. */
+  design?: HoistDesign;
 }
 
 export function FlagView(props: FlagViewProps) {
@@ -88,7 +77,31 @@ export function RuleBadge({ rule, format, compact }: { rule: Threshold; format: 
   );
 }
 
-function Kpi({ flag, result, index }: FlagViewProps) {
+const KPI_SIZE: Record<KpiSize, string> = { small: 'text-xl', medium: 'text-3xl', large: 'text-5xl', huge: 'text-7xl' };
+
+/** The number rising to its value in one short step on a lively page. The real value is always the last frame. */
+function useCountUp(value: number | null, on: boolean): number | null {
+  const [shown, setShown] = useState<number | null>(on && value !== null ? 0 : value);
+  const raf = useRef(0);
+  useEffect(() => {
+    if (!on || value === null || reducedMotion()) {
+      setShown(value);
+      return;
+    }
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / 200);
+      setShown(p >= 1 ? value : value * p);
+      if (p < 1) raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf.current);
+  }, [value, on]);
+  return shown;
+}
+
+function Kpi({ flag, result, index, design, themeKey }: FlagViewProps) {
+  const style = resolveStyle(design, flag.style);
   const key = flag.binding!.metrics[0]!;
   const v = result.display.rows[0]?.values[key] ?? null;
   const before = result.previous?.[0]?.[key];
@@ -97,11 +110,27 @@ function Kpi({ flag, result, index }: FlagViewProps) {
   const toneClass = tone === 'bad' ? 'text-bad' : tone === 'warn' ? 'text-warn' : tone === 'good' ? 'text-good' : 'text-ink';
   const change = typeof v === 'number' && typeof before === 'number' && before !== 0 ? (v - before) / Math.abs(before) : null;
   const others = flag.binding!.metrics.slice(1);
+  const counted = useCountUp(typeof v === 'number' ? v : null, style.motion === 'lively');
+  const gauge = useMemo(() => {
+    if (style.kpiForm !== 'gauge' || !style.gaugeMax || typeof v !== 'number') return null;
+    const c = themeColors();
+    const colors = paletteColors(style, themeMode(), c.series);
+    return gaugeOption({ value: v, max: style.gaugeMax, color: tone ? c[tone] : colors[0]!, c, text: formatNumber(v, metricFormat(index, key)), fontFamily: design?.font ? FONT_STACK[design.font] : undefined });
+    // themeKey is a dependency so a theme switch re-reads the colour tokens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [style.kpiForm, style.gaugeMax, style.palette, style.colors, v, tone, index, key, themeKey, design?.font]);
+  const aligned = style.titleAlign === 'center' ? 'items-center text-center' : '';
   return (
-    <div className="flex h-full flex-col justify-center gap-1 px-1">
-      <div className={`text-3xl font-semibold tabular-nums tracking-tight ${toneClass}`} title={typeof v === 'number' ? v.toLocaleString('en-US') : ''}>
-        {formatNumber(v, metricFormat(index, key))}
-      </div>
+    <div className={`flex h-full flex-col justify-center gap-1 px-1 ${aligned}`}>
+      {gauge ? (
+        <div className="min-h-0 w-full flex-1">
+          <EChart option={gauge} label={`${flag.title || 'Gauge'}: ${formatNumber(v, metricFormat(index, key))} of ${formatNumber(style.gaugeMax!, metricFormat(index, key))}`} motion={style.motion ?? 'calm'} />
+        </div>
+      ) : (
+        <div className={`${KPI_SIZE[style.kpiSize ?? 'medium']} font-semibold tabular-nums tracking-tight ${toneClass}`} title={typeof v === 'number' ? v.toLocaleString('en-US') : ''} aria-label={formatNumber(v, metricFormat(index, key))}>
+          {formatNumber(typeof v === 'number' ? counted : v, metricFormat(index, key))}
+        </div>
+      )}
       {rule && (
         <div className="text-xs">
           <RuleBadge rule={rule} format={metricFormat(index, key)} />
@@ -123,13 +152,7 @@ function Kpi({ flag, result, index }: FlagViewProps) {
   );
 }
 
-function isSelected(selections: Selections, key: string, v: Cell): boolean | null {
-  const sel = selections[key];
-  if (!sel || sel.length === 0) return null;
-  return sel.some((x) => String(x) === String(v));
-}
-
-function ChartFlag({ flag, result, index, selections, onSelect, themeKey, describedBy }: FlagViewProps) {
+function ChartFlag({ flag, result, index, selections, onSelect, themeKey, describedBy, design }: FlagViewProps) {
   const b = flag.binding!;
   const plan = result.plan;
   const ownDims = plan.dimensions.filter((d) => plan.own.includes(d.key));
@@ -139,14 +162,7 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
   const clickable = flag.behavior.onClick !== 'none';
 
   // Distinct categories along the chart, in order: the keyboard's filter buttons list these too.
-  const categories = useMemo(() => {
-    const out: Cell[] = [];
-    for (const r of rows) {
-      const v = r.dims[x.key] ?? null;
-      if (!out.some((c2) => String(c2) === String(v))) out.push(v);
-    }
-    return out;
-  }, [rows, x.key]);
+  const categories = useMemo(() => chartCategories(flag, result), [flag, result]);
   // The colour rules some mark breaks, for the legend under the chart (pattern + words).
   const broken = useMemo(() => {
     const out: Threshold[] = [];
@@ -161,138 +177,13 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
     return out;
   }, [rows, b.metrics, flag.behavior, series]);
 
+  const style = useMemo(() => resolveStyle(design, flag.style), [design, flag.style]);
   const option = useMemo<EChartsCoreOption>(() => {
     const c = themeColors();
-    // Marks that break a colour rule carry a pattern as well as the colour, so they read in greyscale.
-    const decal = (tone: Tone) =>
-      tone === 'bad'
-        ? { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: c.panel }
-        : tone === 'warn'
-          ? { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: c.panel }
-          : { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[1, 3]], dashArrayY: [3, 1], color: c.panel };
-    const fmt = (k: string) => (n: number) => formatNumber(n, b.share ? 'percent' : metricFormat(index, k));
-    const share = (k: string, v: number | null) => (b.share && typeof v === 'number' && result.display.totals[k] ? v / (result.display.totals[k] as number) : v);
-    const base = {
-      textStyle: { color: c.ink2, fontFamily: 'Segoe UI, system-ui, sans-serif' },
-      tooltip: { trigger: flag.kind === 'pie' ? 'item' : 'axis', backgroundColor: c.panel, borderColor: c.line, textStyle: { color: c.ink } },
-      color: c.series,
-    };
-    if (flag.kind === 'pie') {
-      const k = b.metrics[0]!;
-      return {
-        ...base,
-        tooltip: { ...base.tooltip, valueFormatter: (n: number) => formatNumber(n, metricFormat(index, k)) },
-        series: [
-          {
-            type: 'pie',
-            radius: ['42%', '72%'],
-            itemStyle: { borderColor: c.panel, borderWidth: 2 },
-            label: { color: c.ink2, formatter: '{b}\n{d}%' },
-            data: rows.map((r) => {
-              const v = r.dims[x.key] ?? null;
-              const sel = isSelected(selections, x.key, v);
-              return { name: formatDim(v, x.grain), value: r.values[k], raw: v, itemStyle: sel === false ? { opacity: 0.35 } : {} };
-            }),
-          },
-        ],
-      };
-    }
-    const isLine = flag.kind === 'line' || flag.kind === 'area';
-    const seriesList: Array<Record<string, unknown>> = [];
-    if (series) {
-      const names: Cell[] = [];
-      for (const r of rows) {
-        const v = r.dims[series.key] ?? null;
-        if (!names.some((n) => String(n) === String(v))) names.push(v);
-      }
-      const k = b.metrics[0]!;
-      for (const n of names) {
-        seriesList.push({
-          name: formatDim(n, series.grain),
-          type: isLine ? 'line' : 'bar',
-          stack: !isLine ? 'all' : undefined,
-          areaStyle: flag.kind === 'area' ? { opacity: 0.25 } : undefined,
-          smooth: isLine ? 0.2 : undefined,
-          showSymbol: false,
-          data: categories.map((cat) => {
-            const r = rows.find((row) => String(row.dims[x.key]) === String(cat) && String(row.dims[series.key]) === String(n));
-            return r ? share(k, r.values[k] ?? null) : null;
-          }),
-        });
-      }
-    } else {
-      b.metrics.forEach((k, mi) => {
-        const label = index.metric(k)?.label ?? k;
-        seriesList.push({
-          name: label,
-          type: isLine ? 'line' : 'bar',
-          yAxisIndex: mi > 0 && b.metrics.length === 2 ? 1 : 0,
-          areaStyle: flag.kind === 'area' ? { opacity: 0.25 } : undefined,
-          smooth: isLine ? 0.2 : undefined,
-          showSymbol: isLine && categories.length <= 24,
-          barMaxWidth: 42,
-          data: categories.map((cat, i) => {
-            const r = rows.find((row) => String(row.dims[x.key]) === String(cat));
-            const v = r ? (r.values[k] ?? null) : null;
-            const tone = typeof v === 'number' ? toneFor(flag.behavior, k, v) : null;
-            const sel = isSelected(selections, x.key, cat);
-            const color = tone ? c[tone] : undefined;
-            return { value: share(k, v), itemStyle: { ...(color ? { color } : {}), ...(tone && !isLine ? { decal: decal(tone) } : {}), ...(sel === false ? { opacity: 0.35 } : {}) }, raw: cat, i };
-          }),
-        });
-        if (result.previous && mi === 0) {
-          seriesList.push({
-            name: `${label}, ${b.compare === 'previous-year' ? 'a year earlier' : 'previous period'}`,
-            type: isLine ? 'line' : 'bar',
-            lineStyle: { type: 'dashed' },
-            itemStyle: { color: c.ink3, opacity: isLine ? 1 : 0.45 },
-            showSymbol: false,
-            barMaxWidth: 42,
-            data: categories.map((cat) => {
-              const ri = rows.findIndex((row) => String(row.dims[x.key]) === String(cat));
-              return ri >= 0 ? share(k, result.previous![ri]?.[k] ?? null) : null;
-            }),
-          });
-        }
-      });
-    }
-    // Long or many category names read better down the side than squeezed along the bottom.
-    const longest = Math.max(0, ...categories.map((v) => formatDim(v, x.grain).length));
-    const horizontal = !isLine && !x.grain && (categories.length > 6 || (categories.length > 3 && longest > 9));
-    const catAxis = {
-      type: 'category',
-      data: categories.map((v) => formatDim(v, x.grain)),
-      axisLine: { lineStyle: { color: c.line } },
-      axisTick: { show: false },
-      axisLabel: { color: c.ink2, hideOverlap: !horizontal, ...(horizontal ? { width: 120, overflow: 'truncate', interval: 0 } : {}) },
-      inverse: horizontal,
-    };
-    const valueAxes = (b.metrics.length === 2 && !series ? b.metrics : [b.metrics[0]!]).map((k) => ({
-      type: 'value',
-      splitLine: { lineStyle: { color: c.line } },
-      axisLabel: { color: c.ink3, formatter: fmt(k), hideOverlap: true },
-      splitNumber: horizontal ? 3 : 5,
-    }));
-    // Bars laid sideways swap the axes: the second measure's own scale is then a second x axis.
-    if (horizontal) {
-      for (const s of seriesList) {
-        if (s.yAxisIndex !== undefined) {
-          s.xAxisIndex = s.yAxisIndex;
-          delete s.yAxisIndex;
-        }
-      }
-    }
-    return {
-      ...base,
-      tooltip: { ...base.tooltip, valueFormatter: (n: number | null) => (n === null || n === undefined ? '–' : fmt(b.metrics[0]!)(n)) },
-      legend: seriesList.length > 1 ? { top: 0, type: 'scroll', textStyle: { color: c.ink2 }, icon: 'roundRect', itemWidth: 10, itemHeight: 10 } : undefined,
-      grid: { left: 8, right: 12, top: seriesList.length > 1 ? 28 : 10, bottom: 4, containLabel: true },
-      xAxis: horizontal ? valueAxes : catAxis,
-      yAxis: horizontal ? catAxis : valueAxes,
-      series: seriesList,
-    };
+    return flagChartOption({ flag, result, index, selections, style, c, colors: paletteColors(style, themeMode(), c.series), ...(design?.font ? { fontFamily: FONT_STACK[design.font] } : {}) });
     // themeKey is a dependency so a theme switch re-reads the colour tokens.
-  }, [flag, result, index, selections, themeKey, x, series, rows, b, categories]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flag, result, index, selections, themeKey, style, design?.font]);
 
   const fieldLabel = index.field(x.field)?.label ?? x.field;
   const drills = flag.behavior.onClick === 'drill';
@@ -316,11 +207,13 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
         <EChart
           option={option}
           label={flag.title || 'Chart'}
+          motion={style.motion ?? 'calm'}
           {...(describedBy ? { describedBy } : {})}
           onClick={
             clickable
               ? (e) => {
-                  const v = flag.kind === 'pie' ? (rows[e.dataIndex]?.dims[x.key] ?? null) : (categories[e.dataIndex] ?? null);
+                  // A treemap numbers its marks from its root, so a mark's own value comes first.
+                  const v = e.raw !== undefined ? (e.raw as Cell) : flag.kind === 'pie' ? (rows[e.dataIndex]?.dims[x.key] ?? null) : (categories[e.dataIndex] ?? null);
                   onSelect(x.key, v, false);
                 }
               : undefined
@@ -355,12 +248,16 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
   );
 }
 
-function Table({ flag, result, index, selections, onSelect }: FlagViewProps) {
+function Table({ flag, result, index, selections, onSelect, design }: FlagViewProps) {
+  const style: FlagStyle = resolveStyle(design, flag.style);
   const plan = result.plan;
   const b = flag.binding!;
   const dims = plan.dimensions.filter((d) => plan.own.includes(d.key));
   const rows = result.display.rows;
   const clickable = flag.behavior.onClick !== 'none' && dims.length > 0;
+  // The widest value in each measure's column, for the bars behind the numbers.
+  const widest = (k: string) => Math.max(0, ...rows.map((r) => Math.abs(typeof r.values[k] === 'number' ? (r.values[k] as number) : 0)));
+  const tops = style.tableBars ? Object.fromEntries(b.metrics.map((k) => [k, widest(k)])) : null;
   return (
     <div className="scroll-thin h-full overflow-auto">
       <table className="w-full border-collapse text-xs">
@@ -393,7 +290,7 @@ function Table({ flag, result, index, selections, onSelect }: FlagViewProps) {
               <tr
                 key={i}
                 onClick={clickable && first ? (e) => onSelect(first.key, r.dims[first.key] ?? null, e.ctrlKey || e.metaKey) : undefined}
-                className={`${clickable ? 'cursor-pointer hover:bg-accent-soft' : ''} ${sel === false ? 'opacity-45' : ''} ${sel ? 'bg-accent-soft' : ''}`}
+                className={`${clickable ? 'cursor-pointer hover:bg-accent-soft' : ''} ${sel === false ? 'opacity-45' : ''} ${sel ? 'bg-accent-soft' : style.striped && i % 2 ? 'bg-panel-2' : ''}`}
               >
                 {dims.map((d) => (
                   <td key={d.key} className="border-b border-line/60 px-2 py-1">
@@ -403,8 +300,9 @@ function Table({ flag, result, index, selections, onSelect }: FlagViewProps) {
                 {b.metrics.map((k) => {
                   const v = r.values[k] ?? null;
                   const rule = typeof v === 'number' ? ruleFor(flag.behavior, k, v) : null;
+                  const bar = tops?.[k] && typeof v === 'number' ? Math.round((Math.abs(v) / tops[k]!) * 100) : null;
                   return (
-                    <td key={k} className={`border-b border-line/60 px-2 py-1 text-right tabular-nums ${rule ? `text-${rule.tone} font-medium` : ''}`}>
+                    <td key={k} className={`border-b border-line/60 px-2 py-1 text-right tabular-nums ${rule ? `text-${rule.tone} font-medium` : ''}`} style={bar === null ? undefined : { background: `linear-gradient(to left, var(--accent-soft) ${bar}%, transparent ${bar}%)` }}>
                       <span className="inline-flex items-center justify-end gap-1">
                         {rule && <RuleBadge rule={rule} format={metricFormat(index, k)} compact />}
                         {formatNumber(v, metricFormat(index, k))}

@@ -2,18 +2,42 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as echarts from 'echarts/core';
-import { BarChart, LineChart, PieChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent, MarkLineComponent } from 'echarts/components';
+// Direct paths, not the echarts/charts index: importing the index would carry chart-extras.ts into the page's start.
+import 'echarts/lib/chart/bar';
+import 'echarts/lib/chart/line';
+import 'echarts/lib/chart/pie';
+import 'echarts/lib/component/grid';
+import 'echarts/lib/component/legend';
+import 'echarts/lib/component/tooltip';
+import 'echarts/lib/component/markLine';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
+import type { Motion } from '../../../src/core/design.ts';
 import { chartMotion } from '../lib/motion.ts';
 
-echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, MarkLineComponent, SVGRenderer]);
+echarts.use([SVGRenderer]);
+
+let extras: Promise<unknown> | null = null;
+let extrasReady = false;
+/** Loads the forms in chart-extras.ts, once. */
+function loadExtras(): Promise<unknown> {
+  extras ??= import('./chart-extras.ts').then(() => {
+    extrasReady = true;
+  });
+  return extras;
+}
+
+function needsExtras(option: EChartsCoreOption): boolean {
+  const o = option as { series?: Array<{ type?: string }>; dataZoom?: unknown };
+  return !!o.dataZoom || (o.series ?? []).some((s) => s.type === 'gauge' || s.type === 'funnel' || s.type === 'treemap');
+}
 
 export interface ChartClick {
   name: string;
   seriesName?: string;
   dataIndex: number;
+  /** The mark's own value, when it carries one. */
+  raw?: unknown;
 }
 
 /**
@@ -21,29 +45,39 @@ export interface ChartClick {
  * the data changes (a selection, a refresh) the chart is updated in place, not redrawn from scratch.
  */
 function shapeOf(option: EChartsCoreOption): string {
-  const o = option as { series?: Array<Record<string, unknown>>; xAxis?: unknown; yAxis?: unknown; legend?: unknown; color?: unknown };
+  const o = option as { series?: Array<Record<string, unknown>>; xAxis?: unknown; yAxis?: unknown; legend?: unknown; color?: unknown; dataZoom?: unknown };
   const axis = (a: unknown) => (Array.isArray(a) ? a : a ? [a] : []).map((x) => (x as { type?: string; inverse?: boolean }).type + String((x as { inverse?: boolean }).inverse ?? ''));
-  return JSON.stringify([(o.series ?? []).map((s) => [s.type, s.name, s.stack, s.yAxisIndex, s.xAxisIndex]), axis(o.xAxis), axis(o.yAxis), !!o.legend, o.color]);
+  return JSON.stringify([(o.series ?? []).map((s) => [s.type, s.name, s.stack, s.yAxisIndex, s.xAxisIndex]), axis(o.xAxis), axis(o.yAxis), o.legend ?? null, o.color, !!o.dataZoom]);
 }
 
-export function EChart({ option, onClick, label, describedBy }: { option: EChartsCoreOption; onClick?: (e: ChartClick) => void; label: string; describedBy?: string }) {
+export function EChart({ option, onClick, label, describedBy, motion = 'calm' }: { option: EChartsCoreOption; onClick?: (e: ChartClick) => void; label: string; describedBy?: string; motion?: Motion }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts | null>(null);
   const shape = useRef<string | null>(null);
   const click = useRef(onClick);
   click.current = onClick;
   const [failed, setFailed] = useState<string | null>(null);
+  const hasExtras = useRef(false);
+
+  // A chart keeps the steps that existed when it was made, so one made before chart-extras.ts loaded
+  // has to be made again to draw those forms.
+  const create = () => {
+    const c = echarts.init(el.current!, undefined, { renderer: 'svg' });
+    chart.current = c;
+    hasExtras.current = extrasReady;
+    shape.current = null;
+    c.on('click', (p) => click.current?.({ name: String((p as { name?: unknown }).name ?? ''), seriesName: (p as { seriesName?: string }).seriesName, dataIndex: (p as { dataIndex: number }).dataIndex, raw: ((p as { data?: { raw?: unknown } }).data ?? {}).raw }));
+    return c;
+  };
 
   useEffect(() => {
     if (!el.current) return;
-    const c = echarts.init(el.current, undefined, { renderer: 'svg' });
-    chart.current = c;
-    c.on('click', (p) => click.current?.({ name: String((p as { name?: unknown }).name ?? ''), seriesName: (p as { seriesName?: string }).seriesName, dataIndex: (p as { dataIndex: number }).dataIndex }));
-    const ro = new ResizeObserver(() => c.resize());
+    create();
+    const ro = new ResizeObserver(() => chart.current?.resize());
     ro.observe(el.current);
     return () => {
       ro.disconnect();
-      c.dispose();
+      chart.current?.dispose();
       chart.current = null;
       shape.current = null;
     };
@@ -51,11 +85,17 @@ export function EChart({ option, onClick, label, describedBy }: { option: EChart
 
   useEffect(() => {
     // A chart that cannot be drawn says so in its own card; it must never take the page down with it.
-    const c = chart.current;
-    if (!c) return;
+    if (!chart.current) return;
+    let live = true;
+    const draw = () => {
+    let c = chart.current!;
+    if (needsExtras(option) && !hasExtras.current) {
+      c.dispose();
+      c = create();
+    }
     try {
-      // Motion: none under reduced motion, otherwise at most 180 ms (UNIFIED-UI 7).
-      const full = { ...option, ...chartMotion() };
+      // Motion: none under reduced motion, otherwise no mark moves for over 200 ms (UNIFIED-UI 7).
+      const full = { ...option, ...chartMotion(motion) };
       const next = shapeOf(full);
       if (shape.current === next) c.setOption(full, { replaceMerge: ['series'] });
       else c.setOption(full, { notMerge: true });
@@ -66,7 +106,14 @@ export function EChart({ option, onClick, label, describedBy }: { option: EChart
       shape.current = null;
       setFailed((e as Error).message);
     }
-  }, [option]);
+    };
+    if (needsExtras(option) && !extrasReady) {
+      loadExtras().then(() => live && draw(), (e: Error) => live && setFailed(e.message));
+    } else draw();
+    return () => {
+      live = false;
+    };
+  }, [option, motion]);
 
   return (
     <div className="relative h-full w-full">
@@ -84,6 +131,26 @@ const SERIES_FALLBACK = {
   dark: ['#5fb3d0', '#c9a66b', '#8fd18b', '#b39ddb', '#f07163', '#4db6ac', '#f0b429', '#e57fa8'],
   light: ['#1f6f8b', '#a8834a', '#2e7d4f', '#6a4fa3', '#c0392b', '#00796b', '#b7791f', '#ad1457'],
 };
+
+/** The chart as an SVG document at a fixed size, drawn off the page and with no motion, for exports. */
+export async function chartToSvg(option: EChartsCoreOption, width: number, height: number): Promise<string> {
+  if (needsExtras(option)) await loadExtras();
+  const c = echarts.init(null as unknown as HTMLElement, undefined, { renderer: 'svg', ssr: true, width, height });
+  try {
+    c.setOption({ ...option, animation: false });
+    return c.renderToSVGString();
+  } finally {
+    c.dispose();
+  }
+}
+
+/** Whether the page is light or dark now. */
+export const themeMode = (): 'light' | 'dark' => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+
+/** Colours for paper: what an export uses whatever the screen's theme, since it is read on white. */
+export function paperColors() {
+  return { ink: '#17212b', ink2: '#3d4a56', ink3: '#5a6773', line: '#d6dce2', panel: '#ffffff', good: '#2e7d4f', warn: '#b7791f', bad: '#c0392b', accent: '#1f6f8b', series: [...SERIES_FALLBACK.light] };
+}
 
 /** Colours read from the skin's tokens (--ink, --series-1..8 ...), so charts follow the skin and light or dark. */
 export function themeColors() {

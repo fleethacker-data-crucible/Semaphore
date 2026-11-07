@@ -137,6 +137,7 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
             selections={selectionsFor(f)}
             selected={selectedId === f.id}
             themeKey={themeKey}
+            {...(hoist.design ? { design: hoist.design } : {})}
             onSelectFlag={onSelectFlag}
             onSelectValue={onSelectValue}
             onAccept={onAccept}

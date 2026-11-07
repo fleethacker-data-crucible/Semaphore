@@ -1,0 +1,233 @@
+// Turning a page into files. Everything happens in this browser: the summarised answers go into the
+// file and nothing is sent anywhere. Loaded only when someone exports.
+//
+// Charts in a file are drawn again for paper, in light colours whatever the screen's theme, with the
+// page's palette and finish, so the file matches what the analyst designed.
+
+import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import { FONT_STACK, type HoistDesign, paletteColors, resolveStyle } from '../../../src/core/design.ts';
+import { formatNumber } from '../../../src/core/describe.ts';
+import { toCsv, flagsToCsvZip } from '../../../src/core/export/csv.ts';
+import { toDocx } from '../../../src/core/export/docx.ts';
+import { toJson } from '../../../src/core/export/json.ts';
+import { type ExportChart, type ExportDocument, type ExportFlag, type ExportHeadline, type ExportImage, type ExportTable, fileStem } from '../../../src/core/export/model.ts';
+import { toPdf } from '../../../src/core/export/pdf.ts';
+import { toPptx } from '../../../src/core/export/pptx.ts';
+import { toXlsx } from '../../../src/core/export/xlsx.ts';
+import { type Flag, toneFor } from '../../../src/core/hoist.ts';
+import type { FrozenFlag } from '../../../src/core/reports.ts';
+import { chartToSvg, paperColors } from '../components/Chart.tsx';
+import { flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
+import type { FlagResult } from './data.ts';
+
+export type FileFormat = 'pdf' | 'xlsx' | 'pptx' | 'docx' | 'csv' | 'json';
+
+const TYPES: Record<FileFormat, { ext: string; type: string }> = {
+  pdf: { ext: 'pdf', type: 'application/pdf' },
+  xlsx: { ext: 'xlsx', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  pptx: { ext: 'pptx', type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+  docx: { ext: 'docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  csv: { ext: 'zip', type: 'application/zip' },
+  json: { ext: 'json', type: 'application/json' },
+};
+
+const IMAGE_WIDTH = 1000;
+
+function saveBytes(name: string, bytes: Uint8Array | string, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function svgToPng(svg: string, width: number, height: number, background: string): Promise<Uint8Array> {
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = width * 2;
+    canvas.height = height * 2;
+    const g = canvas.getContext('2d');
+    if (!g) throw new Error('This browser could not draw the chart.');
+    g.fillStyle = background;
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    g.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((done) => canvas.toBlob(done, 'image/png'));
+    if (!blob) throw new Error('This browser could not draw the chart.');
+    return new Uint8Array(await blob.arrayBuffer());
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+const hasOwnField = (result: FlagResult) => result.plan.dimensions.some((d) => result.plan.own.includes(d.key));
+const isChart = (flag: Flag, result: FlagResult) => ['bar', 'line', 'area', 'pie'].includes(flag.kind) && (flag.binding?.metrics.length ?? 0) > 0 && hasOwnField(result);
+
+function imageHeight(flag: Flag): number {
+  return Math.max(360, Math.min(620, Math.round((IMAGE_WIDTH * flag.layout.h * 56) / (flag.layout.w * 100))));
+}
+
+/** The numbers an editable chart needs, read from what the page draws. */
+function chartNumbers(flag: Flag, option: Record<string, unknown>, colors: readonly string[]): ExportChart | null {
+  const series = (option.series ?? []) as Array<Record<string, unknown>>;
+  const valueOf = (d: unknown) => {
+    const v = typeof d === 'object' && d !== null ? (d as { value?: unknown }).value : d;
+    return typeof v === 'number' ? v : null;
+  };
+  if (flag.kind === 'pie') {
+    const data = (series[0]?.data ?? []) as Array<{ name: string; value: unknown }>;
+    return { type: 'pie', categories: data.map((d) => d.name), series: [{ name: flag.title || 'Value', values: data.map(valueOf), color: colors[0]! }] };
+  }
+  const x = option.xAxis as { type?: string; data?: string[] } | Array<unknown>;
+  const horizontal = Array.isArray(x);
+  const axis = (horizontal ? option.yAxis : x) as { data?: string[] };
+  return {
+    type: flag.kind as ExportChart['type'],
+    ...(horizontal ? { horizontal: true } : {}),
+    ...(series.some((s) => s.stack) ? { stacked: true } : {}),
+    categories: axis.data ?? [],
+    series: series.map((s, i) => ({ name: String(s.name ?? ''), values: ((s.data ?? []) as unknown[]).map(valueOf), color: colors[i % colors.length]! })),
+  };
+}
+
+function flagTable(flag: Flag, result: FlagResult, index: CatalogIndex): ExportTable | null {
+  const b = flag.binding;
+  if (!b) return null;
+  const dims = result.plan.dimensions.filter((d) => result.plan.own.includes(d.key));
+  const k0 = b.metrics[0];
+  const fmt = (k: string) => index.metric(k)?.format;
+  const columns: ExportTable['columns'] = [
+    ...dims.map((d) => ({ label: `${index.field(d.field)?.label ?? d.field}${d.grain ? ` (${d.grain})` : ''}`, numeric: false })),
+    ...b.metrics.map((k) => {
+      const format = fmt(k);
+      return { label: index.metric(k)?.label ?? k, numeric: true, ...(format ? { format } : {}) };
+    }),
+    ...(b.share && k0 ? [{ label: 'Share', numeric: true, format: 'percent' as const }] : []),
+    ...(result.previous && k0 ? [{ label: 'Change', numeric: true, format: 'percent' as const }] : []),
+  ];
+  const rows = result.display.rows.map((r, i) => {
+    const now = k0 ? r.values[k0] : undefined;
+    const before = k0 ? result.previous?.[i]?.[k0] : undefined;
+    const change = typeof now === 'number' && typeof before === 'number' && before !== 0 ? (now - before) / Math.abs(before) : null;
+    const total = k0 ? result.display.totals[k0] : undefined;
+    const part = typeof now === 'number' && typeof total === 'number' && total ? now / total : null;
+    return [
+      ...dims.map((d) => {
+        const v = r.dims[d.key] ?? null;
+        return { text: formatDim(v, d.grain), value: v };
+      }),
+      ...b.metrics.map((k) => {
+        const v = r.values[k] ?? null;
+        const tone = typeof v === 'number' ? toneFor(flag.behavior, k, v) : null;
+        return { text: formatNumber(v, fmt(k)), value: v, ...(tone ? { tone } : {}) };
+      }),
+      ...(b.share && k0 ? [{ text: formatNumber(part, 'percent'), value: part }] : []),
+      ...(result.previous && k0 ? [{ text: change === null ? '–' : `${change >= 0 ? '+' : ''}${Math.round(change * 100)}%`, value: change }] : []),
+    ];
+  });
+  return { columns, rows };
+}
+
+function headlines(flag: Flag, result: FlagResult, index: CatalogIndex): ExportHeadline[] {
+  const row = result.display.rows[0];
+  return (flag.binding?.metrics ?? []).map((k, i) => {
+    const v = row?.values[k] ?? null;
+    const n = typeof v === 'number' ? v : null;
+    const tone = n === null ? null : toneFor(flag.behavior, k, n);
+    const before = i === 0 ? result.previous?.[0]?.[k] : undefined;
+    const change = n !== null && typeof before === 'number' && before !== 0 ? (n - before) / Math.abs(before) : null;
+    return {
+      label: index.metric(k)?.label ?? k,
+      text: formatNumber(v, index.metric(k)?.format),
+      value: n,
+      ...(tone ? { tone } : {}),
+      ...(change === null ? {} : { change: `${change >= 0 ? '+' : ''}${Math.round(change * 100)}% vs ${flag.binding?.compare === 'previous-year' ? 'a year earlier' : 'previous period'}` }),
+    };
+  });
+}
+
+/** One flag's answer, ready for any format. */
+export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & { result: unknown; insights: ReadonlyArray<{ text: string }> }, index: CatalogIndex, design: HoistDesign | undefined): Promise<ExportFlag> {
+  const { flag } = frozen;
+  const out: ExportFlag = { id: flag.id, title: flag.title || 'Untitled flag', kind: flag.kind, table: null, image: null, chart: null, insights: frozen.insights.map((i) => i.text) };
+  if (frozen.error) out.error = frozen.error;
+  if (flag.kind === 'text') {
+    out.text = flag.text || flag.brief;
+    return out;
+  }
+  const result = frozen.result as FlagResult | null;
+  if (!result) {
+    out.error ??= 'This flag has no answer.';
+    return out;
+  }
+  const style = resolveStyle(design, flag.style);
+  const c = paperColors();
+  const colors = paletteColors(style, 'light', c.series);
+  const font = design?.font ? { fontFamily: FONT_STACK[design.font] } : {};
+  const draw = async (option: Record<string, unknown>, width: number, height: number): Promise<ExportImage> => {
+    const svg = await chartToSvg(option, width, height);
+    return { png: await svgToPng(svg, width, height, c.panel), width: width * 2, height: height * 2, svg };
+  };
+  if (isChart(flag, result)) {
+    const option = flagChartOption({ flag, result, index, selections: {}, style: { ...style, zoom: false }, c, colors, ...font });
+    out.image = await draw(option, IMAGE_WIDTH, imageHeight(flag));
+    out.chart = chartNumbers(flag, option, colors);
+    out.table = flagTable(flag, result, index);
+    return out;
+  }
+  if (flag.kind === 'table') {
+    out.table = flagTable(flag, result, index);
+    return out;
+  }
+  out.headlines = headlines(flag, result, index);
+  out.table = flagTable(flag, result, index);
+  const first = out.headlines[0];
+  if (flag.kind === 'kpi' && style.kpiForm === 'gauge' && style.gaugeMax && first?.value !== null && first) {
+    out.image = await draw(gaugeOption({ value: first.value!, max: style.gaugeMax, color: first.tone ? c[first.tone] : colors[0]!, c, text: first.text, ...font }), 500, 300);
+  }
+  return out;
+}
+
+export interface DocumentInput {
+  title: string;
+  brief: string;
+  by: string;
+  filters: string[];
+  flags: readonly FrozenFlag[];
+  index: CatalogIndex;
+  design: HoistDesign | undefined;
+}
+
+export async function buildDocument(input: DocumentInput): Promise<ExportDocument> {
+  const flags: ExportFlag[] = [];
+  // A picker is a control for the page, not an answer.
+  for (const f of input.flags) if (f.flag.kind !== 'filter') flags.push(await exportFlagOf(f, input.index, input.design));
+  return { title: input.title || 'Semaphore report', brief: input.brief, takenAt: new Date().toISOString(), by: input.by, filters: input.filters, accent: paperColors().accent, flags };
+}
+
+/** Writes the file and starts the download. Returns the file's name. */
+export async function saveDocument(format: FileFormat, doc: ExportDocument): Promise<string> {
+  const { ext, type } = TYPES[format];
+  const bytes = format === 'pdf' ? await toPdf(doc) : format === 'xlsx' ? await toXlsx(doc) : format === 'pptx' ? await toPptx(doc) : format === 'docx' ? await toDocx(doc) : format === 'csv' ? await flagsToCsvZip(doc) : toJson(doc);
+  const name = `${fileStem(doc.title)}-${doc.takenAt.slice(0, 10)}.${ext}`;
+  saveBytes(name, bytes, type);
+  return name;
+}
+
+/** One flag on its own, as it stands on the page now. */
+export async function saveFlag(format: 'png' | 'svg' | 'csv', flag: ExportFlag): Promise<string> {
+  const stem = fileStem(flag.title, 'flag');
+  if (format === 'csv') {
+    if (!flag.table) throw new Error('This flag has no table of numbers to save.');
+    saveBytes(`${stem}.csv`, toCsv(flag.table, { bom: true }), 'text/csv;charset=utf-8');
+    return `${stem}.csv`;
+  }
+  if (!flag.image) throw new Error('This flag has no chart to save.');
+  if (format === 'svg') saveBytes(`${stem}.svg`, flag.image.svg ?? '', 'image/svg+xml');
+  else saveBytes(`${stem}.png`, flag.image.png, 'image/png');
+  return `${stem}.${format}`;
+}

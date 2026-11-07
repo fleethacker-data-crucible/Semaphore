@@ -5,13 +5,15 @@ import { StrictMode, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Lock, X } from 'lucide-react';
 import { indexCatalog } from '../../src/core/catalog.ts';
+import { designAttrs, designVars, parseDesign, resolveStyle } from '../../src/core/design.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 
 import { type DrillStep, drillLabel, drillView } from '../../src/core/drill.ts';
 import { dimensionKey } from '../../src/core/hoist.ts';
 import { findDrillNode } from '../../src/core/reports.ts';
 import type { FlagResult } from './lib/data.ts';
-import { FlagView, formatDim } from './components/FlagView.tsx';
+import { FlagView } from './components/FlagView.tsx';
+import { formatDim } from './lib/chart-option.ts';
 import { reportView } from './lib/report-view.ts';
 import { deriveKey, type ReportPayload, type Sealed, unb64 } from './lib/share.ts';
 
@@ -81,8 +83,9 @@ function Report({ report }: { report: ReportPayload }) {
     for (const f of report.flags) for (const d of f.flag.binding?.dimensions ?? []) if (dimensionKey(d) === k) return true;
     return false;
   };
+  const design = useMemo(() => parseDesign(report.design), [report.design]);
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" {...designAttrs(design)} style={designVars(design) as React.CSSProperties}>
       <header className="border-b border-line bg-panel px-5 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-brass">Semaphore report</p>
         <h1 className="text-lg font-semibold">{report.title}</h1>
@@ -106,6 +109,7 @@ function Report({ report }: { report: ReportPayload }) {
       <main className="p-5">
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${report.cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
           {report.flags.map((f) => {
+            const look = resolveStyle(design, f.flag.style);
             const steps = drills[f.flag.id] ?? [];
             const drillable = !!f.drill && f.flag.behavior.onClick === 'drill';
             const view = steps.length ? drillView(f.flag, steps, index) : { flag: f.flag, detail: false };
@@ -121,8 +125,8 @@ function Report({ report }: { report: ReportPayload }) {
               select(key, value, additive);
             };
             return (
-              <article key={f.flag.id} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${f.flag.layout.x + 1} / span ${f.flag.layout.w}`, gridRow: `${f.flag.layout.y + 1} / span ${f.flag.layout.h}` }}>
-                <h2 className="truncate px-1 text-[13px] font-semibold">{f.flag.title}</h2>
+              <article key={f.flag.id} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${f.flag.layout.x + 1} / span ${f.flag.layout.w}`, gridRow: `${f.flag.layout.y + 1} / span ${f.flag.layout.h}`, '--flag-i': Math.min(12, f.flag.layout.y + Math.floor(f.flag.layout.x / 3)), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) } as React.CSSProperties}>
+                <h2 className={look.hideTitle ? 'sr-only' : `truncate px-1 text-[13px] font-semibold ${look.titleAlign === 'center' ? 'text-center' : ''}`}>{f.flag.title}</h2>
                 {steps.length > 0 && (
                   <nav aria-label="Drill path" className="flex items-center gap-1 px-1 text-[11px] text-ink-3">
                     <button type="button" onClick={() => setDrills((d) => ({ ...d, [f.flag.id]: steps.slice(0, -1) }))} className="rounded px-1 hover:bg-panel-2 hover:text-ink" title="Back up one level">
@@ -140,7 +144,7 @@ function Report({ report }: { report: ReportPayload }) {
                   ) : missing ? (
                     <p role="status" className="p-1 text-xs text-warn">{missing}</p>
                   ) : v.result ? (
-                    <FlagView flag={view.flag} result={v.result} index={index} selections={steps.length ? {} : selections} onSelect={pick} themeKey={report.theme} />
+                    <FlagView flag={view.flag} result={v.result} index={index} selections={steps.length ? {} : selections} onSelect={pick} themeKey={report.theme} {...(design ? { design } : {})} />
                   ) : (
                     <p className="p-1 text-xs text-warn">{f.error ?? 'No data.'}</p>
                   )}

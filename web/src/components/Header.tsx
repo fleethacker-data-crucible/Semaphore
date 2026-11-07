@@ -1,10 +1,10 @@
 // The builder's header (#77, #85): the brand and the hoist title on the left, undo and redo, the quick
-// chart box, then at most six controls: Hoist ▾ (new, open, import, download, share, brief me, kits,
+// chart box, then the page controls: Hoist ▾ (new, open, import, download, share, brief me, kits,
 // SQL), Playbook, Data, Leadership view, Help and Settings (components/SettingsDialog.tsx).
 // The actions themselves come from the page's one action list, which the command palette shows too.
 
 import type { ReactNode } from 'react';
-import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
+import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, Paintbrush, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
 import { LIMITS } from '../../../src/core/hoist.ts';
 import type { Command } from '../lib/commands.ts';
 import type { Actions } from '../hooks/useCommands.ts';
@@ -53,6 +53,7 @@ export function Header(p: HeaderProps) {
   const hoistMenu: MenuSection[] = [
     { items: [entry(a.new, <FilePlus2 size={15} />), ...(a.open.disabled ? [] : [entry(a.open, <FolderOpen size={15} />)]), entry(a.import, <Upload size={15} />), entry(a.download, <Download size={15} />)] },
     { label: 'Share', items: [entry(a.share, <FileDown size={15} />), entry(a.brief, <ScrollText size={15} />)] },
+    { label: 'Look', items: [entry(a.design, <Paintbrush size={15} />)] },
     { label: 'Build', items: [entry(a.kits, <Package size={15} />), entry(a.lineage, <GitBranch size={15} />), ...(a.sql.disabled ? [] : [entry(a.sql, <TerminalSquare size={15} />)])] },
     ...(a.signals.disabled ? [] : [{ label: 'You', items: [entry(a.signals, <BookMarked size={15} />)] }]),
   ];
@@ -121,6 +122,12 @@ export function Header(p: HeaderProps) {
         <button type="button" onClick={p.onLeadership} className={pill} title="The leadership view: ask a question, get an answer">
           <MessagesSquare size={14} aria-hidden="true" className="text-brass" /> Leadership view
         </button>
+        <IconButton label="Page design" onClick={a.design.run}>
+          <Paintbrush size={16} />
+        </IconButton>
+        <IconButton label="Export or share" onClick={a.share.run}>
+          <FileDown size={16} />
+        </IconButton>
         <IconButton label="Help and keyboard shortcuts (?)" onClick={p.onHelp}>
           <CircleHelp size={16} />
         </IconButton>

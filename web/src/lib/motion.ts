@@ -14,7 +14,12 @@ export function scrollBehavior(): ScrollBehavior {
   return reducedMotion() ? 'auto' : 'smooth';
 }
 
-/** Chart animation settings: off under reduced motion, otherwise at most 180 ms. */
-export function chartMotion(): { animation: boolean; animationDuration?: number; animationDurationUpdate?: number } {
-  return reducedMotion() ? { animation: false } : { animation: true, animationDuration: 180, animationDurationUpdate: 180 };
+/**
+ * Chart animation for a look: off under reduced motion or 'none'. 'calm' moves everything for 180 ms.
+ * 'lively' lets marks arrive one after another, but no single mark moves for over 200 ms (UNIFIED-UI 7).
+ */
+export function chartMotion(level: 'none' | 'calm' | 'lively' = 'calm'): Record<string, unknown> {
+  if (level === 'none' || reducedMotion()) return { animation: false };
+  if (level === 'lively') return { animation: true, animationDuration: 200, animationEasing: 'cubicOut', animationDelay: (i: number) => Math.min(i * 40, 480), animationDurationUpdate: 180 };
+  return { animation: true, animationDuration: 180, animationDurationUpdate: 180 };
 }

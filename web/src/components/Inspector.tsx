@@ -2,7 +2,7 @@
 // produced in plain English, why Semaphore is or is not sure, what is worth a look, and the
 // controls an analyst reaches for most. The binding and SQL are a click away, never in the way.
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Flag as FlagIcon, MessagesSquare, Sparkles, Trash2, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Selections } from '../../../src/core/crossfilter.ts';
@@ -11,11 +11,12 @@ import type { Behavior, Flag, FlagKind, Hoist } from '../../../src/core/hoist.ts
 import { findInsights } from '../../../src/core/insights.ts';
 import { annotateBrief, type Suggestion, usedKinds } from '../../../src/core/intelligence/annotate.ts';
 import { flushAccepts, shortDate, useReviewedAt } from '../lib/accept.ts';
-import type { DataContext } from '../lib/data.ts';
+import type { DataContext, FlagResult } from '../lib/data.ts';
 import { noteGrammarUsed } from '../lib/onboarding.ts';
 import { BriefEditor, BriefHints, BriefLegend, Understood } from './BriefEditor.tsx';
 import { useFlagResult } from './FlagCard.tsx';
 import { KIND_META } from './Palette.tsx';
+import { StylePanel } from './LazyPanels.tsx';
 
 export interface InspectorProps {
   hoist: Hoist;
@@ -35,6 +36,10 @@ export interface InspectorProps {
   onLearn: (word: string, s: Suggestion) => void;
   /** Open the leadership view (shown with an accepted flag: "See it as leadership will"). */
   onSeeAsLeadership?: () => void;
+  onUseForPage: () => void;
+  onOpenDesign: () => void;
+  /** Save this flag on its own, as it stands now. */
+  onSaveFlag: (format: 'png' | 'svg' | 'csv', result: FlagResult) => void;
 }
 
 const KINDS: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
@@ -194,6 +199,17 @@ export function Inspector(p: InspectorProps) {
           </div>
         </section>
 
+        <Suspense fallback={null}>
+        <StylePanel
+          flag={flag}
+          design={hoist.design}
+          hasSeries={(result?.plan.own.length ?? 0) > 1}
+          onStyle={(style) => p.onChange({ style }, `style-${flag.id}`)}
+          onUseForPage={p.onUseForPage}
+          onOpenDesign={p.onOpenDesign}
+        />
+        </Suspense>
+
         {flag.kind !== 'text' && (
           <section className="space-y-1">
             <h3 className="text-xs font-semibold text-ink-2">In plain English</h3>
@@ -295,6 +311,17 @@ export function Inspector(p: InspectorProps) {
             </div>
           )}
         </section>
+
+        {result && flag.kind !== 'filter' && flag.kind !== 'text' && (
+          <section aria-label="Save this flag" className="flex flex-wrap items-center gap-1 border-t border-line pt-3">
+            <span className="mr-1 text-xs font-semibold text-ink-2">Save as</span>
+            {(['bar', 'line', 'area', 'pie'].includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : (['csv'] as const)).map((f) => (
+              <button key={f} type="button" onClick={() => p.onSaveFlag(f, result)} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
+                {f}
+              </button>
+            ))}
+          </section>
+        )}
 
         <div className="flex gap-2 border-t border-line pt-3">
           <button type="button" onClick={p.onDuplicate} title="Duplicate (D)" className="flex h-8 items-center gap-1 rounded-md border border-[var(--fl-control-border)] px-2 text-xs hover:border-accent">

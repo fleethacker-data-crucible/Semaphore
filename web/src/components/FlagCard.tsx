@@ -5,7 +5,7 @@
 // it holds focus. It redraws only when its own numbers can change (lib/relevance.ts): `hoist` is
 // the planning slice of the page, and `selections` only those this flag can use.
 
-import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, Flag as FlagIcon, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles, Table2 } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
@@ -19,6 +19,7 @@ import { toggleFlipped, useFlipped } from '../lib/flag-keys.ts';
 import { markStep } from '../lib/onboarding.ts';
 import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.ts';
 import { recordSkill } from '../lib/skills.ts';
+import { type HoistDesign, resolveStyle } from '../../../src/core/design.ts';
 import { FlagView } from './FlagView.tsx';
 import { sqlLanguage } from '../lib/sql-language.ts';
 
@@ -32,6 +33,8 @@ export interface FlagCardProps {
   selections: Selections;
   selected: boolean;
   themeKey: string;
+  /** The page's design; kept apart from `hoist`, which only changes when planning does. */
+  design?: HoistDesign;
   onSelectFlag: (id: string) => void;
   onSelectValue: (key: string, value: Cell, additive: boolean) => void;
   onAccept: (id: string) => void;
@@ -95,7 +98,7 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
   return load;
 }
 
-function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
+function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, design, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
   const flipped = useFlipped(own.id);
   const [asTable, setAsTable] = useState(false);
   // Drilling narrows this flag only, for as long as the page is open; the flag itself is unchanged.
@@ -145,9 +148,12 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
   const shownFlag = asTable && chartLike ? { ...flag, kind: 'table' as const } : flag;
   const reviewedLabel = reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed';
 
+  const look = resolveStyle(design, flag.style);
+
   return (
     <article
       data-flag-card={own.id}
+      style={{ '--flag-i': Math.min(12, flag.layout.y + Math.floor(flag.layout.x / 3)), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) } as CSSProperties}
       aria-label={flag.title || 'Untitled flag'}
       aria-current={selected ? 'true' : undefined}
       aria-describedby={described ? descId : undefined}
@@ -175,7 +181,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
         >
           <GripHorizontal size={14} />
         </button>
-        <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink" title={`${flag.title} (click to edit)`}>
+        <h3 className={look.hideTitle ? 'sr-only' : `min-w-0 flex-1 truncate text-[13px] font-semibold text-ink ${look.titleAlign === 'center' ? 'text-center' : ''}`} title={`${flag.title} (click to edit)`}>
           {flag.title || <span className="font-normal text-ink-3">Untitled flag</span>}
         </h3>
         {load.state === 'loading' && <Loader2 size={13} className="animate-spin text-ink-3" aria-label="Loading" />}
@@ -295,7 +301,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
             )}
             <div className="min-h-0 flex-1">
               <FlagBoundary resetKey={`${shownFlag.kind}:${JSON.stringify(flag.binding)}`}>
-                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} {...(described ? { describedBy: descId } : {})} />
+                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} {...(design ? { design } : {})} {...(described ? { describedBy: descId } : {})} />
               </FlagBoundary>
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}

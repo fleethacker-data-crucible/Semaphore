@@ -311,7 +311,28 @@ body {
 }
 
 /* Flag cards. Handles show on hover, while the card holds focus, and on the selected card. */
-.flag-card { container-type: inline-size; }
+.flag-card { container-type: inline-size; border-radius: var(--design-radius, 0.75rem); font-family: var(--design-font, inherit); }
+
+/* Design (src/core/design.ts): the page's look, set by attributes that only take fixed values. */
+[data-design-backdrop='tide'] { background: linear-gradient(165deg, color-mix(in srgb, var(--accent) 16%, var(--bg)), var(--bg) 55%); }
+[data-design-backdrop='dawn'] { background: linear-gradient(165deg, color-mix(in srgb, var(--brass) 18%, var(--bg)), var(--bg) 55%); }
+[data-design-backdrop='grid'] { background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 28px 28px; }
+[data-design-card='outline'] .flag-card:not([aria-current='true']) { box-shadow: none; }
+[data-design-card='outline'] .flag-card { background: color-mix(in srgb, var(--panel) 70%, transparent); border-color: var(--fl-control-border); }
+[data-design-card='flat'] .flag-card:not([aria-current='true']) { box-shadow: none; border-color: transparent; }
+[data-design-card='raised'] .flag-card { transition: box-shadow 150ms ease-out, transform 150ms ease-out; }
+[data-design-card='raised'] .flag-card:not([aria-current='true']) { box-shadow: 0 6px 18px rgb(0 0 0 / 0.14); border-color: transparent; }
+[data-design-card='raised'] .flag-card:hover { transform: translateY(-2px); }
+[data-design-card='glass'] .flag-card { background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(10px); }
+[data-design-motion='lively'] .flag-card { animation: flag-rise 200ms ease-out both; animation-delay: calc(var(--flag-i, 0) * 40ms); }
+@keyframes flag-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-design-motion='lively'] .flag-card { animation: none; }
+  [data-design-card='raised'] .flag-card:hover { transform: none; }
+}
 .flag-handle { opacity: 0; }
 .flag-card:hover .flag-handle,
 .flag-card:focus-within .flag-handle,
