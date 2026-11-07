@@ -14,7 +14,7 @@ BeforeAll {
         [void]$ps.AddScript({
             param($L, $S)
             while ($true) {
-                $c = $L.AcceptTcpClient()
+                try { $c = $L.AcceptTcpClient() } catch { break }   # the listener was stopped
                 try {
                     $st = $c.GetStream(); $st.ReadTimeout = 5000
                     $buf = New-Object byte[] 65536; $raw = ''

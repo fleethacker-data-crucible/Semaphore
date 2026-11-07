@@ -89,7 +89,7 @@ BeforeAll {
                 Send-J $St 200 ([ordered]@{ state = 'ok'; tool = $S.ToolId; nonce = $nonce; sealed = [Convert]::ToBase64String($blob) })
             }
             while ($true) {
-                $c = $L.AcceptTcpClient()
+                try { $c = $L.AcceptTcpClient() } catch { break }   # the listener was stopped
                 try {
                     $st = $c.GetStream(); $st.ReadTimeout = 5000
                     $buf = New-Object byte[] 65536; $raw = ''
@@ -461,7 +461,7 @@ Describe 'AWS session from Lazarette' {
             [void]$ps.AddScript({
                 param($L, $S)
                 while ($true) {
-                    $c = $L.AcceptTcpClient()
+                    try { $c = $L.AcceptTcpClient() } catch { break }   # the listener was stopped
                     try {
                         $st = $c.GetStream(); $st.ReadTimeout = 5000
                         $buf = New-Object byte[] 65536; $raw = ''
@@ -529,7 +529,7 @@ Describe 'Docs match the code' {
         $doc = Get-Content -LiteralPath ([IO.Path]::Combine($server, '..', 'docs', 'VAULT.md')) -Raw
         foreach ($p in $script:SemVaultRoles.Keys) {
             $doc | Should -BeLike "*$p*" -Because "the $p provider reads from Lazarette"
-            foreach ($r in $script:SemVaultRoles[$p]) { $doc | Should -BeLike ('*`' + $r.Role + '`*') -Because "the role $($r.Role) is in the code" }
+            foreach ($r in $script:SemVaultRoles[$p]) { $doc.Contains('`' + $r.Role + '`') | Should -BeTrue -Because "the role $($r.Role) is in the code" }
         }
         $doc | Should -BeLike '*Fairlead/Semaphore*'
         $src = Get-Content -LiteralPath ([IO.Path]::Combine($server, 'AiCredential.ps1')) -Raw
