@@ -110,7 +110,7 @@ Context 'Settings' {
     }
 
     It 'refuses an AI address that is not on this machine: <Url>' -TestCases @(
-        @{ Url = 'https://api.example.com/v1' }, @{ Url = 'http://192.168.1.20:8776/v1' }, @{ Url = 'http://user:pw@127.0.0.1:8776/v1' }, @{ Url = 'ftp://127.0.0.1/v1' }, @{ Url = 'not a url' }
+        @{ Url = 'https://api.github.com/v1' }, @{ Url = 'http://192.168.1.20:8776/v1' }, @{ Url = 'http://user:pw@127.0.0.1:8776/v1' }, @{ Url = 'ftp://127.0.0.1/v1' }, @{ Url = 'not a url' }
     ) {
         $env:SEMAPHORE_AI_URL = $Url
         (Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile).Problem | Should -Not -BeNullOrEmpty
