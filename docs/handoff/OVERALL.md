@@ -23,7 +23,7 @@ Start with `docs/handoff/LOCAL-VERIFICATION.md`: nothing in PowerShell on this b
   - Find Lazarette only by the rule in Lazarette's docs.
   - Commit only as the configured identity, with no Co-Authored-By or tool names in commits or PRs.
   - PowerShell 5.1 syntax.
-- **UX rules.** `docs/UNIFIED-UI.md` (Fleet UI), plus the engagement ethics in `sun-of-anton/tool-audit` → `engagement-design/README.md`: honest, aligned, private by default, can be switched off, minimal data. No leaderboards, no loss-framed streaks, no push notifications.
+- **UX rules.** `docs/UNIFIED-UI.md` (Fleet UI), plus the engagement ethics in `sun-of-anton/engagement-framework` → `README.md`: honest, aligned, private by default, can be switched off, minimal data. No leaderboards, no loss-framed streaks, no push notifications.
 
 ## What the branch `ccr-e62db918-x89h3m` contains (35 commits ahead of main, no PR yet)
 
@@ -107,7 +107,7 @@ powershell -NoProfile -Command "Import-Module Pester -RequiredVersion 5.7.1; Inv
 The owner wants an **ethical engagement framework**: a research synthesis of the psychology methods,
 then a TypeScript library (mastery, open difficulty adjustment, spacing, goals, feedback, impact,
 rhythm, recognition, and guardrails that enforce the five tests), later a C# port for games, with
-Semaphore as the first adopter. It needs a new **private** repo under `sun-of-anton`, which the owner
-creates. Start from `sun-of-anton/tool-audit/engagement-design/README.md`. Research APIs (OpenAlex,
+Semaphore as the first adopter. It lives in the private repo `sun-of-anton/engagement-framework`; its `README.md` holds the
+teardowns, the evidence table and the framework plan. Research APIs (OpenAlex,
 Semantic Scholar, arXiv, Crossref) were blocked in the cloud session; locally they should be
 reachable.
