@@ -28,3 +28,11 @@ test('inline script, style, event handlers and javascript: URLs fail', () => {
   assert.equal(checkIndexHtml(good.replace('<body>', '<body onLoad = "go()">')).length, 1);
   assert.equal(checkIndexHtml(good.replace('<div id="root">', '<a href="javascript:go()">x</a><div id="root">')).length, 1);
 });
+
+test('a script the browser runs is not hidden by an odd end tag or a comment trick', () => {
+  const add = (html: string) => good.replace('<div id="root">', `${html}<div id="root">`);
+  assert.equal(checkIndexHtml(add('<script>alert(1)</script foo>')).length, 1);
+  assert.equal(checkIndexHtml(add('<script>alert(1)</script\t\n bar>')).length, 1);
+  assert.equal(checkIndexHtml(add('<!-- --!><script>alert(1)</script><!-- -->')).length, 1);
+  assert.equal(checkIndexHtml(add('<!-<!-- x -->- --!><script>alert(1)</script>')).length, 1);
+});

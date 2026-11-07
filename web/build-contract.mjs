@@ -11,11 +11,22 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** The page without HTML comments, ended the way a browser ends them, repeated until none are left. */
+export function stripHtmlComments(html) {
+  let text = html;
+  let before;
+  do {
+    before = text;
+    text = text.replace(/<!--[\s\S]*?--!?>/g, '');
+  } while (text !== before);
+  return text;
+}
+
 /** Problems with one index.html, as plain sentences; [] when it keeps the contract. */
 export function checkIndexHtml(html) {
   const problems = [];
-  const text = html.replace(/<!--[\s\S]*?-->/g, '');
-  for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+  const text = stripHtmlComments(html);
+  for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)) {
     const attrs = m[1] ?? '';
     if (!/\ssrc\s*=/i.test(' ' + attrs)) problems.push('an inline <script> without src');
     else if ((m[2] ?? '').trim() !== '') problems.push('a <script src> with inline code in its body');
@@ -34,7 +45,7 @@ export function checkIndexHtml(html) {
 /** Local files the page loads (script src, link href), relative to dist. */
 export function referencedFiles(html) {
   const out = [];
-  const text = html.replace(/<!--[\s\S]*?-->/g, '');
+  const text = stripHtmlComments(html);
   for (const m of text.matchAll(/<(?:script|link)\b[^>]*?\s(?:src|href)\s*=\s*"([^"]+)"/gi)) {
     const ref = m[1];
     if (/^[a-z]+:|^\/\//i.test(ref)) continue;

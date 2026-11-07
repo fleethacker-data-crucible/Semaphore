@@ -12,6 +12,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { stripHtmlComments } from './build-contract.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(process.argv[2] ?? path.join(here, 'dist'));
@@ -22,7 +23,7 @@ if (!existsSync(path.join(dist, 'index.html'))) {
   process.exit(1);
 }
 
-const html = readFileSync(path.join(dist, 'index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+const html = stripHtmlComments(readFileSync(path.join(dist, 'index.html'), 'utf8'));
 const entry = /<script\b[^>]*type="module"[^>]*src="([^"]+)"/.exec(html)?.[1] ?? /<script\b[^>]*src="([^"]+)"[^>]*type="module"/.exec(html)?.[1];
 if (!entry) {
   console.error('size: index.html has no <script type="module" src>.');
