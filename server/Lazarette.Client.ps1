@@ -1,7 +1,7 @@
 #requires -Version 5.1
 # =============================================================================
-# Copied unchanged from Lazarette 5.1.0, tools/Lazarette.Client.ps1 at commit 7a5fda8 (Lazarette main
-# e167907, 2026-11-06). Do not edit this copy: copy the file again from Lazarette when it changes.
+# Copied unchanged from Lazarette 5.1.0, tools/Lazarette.Client.ps1 at commit 12e69e0 (Lazarette main
+# e0e09e4, 2026-11-06). Do not edit this copy: copy the file again from Lazarette when it changes.
 # Semaphore uses it through server/Vault.ps1 only (docs/VAULT.md).
 # Lazarette tool client (docs/TOOLS.md). Copy this one file into a tool (Semaphore, Halyard,
 # Eight Bells, Gangplank, a scheduled script) and dot-source it. It talks to the running Lazarette
@@ -156,8 +156,8 @@ function Invoke-LzClientPost {
     $split = $text.IndexOf("`r`n`r`n")
     if ($split -lt 0 -or $text -notmatch '^HTTP/1\.[01] (\d{3})') { throw 'Lazarette sent a malformed answer.' }
     $status = [int]$Matches[1]
-    $json = $null; try { $json = $text.Substring($split + 4) | ConvertFrom-Json -ErrorAction Stop } catch { $json = $null }
-    return @{ Status = $status; Json = $json }
+    $answer = $null; try { $answer = $text.Substring($split + 4) | ConvertFrom-Json -ErrorAction Stop } catch { $answer = $null }
+    return @{ Status = $status; Json = $answer }
 }
 
 function Get-LazaretteToolSecrets {
@@ -173,7 +173,9 @@ function Get-LazaretteToolSecrets {
         [ValidateLength(0, 120)][string]$Purpose = '',
         [int]$Port = (Get-LzClientPort),
         [switch]$AsSecureString,
-        [switch]$Strict      # throw when any name has no value
+        [switch]$Strict,     # throw when any name has no value
+        [Alias('Env')][ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$')][string]$Environment = '',   # dev | test | prod ...: items tagged with it, else untagged ones (#118)
+        [int]$WaitForAllowSeconds = 0   # when access has expired, keep asking this long while the user clicks Allow
     )
     $C = $script:LzClient
     $pair = Get-LzClientPairing $Tool
@@ -182,13 +184,26 @@ function Get-LazaretteToolSecrets {
         $nb = New-Object byte[] 24; try { $rng.GetBytes($nb) } finally { $rng.Dispose() }
         $nonce = ConvertTo-LzClientB64Url $nb
         $time = [string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $msg = ($C.Label, 'POST', $C.Path, $pair.Id, $time, $nonce, ($Names -join ','), $Purpose) -join "`n"
+        $envName = $Environment.Trim().ToLowerInvariant()
+        $parts = @($C.Label, 'POST', $C.Path, $pair.Id, $time, $nonce, ($Names -join ','), $Purpose); if ($envName) { $parts += $envName }
+        $msg = $parts -join "`n"
         $proof = ConvertTo-LzClientB64Url (Get-LzClientHmac -Key $pair.Secret -Data ([Text.Encoding]::UTF8.GetBytes($msg)))
-        $req = [ordered]@{ tool = $pair.Id; nonce = $nonce; time = [long]$time; names = @($Names); purpose = $Purpose; proof = $proof } | ConvertTo-Json -Compress -Depth 4
+        $req = [ordered]@{ tool = $pair.Id; nonce = $nonce; time = [long]$time; names = @($Names); purpose = $Purpose; proof = $proof }
+        if ($envName) { $req.env = $envName }
+        $req = $req | ConvertTo-Json -Compress -Depth 4
         $r = Invoke-LzClientPost -Port $Port -Path $C.Path -Json $req
         if ($r.Status -ne 200) {
             $why = if ($r.Json -and $r.Json.message) { [string]$r.Json.message } else { "HTTP $($r.Status)" }
             $code = if ($r.Json -and $r.Json.error) { [string]$r.Json.error } else { 'error' }
+            if ($code -eq 'expired' -and $WaitForAllowSeconds -gt 0) {
+                Write-Warning $why
+                Start-Sleep -Seconds ([Math]::Min(5, $WaitForAllowSeconds))
+                $left = $WaitForAllowSeconds - 5
+                $again = @{ Tool = $Tool; Names = $Names; Purpose = $Purpose; Port = $Port; WaitForAllowSeconds = $left; Environment = $Environment }
+                if ($AsSecureString) { $again.AsSecureString = $true }
+                if ($Strict) { $again.Strict = $true }
+                return (Get-LazaretteToolSecrets @again)
+            }
             throw ("Lazarette refused the request ({0}): {1}" -f $code, $why)
         }
         if ([string]$r.Json.nonce -ne $nonce -or [string]$r.Json.tool -ne $pair.Id) { throw 'Lazarette answered a different request.' }
@@ -217,7 +232,7 @@ function Get-LazaretteToolSecrets {
 
 function Get-LazaretteToolSecret {
     <# One secret by name; throws when it is not shared (use Get-LazaretteToolSecrets for several). #>
-    param([Parameter(Mandatory)][string]$Tool, [Parameter(Mandatory)][string]$Name, [string]$Purpose = '', [int]$Port = (Get-LzClientPort), [switch]$AsSecureString)
-    $r = Get-LazaretteToolSecrets -Tool $Tool -Names @($Name) -Purpose $Purpose -Port $Port -AsSecureString:$AsSecureString -Strict
+    param([Parameter(Mandatory)][string]$Tool, [Parameter(Mandatory)][string]$Name, [string]$Purpose = '', [int]$Port = (Get-LzClientPort), [switch]$AsSecureString, [Alias('Env')][string]$Environment = '')
+    $r = Get-LazaretteToolSecrets -Tool $Tool -Names @($Name) -Purpose $Purpose -Port $Port -AsSecureString:$AsSecureString -Strict -Environment $Environment
     return $r[$Name]
 }
