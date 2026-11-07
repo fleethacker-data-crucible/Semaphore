@@ -34,7 +34,7 @@ export function ConflictBar({ conflict, onTheirs, onCopy, onOverwrite }: { confl
     <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-warn bg-warn-soft px-4 py-2 text-sm">
       <Users size={16} aria-hidden="true" className="shrink-0 text-warn" />
       <p className="min-w-0 flex-1">
-        <span className="font-semibold">Someone else saved {conflict.kind === 'hoists' ? `“${conflict.title || 'this hoist'}”` : 'the catalog'}{at(conflict.theirsAt)}.</span> Your changes are kept here and were not saved over theirs. Choose which to keep.
+        <span className="font-semibold">Someone else saved {conflict.kind === 'hoists' ? 'this hoist' : 'the catalog'}{at(conflict.theirsAt)}{conflict.kind === 'hoists' && conflict.title ? ` while you were editing “${conflict.title}”` : ''}.</span> Your changes are kept here and were not saved over theirs. Choose which to keep.
       </p>
       <div className="flex flex-wrap gap-1.5">
         <button type="button" onClick={onTheirs} className={`${btn} border border-ink-3 bg-panel hover:bg-panel-2`}>
