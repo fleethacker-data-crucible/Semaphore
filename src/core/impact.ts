@@ -209,6 +209,12 @@ export function impactFor(entries: readonly PlaybookEntry[], logs: readonly AskL
   return { thisWeek, lastWeek, top, bz: marks, waiting };
 }
 
+/** The welcome page's line: what the number is, and nothing when there is nothing to say. */
+export function impactLine(thisWeek: number): string | null {
+  if (thisWeek <= 0) return null;
+  return `Your reviewed answers were shown ${thisWeek} time${thisWeek === 1 ? '' : 's'} this week.`;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The team's week: computed from the playbook alone, no new storage
 

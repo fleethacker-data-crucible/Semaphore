@@ -12,10 +12,24 @@ function ToastCard({ t }: { t: Toast }) {
   return (
     <div className={`fl-toast pointer-events-auto flex w-[380px] max-w-[calc(100vw-2rem)] items-start gap-2.5 rounded-[10px] border px-3 py-2.5 text-sm text-ink shadow-lg ${tone}`}>
       <Icon size={16} aria-hidden="true" className={`mt-0.5 shrink-0 ${error ? 'text-bad' : t.tone === 'success' ? 'text-good' : 'text-accent'}`} />
-      <p className="min-w-0 flex-1 break-words">
-        {error && <span className="font-semibold text-bad">Error: </span>}
-        {t.text}
-      </p>
+      <div className="min-w-0 flex-1">
+        <p className="break-words">
+          {error && <span className="font-semibold text-bad">Error: </span>}
+          {t.text}
+        </p>
+        {t.secondary && (
+          <button
+            type="button"
+            onClick={() => {
+              toasts.dismiss(t.id);
+              t.secondary!.run();
+            }}
+            className="mt-1 min-h-8 rounded-md text-sm font-semibold text-accent hover:underline"
+          >
+            {t.secondary.label}
+          </button>
+        )}
+      </div>
       {t.action && (
         <button
           type="button"

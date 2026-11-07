@@ -20,6 +20,8 @@ export function Emblem({ className, alt = 'Semaphore' }: { className?: string; a
 export interface WelcomeProps {
   /** Title of the page the analyst was last on; continuing opens it. */
   lastTitle: string;
+  /** This week's impact in a sentence, or null (lib core/impact.ts impactLine). */
+  impactLine?: string | null;
   canOpenSaved: boolean;
   onContinue: () => void;
   onNew: () => void;
@@ -55,6 +57,7 @@ export function Welcome(p: WelcomeProps) {
       <p className="max-w-[56ch] text-sm text-ink-2">
         Describe a dashboard in plain English and Semaphore drafts it from your data, on this computer. Leadership asks the questions; your reviewed work answers them.
       </p>
+      {p.impactLine && <p className="text-sm text-ink-2">{p.impactLine}</p>}
       {first ? (
         <button
           type="button"

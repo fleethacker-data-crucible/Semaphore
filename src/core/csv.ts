@@ -24,6 +24,14 @@ export function checkCsvSize(bytes: number): void {
   if (bytes > CSV_LIMITS.bytes) throw new CsvError(`The file is larger than ${CSV_LIMITS.bytes / 1024 / 1024} MB.`);
 }
 
+/** The busy line while a file is read: which one, how far through the batch, and how big when that matters. */
+export function readingLabel(name: string, at: number, total: number, bytes: number): string {
+  const size = bytes >= 1024 * 1024 ? `, ${Math.round(bytes / 1024 / 1024)} MB` : '';
+  const place = total > 1 ? `${at} of ${total}` : '';
+  const detail = `${place}${place ? size : size.slice(2)}`;
+  return `Reading ${name}${detail ? ` (${detail})` : ''}…`;
+}
+
 /** Data rows read to decide each column's type. The same rows are checked for leading zeros. */
 const SAMPLE_ROWS = 5000;
 const QUOTE = 34;

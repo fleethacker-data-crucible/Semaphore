@@ -311,6 +311,9 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               shown={a}
               index={index}
               onAsk={(x) => void ask(x)}
+              onFlag={() =>
+                void queue(a.answer.question, 'drafted', ['Flagged for review from the Leadership view: a reviewed answer someone wants looked at again.']).then((queued) => setAnswers((list) => list.map((x) => (x.key === a.key ? { ...x, queued } : x))))
+              }
               themeKey={themeKey}
               bz={playbook.social.bz && a.answer.entry ? { given: hasBz(playbook.bz, user, a.answer.entry.id), give: () => playbook.giveBz(a.answer.entry!.id) } : null}
             />
@@ -409,7 +412,7 @@ function BzButton({ given, give }: { given: boolean; give: () => Promise<boolean
   );
 }
 
-function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
+function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onFlag: () => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
   const [why, setWhy] = useState(false);
   const { answer, result } = shown;
   const t = TRUST[shown.state === 'unanswered' && answer.trust !== 'none' ? 'none' : answer.trust];
@@ -464,6 +467,11 @@ function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index
                 </li>
               ))}
             </ul>
+          )}
+          {(answer.trust === 'reviewed' || answer.trust === 'adjusted') && !shown.queued && (
+            <button type="button" onClick={onFlag} className="mt-3 text-sm text-ink-2 underline-offset-2 hover:text-ink hover:underline">
+              Flag for review
+            </button>
           )}
           {bz && (answer.trust === 'reviewed' || answer.trust === 'adjusted') && (
             <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">

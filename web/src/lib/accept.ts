@@ -161,11 +161,14 @@ export function collapseAccepts(times: number[], now: number): { times: number[]
 export interface NotifyOptions {
   tone?: 'info' | 'success' | 'error';
   action?: { label: string; run: () => void };
+  secondary?: { label: string; run: () => void };
 }
 
 export interface UseAcceptInput extends AcceptInput {
   updateFlag: (id: string, patch: Partial<Flag>) => void;
   notify: (text: string, opts?: NotifyOptions) => void;
+  /** Opens the Leadership view (#70), offered once a flag is in the playbook. */
+  onSeeLeadership?: () => void;
   /** The playbook's save calls, for flushAccepts. */
   saveEntries?: (list: PlaybookEntry[]) => Promise<void>;
   saveQuestion?: (q: QuestionItem) => Promise<void>;
@@ -242,6 +245,7 @@ export function useAccept(input: UseAcceptInput): (id: string) => void {
       cur.notify(`Accepted. ${collapsed.times.length} flags accepted in the last few minutes${facts.inPlaybook ? '; this one is in the playbook' : ''}.`, { tone: 'success', action: undo });
       return;
     }
-    cur.notify(facts.bonus ? `${facts.headline} ${facts.bonus}` : facts.headline, { tone: 'success', action: undo });
+    const see = facts.inPlaybook && cur.onSeeLeadership ? { secondary: { label: 'See it as leadership will', run: cur.onSeeLeadership } } : {};
+    cur.notify(facts.bonus ? `${facts.headline} ${facts.bonus}` : facts.headline, { tone: 'success', action: undo, ...see });
   }, []);
 }

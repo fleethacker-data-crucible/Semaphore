@@ -8,7 +8,8 @@ import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
-import { checkCsvSize, CsvError, readCsv } from '../../src/core/csv.ts';
+import { impactFor, impactLine } from '../../src/core/impact.ts';
+import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/csv.ts';
 import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
@@ -473,8 +474,10 @@ export function App() {
       const tables: TableRows = { ...files };
       const held = new Set(workerTables);
       let notKept: string | null = null;
-      for (const file of Array.from(list)) {
+      const picked = Array.from(list);
+      for (const [at, file] of picked.entries()) {
         try {
+          sayBusy(readingLabel(file.name, at + 1, picked.length, file.size));
           checkCsvSize(file.size);
           // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first
           // (src/core/fleet-exports.ts). A plain CSV is never read on the page: its first line tells.
@@ -739,7 +742,7 @@ export function App() {
       playbook.saveEntries(learnt).then(
         () => {
           const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
-          if (fresh.length && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
+          if (fresh.length && hoist.id !== exampleHoist.id && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
           const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
           for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
         },
@@ -884,7 +887,7 @@ export function App() {
 
   // Keyboard (hooks/useShortcuts.ts, listed in the ? help): palette, help, undo and redo, delete,
   // arrows to nudge, Escape to deselect, / for a quick chart. Flag keys come from useFlagKeys.
-  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
+  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, onSeeLeadership: () => setView('ask'), saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
   const flagKeys = useFlagKeys({ selectedId, selectedStatus: selected?.status, onAccept: onAcceptFlag, onDuplicate: duplicateFlag });
   useShortcuts({
     enabled: currentView === 'builder' && !welcome,
@@ -1051,6 +1054,7 @@ export function App() {
       <>
         <Welcome
           lastTitle={hoist.title}
+          impactLine={playbook.social.impact ? impactLine(impactFor(playbook.entries, playbook.asks, playbook.bz, user, 0)?.thisWeek ?? 0) : null}
           canOpenSaved={!!server}
           onContinue={() => setWelcome(false)}
           onNew={() => {
