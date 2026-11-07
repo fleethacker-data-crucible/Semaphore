@@ -1371,7 +1371,7 @@ export function App() {
             title={hoist.title}
             onClose={() => setShareOpen(false)}
             onSave={async (passphrase) => {
-              const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true });
+              const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
               const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
               const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
               download(name, html);
