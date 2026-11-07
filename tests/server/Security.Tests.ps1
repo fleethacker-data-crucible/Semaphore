@@ -243,7 +243,7 @@ Describe 'Static files' {
             $script:Sem.WebRoot = $empty
             $r = Invoke-TestRequest -Path '/'
             $r.Status | Should -Be 200
-            $r.Body | Should -Match 'npm ci &amp;&amp; npm run build'
+            $r.Body | Should -Match 'npm ci</code> then <code>npm run build'
             (Invoke-TestRequest -Path '/app/route').Status | Should -Be 200
             (Invoke-TestRequest -Path '/x.js').Status | Should -Be 404
         } finally { $script:Sem.WebRoot = $old; Remove-Item -LiteralPath $empty -Recurse -Force }
