@@ -97,7 +97,7 @@ Run `Launch-Semaphore.bat` from the checkout after `npm run build`, then check:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File build\Build-Semaphore.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File build\Test-SemaphoreZip.ps1 -ZipPath dist\Semaphore-0.3.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File build\Test-SemaphoreZip.ps1 -ZipPath dist\Semaphore-0.4.0.zip
 ```
 
 Then use the Nautilus twin (from `sun-of-anton/tool-audit`, `nautilus-twin.zip`). This needs Docker
