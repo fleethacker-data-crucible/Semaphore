@@ -22,7 +22,8 @@ BeforeAll {
         $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $dir | Out-Null
         Set-Content -LiteralPath (Join-Path $dir 'sources.json') -Value $Json -Encoding UTF8
-        return , @(Get-SemSources -HomeDir $dir)
+        # The built-in local database (id 'local') is always last; these tests are about sources.json.
+        return , @(Get-SemSources -HomeDir $dir | Where-Object { $_.id -ne 'local' })
     }
     function script:ConvertTo-Secure([string]$Text) {
         $ss = New-Object Security.SecureString

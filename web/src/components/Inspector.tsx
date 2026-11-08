@@ -49,6 +49,8 @@ const KINDS = FLAG_KINDS;
 // Inspector > Model loads with the model list, only when a model flag is selected.
 const ModelPanel = lazy(() => import('./ModelPanel.tsx'));
 const PivotPanel = lazy(() => import('./PivotPanel.tsx'));
+// Inspector > Widget (the code editor and the team library) loads only when a custom flag is selected.
+const CustomPanel = lazy(() => import('./CustomPanel.tsx'));
 
 export function Inspector(p: InspectorProps) {
   const { flag, hoist, index } = p;
@@ -226,6 +228,12 @@ export function Inspector(p: InspectorProps) {
           </Suspense>
         )}
 
+        {flag.kind === 'custom' && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading the editor…</p>}>
+            <CustomPanel flag={flag} onChange={p.onChange} />
+          </Suspense>
+        )}
+
         <Suspense fallback={null}>
         <StylePanel
           flag={flag}
@@ -345,7 +353,7 @@ export function Inspector(p: InspectorProps) {
         {result && flag.kind !== 'filter' && flag.kind !== 'text' && (
           <section aria-label="Save this flag" className="flex flex-wrap items-center gap-1 border-t border-line pt-3">
             <span className="mr-1 text-xs font-semibold text-ink-2">Save as</span>
-            {(CHART_KINDS.includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : (['csv'] as const)).map((f) => (
+            {(CHART_KINDS.includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : flag.kind === 'custom' ? (['png', 'csv'] as const) : (['csv'] as const)).map((f) => (
               <button key={f} type="button" onClick={() => p.onSaveFlag(f, result)} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
                 {f}
               </button>

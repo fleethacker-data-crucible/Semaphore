@@ -3,6 +3,7 @@
 # Semaphore data connectors: /api/query and /api/profile.
 #
 # Sources are declared in <home>\sources.json:
+# plus the built-in local database (id 'local', LocalDb.ps1), which needs no entry:
 #   [{ "id": "maint", "label": "Maintenance warehouse", "kind": "postgres",
 #      "provider": "odbc", "connection": "DSN=MaintWarehouse" }]
 # Providers: odbc (System.Data.Odbc) and oledb (System.Data.OleDb, e.g. Access through the ACE
@@ -32,19 +33,31 @@ function Test-SemConnectionString {
     return $null
 }
 
-function Get-SemSources {
-    # Valid entries of <home>\sources.json (invalid ones are skipped and logged). Never returned to the browser whole.
+function Get-SemLocalSource {
+    # The built-in local database (LocalDb.ps1): always a source, with no sources.json entry. The connection
+    # string names the file and opens it read-only; like every connection string it never reaches the page.
     param([string]$HomeDir)
-    $f = Join-Path $HomeDir 'sources.json'
-    if (-not [IO.File]::Exists($f)) { return @() }
-    try { $j = [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
-    catch { Write-SemLog 'WARN' 'sources.json is not valid JSON; no sources loaded'; return @() }
+    $db = [IO.Path]::Combine($HomeDir, 'local', 'warehouse.sqlite')
+    return [pscustomobject]@{ id = 'local'; label = 'Local database'; kind = 'local'; provider = 'local'; connection = ('Data Source=' + $db + ';Mode=ReadOnly'); raw = $null; home = $HomeDir }
+}
+
+function Get-SemSources {
+    # Valid entries of <home>\sources.json (invalid ones are skipped and logged), then the built-in local
+    # database (id 'local'). Never returned to the browser whole.
+    param([string]$HomeDir)
     $out = New-Object System.Collections.Generic.List[object]
-    $seen = @{}
+    $f = Join-Path $HomeDir 'sources.json'
+    $j = @()
+    if ([IO.File]::Exists($f)) {
+        try { $j = [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+        catch { Write-SemLog 'WARN' 'sources.json is not valid JSON; no sources loaded'; $j = @() }
+    }
+    $seen = @{ 'local' = $true }
     foreach ($s in @($j)) {
         if ($s -isnot [Management.Automation.PSCustomObject]) { continue }
         $id = [string]$s.id
         if ($id -cnotmatch '\A[A-Za-z0-9_-]{1,64}\z') { Write-SemLog 'WARN' 'sources.json: skipping a source with an invalid id'; continue }
+        if ($id -eq 'local') { Write-SemLog 'WARN' "sources.json: the id 'local' is the built-in local database; that entry is skipped"; continue }
         if ($seen.ContainsKey($id)) { Write-SemLog 'WARN' "sources.json: duplicate source id '$id' skipped"; continue }
         $provider = ([string]$s.provider).ToLowerInvariant()
         $raw = $provider
@@ -71,6 +84,7 @@ function Get-SemSources {
         # raw keeps the entry for providers with their own settings (athena); it is never sent to the browser.
         $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; engine = $engine; provider = $provider; connection = $connection; raw = $s })
     }
+    if ($HomeDir) { $out.Add((Get-SemLocalSource -HomeDir $HomeDir)) }
     return $out.ToArray()
 }
 
@@ -508,6 +522,12 @@ function Get-SemEffectiveConnectionString {
 function New-SemConnection {
     # An open, read-only-where-possible connection. Throws 'provider-unavailable:' when the provider type is missing.
     param([Parameter(Mandatory = $true)]$Source, [int]$TimeoutSec = 30)
+    if ($Source.provider -eq 'local') {
+        # The local database (LocalDb.ps1), read-only: SQLITE_OPEN_READONLY, query_only, no ATTACH, reads-only authorizer.
+        if (-not (Get-Command New-SemLocalQueryConnection -ErrorAction SilentlyContinue)) { throw 'provider-unavailable: the local database (server\LocalDb.ps1) is not loaded.' }
+        try { return (New-SemLocalQueryConnection -Source $Source) }
+        catch { if ($_.Exception.Message -match '(?i)unable to load dll|winsqlite3') { throw 'provider-unavailable: the SQLite engine that ships with Windows (winsqlite3.dll) is not on this computer.' }; throw }
+    }
     $cs = Get-SemEffectiveConnectionString -Source $Source
     $conn = $null
     if ($Source.provider -eq 'odbc') {
@@ -809,6 +829,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.LakePath
     . $Ctx.VaultPath
     . $Ctx.ConnectorsPath
+    . $Ctx.LocalDbPath
     . $Ctx.S3Path
 }
 Clear-SemVaultRequest
@@ -852,7 +873,7 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
-        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); LocalDbPath = (Join-Path $here 'LocalDb.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
         Port = 0; AwsSettings = $script:Sem.AwsSettings; VoiceInput = $script:Sem.VoiceInput; TalkForge = $script:SemTalkForge
     }
@@ -922,12 +943,14 @@ function Update-SemWorkers {
         try { $item.PS.Dispose() } catch { }
         [void]$w.Remove($item)
     }
+    if ($null -ne $script:Sem.LocalJobs) { Update-SemLocalJobs }   # import jobs (LocalDb.ps1)
 }
 
 function Close-SemWorkers {
     # Asks every pipeline to stop and waits a bounded time (never Stop(), which waits as long as a stuck driver
     # call does), then disposes what stopped and leaves the rest to end with the process.
     param([int]$WaitMs = 3000)
+    if ($null -ne $script:Sem.LocalJobs) { Stop-SemLocalJobs -WaitMs $WaitMs }   # import jobs (LocalDb.ps1): cancelled, staging dropped
     $w = $script:Sem.Workers
     if ($null -ne $w) {
         $stops = New-Object System.Collections.Generic.List[object]

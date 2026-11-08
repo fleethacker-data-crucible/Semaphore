@@ -8,9 +8,10 @@ import type { RichKind } from './kinds.ts';
 import { parsePivotSpec, type PivotSpec } from './pivot-spec.ts';
 import { parseModelSpec } from './predict/spec.ts';
 import type { ModelSpec } from './predict/types.ts';
+import { type FlagWidget, parseWidget } from './widget.ts';
 
-export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'pivot' | RichKind;
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'pivot'];
+export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'pivot' | 'custom' | RichKind;
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'pivot', 'custom'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
@@ -109,6 +110,8 @@ export interface Flag {
   model?: ModelSpec;
   /** For `pivot` flags: percentages, heat shading and the default order (src/core/pivot.ts). */
   pivot?: PivotSpec;
+  /** For `custom` flags: the analyst's own chart code, run in a sandboxed frame (src/core/widget.ts). */
+  widget?: FlagWidget;
 }
 
 export interface Hoist {
@@ -320,6 +323,10 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (kind === 'pivot') {
     const pivot = parsePivotSpec(raw.pivot);
     if (pivot) flag.pivot = pivot;
+  }
+  if (kind === 'custom') {
+    const widget = parseWidget(raw.widget, warnings, where);
+    if (widget) flag.widget = widget;
   }
   return flag;
 }

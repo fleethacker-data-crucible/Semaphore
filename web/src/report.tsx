@@ -145,7 +145,8 @@ function Report({ report }: { report: ReportPayload }) {
                   ) : missing ? (
                     <p role="status" className="p-1 text-xs text-warn">{missing}</p>
                   ) : v.result ? (
-                    <FlagView flag={view.flag} result={v.result} index={index} selections={steps.length ? {} : selections} onSelect={pick} themeKey={report.theme} {...(design ? { design } : {})} />
+                    // A shared report file has no widget sandbox to run code in: a custom widget shows as its table.
+                    <FlagView flag={view.flag.kind === 'custom' ? { ...view.flag, kind: 'table' } : view.flag} result={v.result} index={index} selections={steps.length ? {} : selections} onSelect={pick} themeKey={report.theme} {...(design ? { design } : {})} />
                   ) : (
                     <p className="p-1 text-xs text-warn">{f.error ?? 'No data.'}</p>
                   )}

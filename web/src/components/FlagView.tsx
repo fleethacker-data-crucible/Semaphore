@@ -44,8 +44,20 @@ export function ModelView(props: { flag: Flag; result: FlagResult | undefined; i
   );
 }
 
+// Custom flags load the frame host on first use; the frame loads its own bundle (web/src/widget-host.ts).
+const CustomWidget = lazy(() => import('./CustomWidget.tsx'));
+
+function CustomView(props: FlagViewProps) {
+  return (
+    <Suspense fallback={<p className="p-2 text-xs text-ink-3">Loading the widget…</p>}>
+      <CustomWidget flag={props.flag} result={props.result} index={props.index} selections={props.selections} onSelect={props.onSelect} themeKey={props.themeKey} {...(props.design ? { design: props.design } : {})} />
+    </Suspense>
+  );
+}
+
 export function FlagView(props: FlagViewProps) {
   const { flag } = props;
+  if (flag.kind === 'custom') return <CustomView {...props} />;
   if (flag.kind === 'model') return <ModelView flag={flag} result={props.result} index={props.index} themeKey={props.themeKey} today={props.today ?? new Date()} {...(props.design ? { design: props.design } : {})} />;
   if (flag.kind === 'kpi') return <Kpi {...props} />;
   if (flag.kind === 'filter') return <Picker {...props} />;

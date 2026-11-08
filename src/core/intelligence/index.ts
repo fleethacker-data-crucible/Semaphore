@@ -87,12 +87,15 @@ export async function draftHoist(provider: IntelligenceProvider, brief: string, 
 
 /** Apply a flag draft. The brief and layout stay the analyst's; status becomes "drafted". */
 export function applyFlagDraft(flag: Flag, draft: FlagDraft): Flag {
+  // A custom widget stays one: drafting fills in its data, never its kind, and a click in it keeps
+  // doing what the analyst chose (a widget calls select() itself).
+  const custom = flag.kind === 'custom';
   return {
     ...flag,
-    kind: draft.kind,
+    kind: custom ? 'custom' : draft.kind,
     title: flag.title || draft.title,
     binding: draft.binding,
-    behavior: draft.behavior,
+    behavior: custom ? { ...draft.behavior, onClick: flag.behavior.onClick } : draft.behavior,
     status: draft.binding ? 'drafted' : 'empty',
     confidence: draft.confidence,
     notes: draft.notes,

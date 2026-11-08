@@ -8,6 +8,8 @@
 #   * Headers must arrive within 5 s (32 KB cap); bodies are capped at 8 MB (2 MB for a document PUT,
 #     checked before the body is read or parsed) and must arrive within 30 s for /api/query, 10 s for
 #     every other route (Get-SemBodyLimit). Transfer-Encoding and duplicate Content-Length are rejected.
+#     POST /api/local/import is the exception: its body (a file, up to settings localImportMaxGB) is not read
+#     here at all; the import job streams it to disk after the gate has passed (LocalDb.ps1).
 #   * Every request: loopback caller, Host 127.0.0.1:<port> or localhost:<port>, Origin (when
 #     present) the same origin; otherwise 403.
 #   * /api/*: header X-Semaphore-Session must equal the session token (constant-time compare),
@@ -32,16 +34,28 @@
 # Playwright run of the example dashboard against "style-src 'self'" showed one style-src-attr
 # violation per tooltip, and none with this policy. React's style={} goes through the CSSOM and
 # needs nothing. worker-src: the CSV worker is a same-origin file (blob: kept for worker builds).
-$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+# frame-src 'self': a custom widget's sandboxed frame (/sandbox/widget.html, below).
+$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # The Whisper worker for voice input (web/src/stt-worker.ts, assets/stt.<hash>.js) alone gets
 # 'wasm-unsafe-eval', which lets it compile WebAssembly (the ONNX runtime from TalkForge's files) and
 # does not allow JavaScript eval. A dedicated worker runs under the policy of its own script response,
 # so the page itself keeps the policy above. Sent only while voice input is on (settings voice.input).
-$script:SemSttCsp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+$script:SemSttCsp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 $script:SemSttWorkerPath = '\A/assets/stt\.[0-9a-f]{10}\.js\z'
 # Permissions-Policy with the microphone off. Get-SemPermissionsPolicy sends microphone=(self) instead
 # while voice input is on for this Semaphore (settings voice.input, read at start into $script:Sem.VoiceInput).
 $script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
+# A custom widget's frame: everything under /sandbox/ (web/sandbox/widget.html and its bundle). The page
+# loads it only in <iframe sandbox="allow-scripts">, and the CSP's own sandbox directive makes the
+# document an opaque origin even when it is opened on its own, so it can never read the page's session
+# token, storage or DOM. default-src 'none' leaves it no network at all (no fetch, no images from
+# anywhere, no frames, no workers); 'unsafe-eval' is how the analyst's code runs (new Function),
+# inside that box only. frame-ancestors 'self': only Semaphore's own page may embed it. Its bundle is
+# loaded from the opaque origin, so these files say Cross-Origin-Resource-Policy: cross-origin (they
+# are the same static code for everyone and hold no data), and X-Frame-Options allows the same origin.
+$script:SemSandboxCsp = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+$script:SemSandboxFrameOptions = 'SAMEORIGIN'
+$script:SemSandboxResourcePolicy = 'cross-origin'
 # Hashed build outputs under /assets/ (contract 4, issue #78): a hash segment of 8+ letters/digits.
 $script:SemHashedAsset = '[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$'
 $script:SemImmutable = 'public, max-age=31536000, immutable'
@@ -57,6 +71,7 @@ if ($null -eq $script:Sem) {
         Workers = $null; Pool = $null; WorkerContext = $null; AwsSettings = $null; S3Jobs = [hashtable]::Synchronized(@{})
         OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}; VoiceInput = $false
         Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
+        LocalShares = @(); LocalMaxBytes = [long]21474836480; LocalJobs = $null; LocalPool = $null
     }
 }
 
@@ -166,7 +181,9 @@ function Get-SemHttpReason {
 
 function Get-SemSecurityHeaders {
     # The same set on every response. CacheControl, when given, replaces the no-store / no-cache choice.
-    param([bool]$NoStore = $true, [string]$CacheControl = '', [string]$Csp = '')
+    # -Sandbox: the custom widget frame's set (its CSP, and framing and loading from its opaque origin allowed).
+    param([bool]$NoStore = $true, [string]$CacheControl = '', [string]$Csp = '', [switch]$Sandbox)
+    if ($Sandbox) { $Csp = $script:SemSandboxCsp }
     if (-not $Csp) { $Csp = $script:SemCsp }
     $h = @(
         ('Content-Security-Policy: ' + $Csp),
@@ -175,8 +192,11 @@ function Get-SemSecurityHeaders {
         'X-Frame-Options: DENY',
         'Cross-Origin-Resource-Policy: same-origin',
         'Cross-Origin-Opener-Policy: same-origin',
-        ('Permissions-Policy: ' + (Get-SemPermissionsPolicy))
+        ('Permissions-Policy: ' + $(if ($Sandbox) { $script:SemPermissionsPolicy } else { Get-SemPermissionsPolicy }))   # the widget frame never gets the microphone
     )
+    if ($Sandbox) {
+        $h = @($h | ForEach-Object { $_.Replace('X-Frame-Options: DENY', ('X-Frame-Options: ' + $script:SemSandboxFrameOptions)).Replace('Cross-Origin-Resource-Policy: same-origin', ('Cross-Origin-Resource-Policy: ' + $script:SemSandboxResourcePolicy)) })
+    }
     if ($CacheControl) { $h += ('Cache-Control: ' + $CacheControl) }
     elseif ($NoStore) { $h += 'Cache-Control: no-store' } else { $h += 'Cache-Control: no-cache' }
     return $h
@@ -189,16 +209,16 @@ function Get-SemPermissionsPolicy {
 }
 
 function Get-SemStaticCacheControl {
-    # index.html (and any .html) no-store; a hashed file under /assets/ immutable; anything else no-cache.
+    # index.html (and any .html) no-store; a hashed file under /assets/ or /sandbox/ immutable; anything else no-cache.
     param([string]$UrlPath, [string]$File)
     if ($File -and $File.EndsWith('.html', [StringComparison]::OrdinalIgnoreCase)) { return 'no-store' }
-    if ($UrlPath -cmatch '\A/assets/' -and ($UrlPath.Split('/')[-1]) -cmatch $script:SemHashedAsset) { return $script:SemImmutable }
+    if ($UrlPath -cmatch '\A/(assets|sandbox)/' -and ($UrlPath.Split('/')[-1]) -cmatch $script:SemHashedAsset) { return $script:SemImmutable }
     return 'no-cache'
 }
 
 function Send-SemBytes {
     # Writes to $Stream when given (a worker's client the main loop answers for), else the current request's stream.
-    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '', [IO.Stream]$Stream = $null)
+    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '', [IO.Stream]$Stream = $null, [switch]$Sandbox)
     # ($stream and $Stream are one variable in PowerShell: $own remembers which case this is.)
     $own = ($null -eq $Stream)
     if ($own) { $Stream = $script:Sem.Stream }
@@ -209,7 +229,7 @@ function Send-SemBytes {
     if ($ContentType) { $lines += "Content-Type: $ContentType" }
     $lines += "Content-Length: $($Bytes.Length)"
     $lines += 'Connection: close'
-    $lines += (Get-SemSecurityHeaders -NoStore $NoStore -CacheControl $CacheControl -Csp $Csp)
+    $lines += (Get-SemSecurityHeaders -NoStore $NoStore -CacheControl $CacheControl -Csp $Csp -Sandbox:$Sandbox)
     $lines += $ExtraHeaders
     $head = [Text.Encoding]::ASCII.GetBytes(($lines -join "`r`n") + "`r`n`r`n")
     $stream.Write($head, 0, $head.Length)
@@ -273,6 +293,12 @@ function Read-SemHttpRequest {
     $len = $req.ContentLength
     $limits = Get-SemBodyLimit -Path $req.Path
     if ($len -gt $limits.MaxBytes) { Send-SemError 413 'too-large' $limits.TooLarge; return $null }
+    if ($limits.Streamed) {
+        # The body stays in the socket: the import job reads it to a file (LocalDb.ps1), never into memory.
+        $req.BodyStreamed = $true
+        $req.Client = $Client
+        return $req
+    }
     $body = New-Object byte[] 0
     if ($len -gt 0) {
         $body = New-Object byte[] $len
@@ -297,13 +323,20 @@ function Get-SemBodyLimit {
       The body cap and the time the whole body may take, by route, decided before a byte of it is read:
         /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
         a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
+        /api/local/import     settings localImportMaxGB (20 GB), streamed to disk by the import job, never read here
         a page snapshot       3 MB, 10 s   (a 2 MB page sent as an escaped JSON string)
+        /api/widgets          512 KB, 10 s (a library widget: 64 KB of code, JSON-escaped)
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
+    if ($Path -eq '/api/local/import') {
+        $cap = [long]$script:Sem.LocalMaxBytes; if ($cap -le 0) { $cap = [long]21474836480 }
+        return @{ MaxBytes = $cap; DeadlineMs = 0; Streamed = $true; TooLarge = ('The file is larger than {0} GB, the local import limit (settings localImportMaxGB).' -f [Math]::Round($cap / 1GB, 1)) }
+    }
     if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
     if ($Path -cmatch '^/api/page-snapshots/') { return @{ MaxBytes = 3145728; DeadlineMs = 10000; TooLarge = 'A snapshot may be at most 2 MB.' } }
+    if ($Path -ceq '/api/widgets' -or $Path.StartsWith('/api/widgets/', [StringComparison]::Ordinal)) { return @{ MaxBytes = 524288; DeadlineMs = 10000; TooLarge = 'A library widget may be at most 512 KB as sent (its code at most 64 KB).' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
 }
 
@@ -322,19 +355,22 @@ function ConvertFrom-SemRequestHead {
         $name = $Matches[1]; $value = $Matches[2].Trim()
         if ($name -eq 'Content-Length') {
             $clCount++
-            if ($value -notmatch '^\d{1,10}$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Bad Content-Length.' } }
+            if ($value -notmatch '^\d{1,13}$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Bad Content-Length.' } }
             $contentLength = [long]$value
         }
         if ($name -eq 'Transfer-Encoding') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Transfer-Encoding is not supported.' } }
         if ($headers.ContainsKey($name)) { $headers[$name] = $headers[$name] + ', ' + $value } else { $headers[$name] = $value }
     }
     if ($clCount -gt 1) { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Duplicate Content-Length.' } }
-    if ($contentLength -gt $script:SemMaxBody) { return @{ ErrorStatus = 413; ErrorCode = 'too-large'; ErrorMessage = 'Request body is larger than 8 MB.' } }
     $path = $target; $query = ''
     $qi = $target.IndexOf('?')
     if ($qi -ge 0) { $path = $target.Substring(0, $qi); $query = $target.Substring($qi + 1) }
+    # Every route but the streamed local import is capped at 8 MB here; Read-SemHttpRequest applies the route's own cap.
+    $cap = [long]$script:SemMaxBody
+    if ($path -eq '/api/local/import') { $cap = [long](Get-SemBodyLimit -Path $path).MaxBytes }
+    if ($contentLength -gt $cap) { $msg = 'Request body is larger than 8 MB.'; if ($path -eq '/api/local/import') { $msg = (Get-SemBodyLimit -Path $path).TooLarge }; return @{ ErrorStatus = 413; ErrorCode = 'too-large'; ErrorMessage = $msg } }
     if ($path -cnotmatch '^/[A-Za-z0-9._~/@+-]*\z') { return @{ ErrorStatus = 400; ErrorCode = 'bad-path'; ErrorMessage = 'Bad request path.' } }
-    return @{ Method = $method; Path = $path; Query = $query; Headers = $headers; ContentLength = [int]$contentLength; Body = (New-Object byte[] 0); Json = $null; RemoteAddress = $RemoteAddress; Client = $null }
+    return @{ Method = $method; Path = $path; Query = $query; Headers = $headers; ContentLength = [long]$contentLength; Body = (New-Object byte[] 0); Json = $null; RemoteAddress = $RemoteAddress; Client = $null }
 }
 
 # ---------------------------------------------------------------------------
@@ -491,6 +527,9 @@ function Send-SemStatic {
         if ($skin) { Send-SemBytes -Status 200 -ContentType 'text/css; charset=utf-8' -Bytes ([IO.File]::ReadAllBytes($skin)) -CacheControl 'no-store' -HeadOnly:$head; return }
     }
     $r = Resolve-SemStaticFile -WebRoot $script:Sem.WebRoot -Path $Req.Path
+    # /sandbox/ holds the custom widget frame: its own headers, and no app-route fallback to index.html.
+    $sandbox = $Req.Path.StartsWith('/sandbox/', [StringComparison]::Ordinal)
+    if ($sandbox -and $r.Kind -ne 'file') { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
     switch ($r.Kind) {
         'refused' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
         'missing' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
@@ -501,7 +540,7 @@ function Send-SemStatic {
         default {
             $csp = ''
             if ($script:Sem.VoiceInput -eq $true -and $Req.Path -cmatch $script:SemSttWorkerPath) { $csp = $script:SemSttCsp }
-            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head -Csp $csp
+            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head -Csp $csp -Sandbox:$sandbox
         }
     }
 }
@@ -548,6 +587,7 @@ function Get-SemActiveWorkerCount {
 function Test-SemBusy {
     if ($script:Sem.SyncBusy) { return $true }
     if ((Get-SemActiveWorkerCount) -gt 0) { return $true }
+    if ($null -ne $script:Sem.LocalJobs -and (Get-SemLocalRunningJobCount) -gt 0) { return $true }   # an import (LocalDb.ps1)
     return $false
 }
 

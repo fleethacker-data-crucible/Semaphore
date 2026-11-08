@@ -482,10 +482,11 @@ function Invoke-SemS3ImportJob {
         }
         $first = $true
         foreach ($f in $files) {
-            # Parts that cannot be joined as text (Parquet, Excel) go in one by one: the first replaces when asked, the rest
-            # are added to the same table (Import-SemLocalFile without -Replace adds to an existing table).
+            # Parts that cannot be joined as text (Parquet, Excel) go in one by one: the first replaces when asked (or, when
+            # not, gets a free name such as orders_2), the rest are appended to the table the first one made.
             $a = $args0.Clone(); $a.Path = $f
-            if ($first -and $Plan.Replace) { $a.Replace = $true }
+            if ($first) { if ($Plan.Replace) { $a.Replace = $true } }
+            else { $a.Table = [string]$result.Table; $a.Append = $true }
             $result = Import-SemLocalFile @a
             $rows += [long]$result.Rows
             $first = $false
@@ -515,6 +516,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.LakePath
     . $Ctx.VaultPath
     . $Ctx.ConnectorsPath
+    if ($Ctx.LocalDbPath) { . $Ctx.LocalDbPath }   # the real Import-SemLocalFile, before S3.ps1 would define its stub
     . $Ctx.S3Path
 }
 $script:SemLogPath = $Ctx.LogPath

@@ -214,6 +214,7 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Lake.ps1')
 . (Join-Path $here 'Vault.ps1')
 . (Join-Path $here 'Connectors.ps1')
+. (Join-Path $here 'LocalDb.ps1')
 . (Join-Path $here 'S3.ps1')
 . (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
@@ -333,6 +334,10 @@ if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
 $script:Sem.Social = Get-SemSocialSettings -Settings $settings
+# Local database (LocalDb.ps1): network shares it may read, the upload cap, and the database itself.
+$script:Sem.LocalShares = @($settings.localShares)
+$script:Sem.LocalMaxBytes = [long]$settings.localImportMaxGB * 1GB
+try { [void](Initialize-SemLocalDb -HomeDir $homeDir -Cleanup) } catch { Write-SemLog 'WARN' ('The local database is not available on this computer: ' + $_.Exception.Message) }
 $script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
 # Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
 $script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input

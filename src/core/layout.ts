@@ -33,6 +33,7 @@ export const DEFAULT_SIZE: Record<FlagKind, { w: number; h: number }> = {
   stream: { w: 6, h: 4 },
   model: { w: 6, h: 5 },
   pivot: { w: 6, h: 5 },
+  custom: { w: 6, h: 5 },
 };
 
 export interface Placed {

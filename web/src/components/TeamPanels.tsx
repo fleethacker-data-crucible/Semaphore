@@ -11,7 +11,7 @@ import { MIN_EVIDENCE, SHAPE_LABEL, type Shape, type StyleOverrides, type StyleR
 import type { PlaybookState } from '../lib/playbook.ts';
 import { EmptyState } from './EmptyState.tsx';
 
-const KIND_LABEL: Record<FlagKind, string> = { kpi: 'KPI', bar: 'bar', line: 'line', area: 'area', pie: 'pie', table: 'table', filter: 'picker', text: 'note', radar: 'spider', scatter: 'scatter', heatmap: 'heatmap', calendar: 'calendar', waterfall: 'waterfall', pareto: 'Pareto', sankey: 'Sankey', sunburst: 'sunburst', stream: 'stream', model: 'model', pivot: 'pivot' };
+const KIND_LABEL: Record<FlagKind, string> = { kpi: 'KPI', bar: 'bar', line: 'line', area: 'area', pie: 'pie', table: 'table', filter: 'picker', text: 'note', radar: 'spider', scatter: 'scatter', heatmap: 'heatmap', calendar: 'calendar', waterfall: 'waterfall', pareto: 'Pareto', sankey: 'Sankey', sunburst: 'sunburst', stream: 'stream', model: 'model', pivot: 'pivot', custom: 'custom widget' };
 
 export function StyleTab({ style, overrides, index, user, onSave }: { style: TeamStyle; overrides: StyleOverrides; index: CatalogIndex; user: string; onSave: (o: StyleOverrides) => void }) {
   const save = (next: Partial<StyleOverrides>) => onSave({ ...overrides, ...next, updatedBy: user, updated: new Date().toISOString() });

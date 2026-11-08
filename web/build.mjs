@@ -130,6 +130,28 @@ async function run() {
   const sttName = `stt.${createHash('sha256').update(sttJs).digest('hex').slice(0, 10)}.js`;
   await writeFile(path.join(outDir, 'assets', sttName), sttJs);
 
+  // A custom widget's frame: dist/sandbox/widget.html and its own bundle (the bridge and the full
+  // ECharts build). The server sends /sandbox/ with the sandbox CSP (server/Http.ps1), and the page
+  // only ever loads it inside <iframe sandbox="allow-scripts">, so it never joins the page's start.
+  const widgetOut = await build({
+    entryPoints: [path.join(srcDir, 'widget-host.ts')],
+    bundle: true,
+    minify: !watch,
+    sourcemap: watch ? 'inline' : false,
+    format: 'iife',
+    target: ['es2020', 'edge120', 'chrome120'],
+    write: false,
+    outfile: 'widget-host.js',
+    legalComments: 'none',
+    logLevel: 'warning',
+  });
+  const widgetJs = widgetOut.outputFiles[0].text;
+  const widgetName = `widget-host.${createHash('sha256').update(widgetJs).digest('hex').slice(0, 10)}.js`;
+  await mkdir(path.join(outDir, 'sandbox'), { recursive: true });
+  await writeFile(path.join(outDir, 'sandbox', widgetName), widgetJs);
+  const sandboxHtml = (await readFile(path.join(here, 'sandbox', 'widget.html'), 'utf8')).replace('%WIDGET_JS%', widgetName);
+  await writeFile(path.join(outDir, 'sandbox', 'widget.html'), sandboxHtml);
+
   // The reader inside a shared HTML report (web/src/lib/share.ts inlines it into the file).
   const readerOut = await build({
     entryPoints: [path.join(srcDir, 'report.tsx')],
@@ -184,8 +206,8 @@ async function run() {
   await writeFile(path.join(outDir, 'index.html'), html);
   // Static files (favicon, emblem art) are copied as they are, at the same relative paths.
   await cp(publicDir, outDir, { recursive: true });
-  const hash = createHash('sha256').update(entry).update(cssName).update(chunks.join(',')).update(workerName).update(predictName).update(sttName).update(readerName).digest('hex').slice(0, 10);
-  const manifest = { hash, builtAt: new Date().toISOString(), watch, entry, css: `assets/${cssName}`, preload, chunks, worker: `assets/${workerName}`, predict: `assets/${predictName}`, stt: `assets/${sttName}`, report: `assets/${readerName}` };
+  const hash = createHash('sha256').update(entry).update(cssName).update(chunks.join(',')).update(workerName).update(predictName).update(sttName).update(readerName).update(widgetName).digest('hex').slice(0, 10);
+  const manifest = { hash, builtAt: new Date().toISOString(), watch, entry, css: `assets/${cssName}`, preload, chunks, worker: `assets/${workerName}`, predict: `assets/${predictName}`, stt: `assets/${sttName}`, report: `assets/${readerName}`, widget: `sandbox/${widgetName}` };
   await writeFile(path.join(outDir, 'build.json'), JSON.stringify(manifest, null, 2));
   const size = (await stat(path.join(outDir, entry))).size;
   console.log(`built dist/ (${entry} ${(size / 1024).toFixed(0)} KB, ${chunks.length} chunk(s), css ${(css.length / 1024).toFixed(0)} KB)`);
@@ -226,5 +248,6 @@ if (invoked && watch) {
   fsWatch(srcDir, { recursive: true }, schedule);
   fsWatch(path.join(here, '..', 'src'), { recursive: true }, schedule);
   fsWatch(path.join(here, 'index.html'), schedule);
+  fsWatch(path.join(here, 'sandbox'), schedule);
   console.log('watching web/src and src for changes…');
 }
