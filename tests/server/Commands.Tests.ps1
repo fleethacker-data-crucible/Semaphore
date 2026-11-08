@@ -22,6 +22,8 @@ BeforeAll {
             foreach ($m in [regex]::Matches($text, '\$p -eq ''(/api/[A-Za-z0-9/_-]+)''')) { $out.Add($m.Groups[1].Value) }
             foreach ($m in [regex]::Matches($text, '\$p -eq ''(/api/[A-Za-z0-9/_-]+)'' -or \$p -eq ''(/api/[A-Za-z0-9/_-]+)''')) { $out.Add($m.Groups[2].Value) }
             foreach ($m in [regex]::Matches($text, '\$p -match ''\^/api/\(([A-Za-z|]+)\)')) { foreach ($k in $m.Groups[1].Value.Split('|')) { $out.Add("/api/$k"); $out.Add("/api/$k/{id}") } }
+            # '^/api/<name>/([^/]+)(?:/([^/]+))?$': one id, or two.
+            foreach ($m in [regex]::Matches($text, '\$p -match ''\^(/api/[a-z-]+)/\(\[\^/\]\+\)\(\?:/\(\[\^/\]\+\)\)\?\$''')) { $out.Add($m.Groups[1].Value + '/{id}'); $out.Add($m.Groups[1].Value + '/{id}/{id}') }
         }
         return @($out | Sort-Object -Unique)
     }

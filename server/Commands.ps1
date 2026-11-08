@@ -30,6 +30,13 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/voice/speak'               = 'Relay for the page''s spoken answers: needs the browser session token and returns audio.'
     '/api/local/import'              = 'Streams a file the analyst picks or drops on the page into the local database; the CLI reads files where they are with "local import".'
     '/api/local/import-cancel'       = 'The Stop button of an import running on the server; a CLI import runs in the foreground and stops with Ctrl+C.'
+    '/api/page-snapshots/{id}'       = 'The Snapshots dialog: lists and saves copies of the open page (files under snapshots\<hoist id> in the Semaphore folder).'
+    '/api/page-snapshots/{id}/{id}'  = 'The Snapshots dialog: previews, restores into the open page, or deletes one copy (moved to .trash).'
+    '/api/s3/buckets'                = 'The Data panel''s Amazon S3 section: the buckets config\settings.json allows (s3.buckets), shown to pick one.'
+    '/api/s3/list'                   = 'The Data panel''s S3 browser: one folder of an allowlisted bucket at a time, with continuation tokens.'
+    '/api/s3/import'                 = 'Starts an S3 import from the Data panel into the local database; the page follows it with import-status.'
+    '/api/s3/import-status'          = 'Progress of an S3 import the page started (/api/s3/import-status/<job>); jobs live only in the running server.'
+    '/api/rds/discover'              = 'The Data panel''s RDS help card: lists RDS instances and clusters so an admin can copy a sources.json entry.'
 }
 
 function New-SemCommandInput {

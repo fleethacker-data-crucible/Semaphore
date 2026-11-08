@@ -5,11 +5,12 @@ import type { CatalogIndex, FieldType } from './catalog.ts';
 import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
 import { compact, isValidLayout, snapAll } from './layout.ts';
 import type { RichKind } from './kinds.ts';
+import { parsePivotSpec, type PivotSpec } from './pivot-spec.ts';
 import { parseModelSpec } from './predict/spec.ts';
 import type { ModelSpec } from './predict/types.ts';
 
-export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | RichKind;
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model'];
+export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'pivot' | RichKind;
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'pivot'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
@@ -106,6 +107,8 @@ export interface Flag {
   style?: FlagStyle;
   /** For `model` flags: which predictive model runs on the rows, and its settings (src/core/predict). */
   model?: ModelSpec;
+  /** For `pivot` flags: percentages, heat shading and the default order (src/core/pivot.ts). */
+  pivot?: PivotSpec;
 }
 
 export interface Hoist {
@@ -313,6 +316,10 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (kind === 'model') {
     const model = parseModelSpec(raw.model, warnings, where);
     if (model) flag.model = model;
+  }
+  if (kind === 'pivot') {
+    const pivot = parsePivotSpec(raw.pivot);
+    if (pivot) flag.pivot = pivot;
   }
   return flag;
 }

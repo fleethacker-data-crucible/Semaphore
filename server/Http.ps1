@@ -48,7 +48,7 @@ if ($null -eq $script:Sem) {
         Stream = $null; Responded = $false; Deferred = $false
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
-        Workers = $null; Pool = $null; WorkerContext = $null
+        Workers = $null; Pool = $null; WorkerContext = $null; AwsSettings = $null; S3Jobs = [hashtable]::Synchronized(@{})
         OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
         Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
         LocalShares = @(); LocalMaxBytes = [long]21474836480; LocalJobs = $null; LocalPool = $null
@@ -293,6 +293,7 @@ function Get-SemBodyLimit {
         /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
         a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
         /api/local/import     settings localImportMaxGB (20 GB), streamed to disk by the import job, never read here
+        a page snapshot       3 MB, 10 s   (a 2 MB page sent as an escaped JSON string)
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
@@ -302,6 +303,7 @@ function Get-SemBodyLimit {
     }
     if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
+    if ($Path -cmatch '^/api/page-snapshots/') { return @{ MaxBytes = 3145728; DeadlineMs = 10000; TooLarge = 'A snapshot may be at most 2 MB.' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
 }
 

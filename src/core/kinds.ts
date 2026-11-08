@@ -63,6 +63,25 @@ export function fitRichKind(kind: RichKind, b: Binding, index: CatalogIndex | un
   return { kind: fallback, note: `A ${KIND_LABEL[kind].toLowerCase()} needs ${KIND_NEEDS[kind]}, so this is drawn as a ${fallback === 'kpi' ? 'KPI' : fallback}.` };
 }
 
+/**
+ * A pivot nests its rows by every field but the last and spreads the last across: it needs a field
+ * (one makes a one-way table with totals) and a measure. At most five fields; a top-N cut is dropped,
+ * since a pivot shows every row and its totals. Trims `b` in place.
+ */
+export function fitPivot(b: Binding): { kind: FlagKind; note?: string } {
+  if (!b.dimensions.length) return { kind: 'kpi', note: 'A pivot needs a field for its rows (and another for its columns), so this is drawn as a KPI.' };
+  const notes: string[] = [];
+  if (b.dimensions.length > 5) {
+    b.dimensions = b.dimensions.slice(0, 5);
+    notes.push('A pivot nests at most four row fields and one column field, so the rest were left out.');
+  }
+  if (b.limit) {
+    delete b.limit;
+    notes.push('A pivot shows every row with its totals, so the top-N cut was dropped.');
+  }
+  return { kind: 'pivot', ...(notes.length ? { note: notes.join(' ') } : {}) };
+}
+
 export const KIND_LABEL: Record<RichKind, string> = {
   radar: 'Spider',
   scatter: 'Scatter',

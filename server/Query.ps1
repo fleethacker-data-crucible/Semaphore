@@ -74,12 +74,32 @@ function Get-SemSources {
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
         if ($raw -eq 'synapse' -and $kind -eq 'other') { $kind = 'azure-synapse' }
+        $engine = ''
+        if ($kind -eq 'aws-rds') {
+            # Amazon RDS / Aurora (Aws.ps1): an ODBC source whose connection string Semaphore builds at connect time.
+            if ($provider -ne 'odbc') { Write-SemLog 'WARN' "sources.json: source '$id' skipped: an aws-rds source uses provider odbc"; continue }
+            try { $engine = (Get-SemRdsSettings $s).Engine } catch { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $_.Exception.Message); continue }
+        }
         $seen[$id] = $true
         # raw keeps the entry for providers with their own settings (athena); it is never sent to the browser.
-        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = $connection; raw = $s })
+        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; engine = $engine; provider = $provider; connection = $connection; raw = $s })
     }
     if ($HomeDir) { $out.Add((Get-SemLocalSource -HomeDir $HomeDir)) }
     return $out.ToArray()
+}
+
+function Test-SemSourceConnection {
+    # $null when the source's connection setting is acceptable, else why it is refused. aws-rds builds its own (Aws.ps1).
+    param($Source)
+    if ($Source.kind -eq 'aws-rds') { return $null }
+    return (Test-SemConnectionString -Connection $Source.connection)
+}
+
+function Get-SemSourceFamily {
+    # The engine family that decides session statements and profile SQL: an aws-rds source's engine family, else its kind.
+    param($Source)
+    if ($Source.kind -eq 'aws-rds') { $f = Get-SemRdsFamily ([string]$Source.engine); if ($f) { return $f } }
+    return [string]$Source.kind
 }
 
 function Find-SemSource {
@@ -483,6 +503,7 @@ function Get-SemEffectiveConnectionString {
     # The string handed to the driver: sources.json's connection (never a password), read-only flags, and the
     # user and password Lazarette shares for the source. Lives in memory for the call; never logged or returned.
     param([Parameter(Mandatory = $true)]$Source)
+    if ($Source.kind -eq 'aws-rds') { return (Get-SemRdsConnectionString -Source $Source) }
     $cs = [string]$Source.connection
     if ($Source.provider -eq 'odbc') {
         if ($Source.kind -eq 'access' -and $cs -notmatch '(?i)(^|;)\s*ReadOnly\s*=') { $cs = $cs.TrimEnd(';') + ';ReadOnly=1' }
@@ -520,11 +541,14 @@ function New-SemConnection {
         $conn = New-Object System.Data.OleDb.OleDbConnection $cs
     }
     $conn.Open()
-    if ($Source.kind -eq 'postgres') {
-        # Read-only session, and UTC so date_trunc on timestamptz matches the planner's UTC buckets.
-        foreach ($stmt in @('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', "SET TIME ZONE 'UTC'")) {
-            try { $c = $conn.CreateCommand(); $c.CommandText = $stmt; $c.CommandTimeout = 10; [void]$c.ExecuteNonQuery(); $c.Dispose() } catch { }
-        }
+    # Read-only session where the engine has one, and UTC so date_trunc on timestamptz matches the planner's UTC buckets
+    # (Get-SemRdsSessionStatements in Aws.ps1: PostgreSQL and MySQL / MariaDB, including RDS and Aurora).
+    $family = Get-SemSourceFamily $Source
+    $statements = @()
+    if ($family -eq 'postgres') { $statements = @('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', "SET TIME ZONE 'UTC'") }
+    elseif ($Source.kind -eq 'aws-rds') { $statements = @(Get-SemRdsSessionStatements $family) }
+    foreach ($stmt in $statements) {
+        try { $c = $conn.CreateCommand(); $c.CommandText = $stmt; $c.CommandTimeout = 10; [void]$c.ExecuteNonQuery(); $c.Dispose() } catch { }
     }
     return $conn
 }
@@ -589,7 +613,7 @@ function Get-SemQueryPlan {
     if (-not $sourceId) { return @{ Error = @{ Status = 400; Code = 'bad-request'; Message = 'No source given.' } } }
     $src = Find-SemSource -HomeDir $HomeDir -Id $sourceId
     if ($null -eq $src) { return @{ Error = @{ Status = 404; Code = 'unknown-source'; Message = "Unknown source '$sourceId'." } } }
-    $bad = Test-SemConnectionString -Connection $src.connection
+    $bad = Test-SemSourceConnection $src
     if ($bad) { return @{ Error = @{ Status = 400; Code = 'credentials-in-connection'; Message = $bad } } }
     $sql = Get-SemJsonProp $Body 'sql'
     if ($sql -isnot [string]) { return @{ Error = @{ Status = 400; Code = 'sql-refused'; Message = 'No SQL.' } } }
@@ -723,7 +747,7 @@ function Get-SemProfileTable {
     } finally { $cmd.Dispose() }
     # Distinct counts for string, date and boolean columns; 30 s each, skipped on error.
     $alias = ' AS d'
-    if ($Source.kind -eq 'oracle') { $alias = ' d' }
+    if ((Get-SemSourceFamily $Source) -eq 'oracle') { $alias = ' d' }
     foreach ($col in $columns) {
         if ($col.type -eq 'number') { continue }
         $name = [string]$col.name
@@ -766,7 +790,7 @@ function Invoke-SemProfileRequest {
     $src = $null
     if ($sourceId) { $src = Find-SemSource -HomeDir $HomeDir -Id $sourceId }
     if ($null -eq $src) { Send-SemError 404 'unknown-source' "Unknown source '$sourceId'."; return }
-    $bad = Test-SemConnectionString -Connection $src.connection
+    $bad = Test-SemSourceConnection $src
     if ($bad) { Send-SemError 400 'credentials-in-connection' $bad; return }
     $vaultError = Get-SemVaultError
     if ($vaultError) { Send-SemError $vaultError.Status $vaultError.Code $vaultError.Message; return }
@@ -806,6 +830,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.VaultPath
     . $Ctx.ConnectorsPath
     . $Ctx.LocalDbPath
+    . $Ctx.S3Path
 }
 Clear-SemVaultRequest
 $script:SemLogPath = $Ctx.LogPath
@@ -818,7 +843,8 @@ try {
     $script:Sem.Stream = $Client.GetStream()
     # Lazarette is asked here, in the worker, so a slow or locked vault never holds the main loop (Vault.ps1, the one seam).
     if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { Set-SemVaultRequest (Get-SemVaultForRequest -Req $Req -HomeDir $Ctx.Home) }
-    if ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
+    if ($Req.Path.StartsWith('/api/s3/') -or $Req.Path.StartsWith('/api/rds/')) { Set-SemVaultRequest (Get-SemAwsVaultContext -Settings $Ctx.AwsSettings -Purpose $Req.Path); Invoke-SemAwsWorkerRequest -Req $Req -Settings $Ctx.AwsSettings }
+    elseif ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
     elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
     elseif ($Req.Path -eq '/api/voice/speak') { $Client.SendTimeout = 90000; Invoke-SemVoiceSpeak -Req $Req -Root $Ctx.Root }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
@@ -843,9 +869,9 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
-        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); LocalDbPath = (Join-Path $here 'LocalDb.ps1'); Root = (Split-Path -Parent $here)
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); LocalDbPath = (Join-Path $here 'LocalDb.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
-        Port = 0
+        Port = 0; AwsSettings = $script:Sem.AwsSettings
     }
 }
 

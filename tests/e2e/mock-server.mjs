@@ -35,6 +35,11 @@
 //   text are counted and listed, profiled through /api/profile { source: 'local' }, renamed and dropped; a \\host
 //   path is refused as the real server refuses a share that is not in localShares. Reset empties it.
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
+//
+// Amazon S3 and RDS (server/S3.ps1, server/Aws.ps1) answer from a fixed fake bucket: s3://maint-exports/semaphore/
+// holds work_orders.csv, hulls.csv.gz, broken.csv and a partitioned folder parts/ (year=2025, year=2026); any other
+// bucket or a key outside the prefix is refused as the server refuses it. An import finishes on the second status
+// poll; a key containing "broken" fails. /api/rds/discover lists one Aurora PostgreSQL cluster and one SQL Server instance.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -437,6 +442,78 @@ function docRoute(req, res, kind, id, query, body) {
   }
 }
 
+// Page snapshots (Invoke-SemSnapRoute, server/Routes.ps1): <home>/snapshots/<hoistId>/<snapId>.json (what
+// it is) and <snapId>.hoist.json (the page, verbatim). One automatic snapshot per 10 minutes, the last 30
+// automatic ones kept with every named one (200 at most).
+const SNAP_ID = /^\d{17}-[0-9a-f]{6}$/;
+const snapText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max).trim() : '');
+function snapList(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && SNAP_ID.test(e.name.replace(/\.json$/, '')) && e.name.endsWith('.json'))
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+    .flatMap((name) => {
+      try {
+        return [JSON.parse(readFileSync(path.join(dir, name), 'utf8'))];
+      } catch {
+        return [];
+      }
+    });
+}
+function pageSnapRoute(req, res, hoistId, snapId, json, body) {
+  if (!validId(hoistId)) return sendError(res, 400, 'bad-id', 'Invalid hoist id: use 1 to 64 letters, digits, _ or -.');
+  if (snapId !== null && !SNAP_ID.test(snapId)) return sendError(res, 400, 'bad-id', 'Invalid snapshot id.');
+  const dir = path.join(homeDir, 'snapshots', hoistId);
+  if (snapId !== null) {
+    const meta = path.join(dir, `${snapId}.json`);
+    const page = path.join(dir, `${snapId}.hoist.json`);
+    if (req.method === 'GET') {
+      if (!existsSync(meta) || !existsSync(page)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      return sendJsonText(res, 200, `{"snapshot":${stripBom(readFileSync(meta, 'utf8')).trim()},"hoist":${stripBom(readFileSync(page, 'utf8')).trim()}}`);
+    }
+    if (req.method === 'DELETE') {
+      if (!existsSync(meta)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      removeDoc(dir, `${snapId}.hoist`);
+      removeDoc(dir, snapId);
+      log('INFO', `Moved snapshot ${snapId} of hoist ${hoistId} to .trash`);
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (req.method === 'GET') return sendJson(res, 200, snapList(dir));
+  if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+  if (body.length > 3145728) return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+  if (!['named', 'auto', 'restore'].includes(json.kind)) return sendError(res, 400, 'invalid', 'kind must be "named", "auto" or "restore".');
+  const name = snapText(json.name, 80);
+  if (json.kind === 'named' && !name) return sendError(res, 400, 'invalid', 'A named snapshot needs a name.');
+  if (typeof json.hoist !== 'string') return sendError(res, 400, 'invalid', 'hoist must be the page as JSON text.');
+  const bytes = Buffer.from(json.hoist, 'utf8');
+  const problem = checkDocBody(bytes);
+  if (problem === 'too-large') return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (problem) return sendError(res, 400, 'invalid', problem);
+  const hoist = JSON.parse(json.hoist);
+  if (hoist.id !== hoistId) return sendError(res, 400, 'invalid', 'The page in the snapshot is another hoist.');
+  const all = snapList(dir);
+  const autos = all.filter((s) => s.kind !== 'named');
+  const now = new Date();
+  const lastAuto = autos.find((s) => s.kind === 'auto');
+  if (json.kind === 'auto' && lastAuto && now.getTime() - Date.parse(lastAuto.created) < 600_000) return sendJson(res, 200, { ok: true, skipped: 'recent' });
+  if (json.kind === 'named' && all.filter((s) => s.kind === 'named').length >= 200) return sendError(res, 409, 'too-many', 'A page keeps at most 200 named snapshots. Delete one first.');
+  const iso = now.toISOString();
+  const id = `${iso.replace(/[-:T.Z]/g, '')}-${randomBytes(3).toString('hex')}`;
+  const catalogVersion = typeof json.catalogVersion === 'string' && /^[0-9a-f]{8,64}$/.test(json.catalogVersion) ? json.catalogVersion : '';
+  const meta = { version: 1, id, hoistId, kind: json.kind, name, note: snapText(json.note, 500), reason: snapText(json.reason, 120), author: info().user, created: iso, catalogVersion, title: snapText(hoist.title, 120), flags: Array.isArray(hoist.flags) ? hoist.flags.length : 0, bytes: bytes.length };
+  mkdirSync(dir, { recursive: true });
+  saveDoc(dir, `${id}.hoist`, bytes);
+  saveDoc(dir, id, Buffer.from(JSON.stringify(meta)));
+  if (json.kind !== 'named') for (const old of autos.slice(29)) for (const f of [`${old.id}.json`, `${old.id}.hoist.json`]) rmSync(path.join(dir, f), { force: true });
+  log('INFO', `Snapshot ${id} (${json.kind}) of hoist ${hoistId}, ${bytes.length} bytes`);
+  return sendJson(res, 200, { ok: true, snapshot: meta });
+}
+
 // ---------------------------------------------------------------------------------------------
 // API (Invoke-SemRequest, Invoke-SemRoute)
 // ---------------------------------------------------------------------------------------------
@@ -577,8 +654,103 @@ function localRoute(req, res, p, json, body) {
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
 
+// ---- Amazon S3 and RDS (S3.ps1, Aws.ps1) ------------------------------------------------------
+const S3_BUCKETS = [{ bucket: 'maint-exports', region: 'us-gov-west-1', prefix: 'semaphore/', label: 'Maintenance exports' }];
+const S3_OBJECTS = [
+  { key: 'semaphore/work_orders.csv', size: 48213, lastModified: '2026-11-02T10:00:00.000Z', etag: '9b2cf535f27731c974343645a3985328' },
+  { key: 'semaphore/hulls.csv.gz', size: 2048, lastModified: '2026-11-03T10:00:00.000Z', etag: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' },
+  { key: 'semaphore/broken.csv', size: 10, lastModified: '2026-11-03T10:00:00.000Z', etag: '00000000000000000000000000000000' },
+  { key: 'semaphore/parts/year=2025/part-0000.csv', size: 1_200_000, lastModified: '2026-01-01T00:00:00.000Z', etag: '11111111111111111111111111111111' },
+  { key: 'semaphore/parts/year=2026/part-0000.csv', size: 1_400_000, lastModified: '2026-06-01T00:00:00.000Z', etag: '22222222222222222222222222222222' },
+];
+const s3Jobs = new Map();
+function s3Allowed(bucket, key) {
+  const e = S3_BUCKETS.find((b) => b.bucket === bucket);
+  if (!e) return `The bucket "${bucket}" is not one Semaphore may read. Only the buckets in config\\settings.json (s3.buckets) can be browsed or imported.`;
+  if (!key.startsWith(e.prefix)) return `That is outside what Semaphore may read in ${bucket}: only s3://${bucket}/${e.prefix} is allowed.`;
+  return null;
+}
+function s3Listing(prefix) {
+  const folders = new Set();
+  const objects = [];
+  for (const o of S3_OBJECTS) {
+    if (!o.key.startsWith(prefix)) continue;
+    const rest = o.key.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash >= 0) folders.add(prefix + rest.slice(0, slash + 1));
+    else objects.push({ ...o, name: rest });
+  }
+  return { folders: [...folders].sort().map((f) => ({ prefix: f, name: f.slice(prefix.length).replace(/\/$/, '') })), objects };
+}
+function s3Shown(st) {
+  const { polls, fail, ...shown } = st;
+  return shown;
+}
+function s3Route(req, res, p, query, json) {
+  const m = req.method;
+  const q = new URLSearchParams(query);
+  if (p === '/api/s3/buckets') return m === 'GET' ? sendJson(res, 200, { buckets: S3_BUCKETS, maxObjectMb: 20480, maxPrefixObjects: 2000, problems: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/s3/list') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const bucket = q.get('bucket') ?? '';
+    const entry = S3_BUCKETS.find((b) => b.bucket === bucket);
+    const prefix = q.get('prefix') || (entry ? entry.prefix : '');
+    const why = s3Allowed(bucket, prefix);
+    if (why) return sendError(res, 403, 's3-not-allowed', why);
+    return sendJson(res, 200, { bucket, prefix, root: entry.prefix, ...s3Listing(prefix), nextToken: null });
+  }
+  if (p === '/api/s3/import') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json || typeof json.bucket !== 'string') return sendError(res, 400, 'bad-request', 'Name the bucket.');
+    const keys = typeof json.key === 'string' ? [json.key] : Array.isArray(json.keys) ? json.keys.map(String) : null;
+    const prefix = typeof json.prefix === 'string' ? json.prefix : null;
+    if ((keys ? 1 : 0) + (prefix !== null ? 1 : 0) !== 1) return sendError(res, 400, 'bad-request', 'Give exactly one of key, keys or prefix.');
+    for (const k of keys ?? [prefix]) {
+      const why = s3Allowed(json.bucket, k);
+      if (why) return sendError(res, 403, 's3-not-allowed', why);
+    }
+    const picked = keys ? S3_OBJECTS.filter((o) => keys.includes(o.key)) : S3_OBJECTS.filter((o) => o.key.startsWith(prefix) && o.key.slice(prefix.length).includes('/'));
+    const name = (keys ? keys[0] : prefix).replace(/\/$/, '').split('/').pop().replace(/\.gz$/, '').replace(/\.[a-z]+$/, '');
+    const job = randomBytes(8).toString('hex');
+    const what = keys && keys.length === 1 ? `s3://${json.bucket}/${keys[0]}` : prefix !== null ? `s3://${json.bucket}/${prefix}` : `${keys.length} objects in s3://${json.bucket}`;
+    const st = { job, state: 'running', phase: 'downloading', what, bytes: 0, totalBytes: picked.reduce((n, o) => n + o.size, 0), objects: 0, objectCount: picked.length, table: typeof json.table === 'string' && json.table ? json.table : name, rows: null, columns: null, ms: null, error: null, polls: 0, fail: (keys ?? []).some((k) => k.includes('broken')) };
+    s3Jobs.set(job, st);
+    log('INFO', `S3 import ${job} started: ${what}`);
+    return sendJson(res, 202, s3Shown(st));
+  }
+  if (p === '/api/s3/import-status' || p.startsWith('/api/s3/import-status/')) {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const st = s3Jobs.get(p.slice('/api/s3/import-status/'.length));
+    if (!st) return sendError(res, 404, 'not-found', 'No such import (imports are forgotten when Semaphore stops).');
+    st.polls++;
+    if (st.state === 'running') {
+      if (st.polls === 1) Object.assign(st, { bytes: Math.round(st.totalBytes / 2), objects: Math.max(1, Math.floor(st.objectCount / 2)) });
+      else if (st.fail) Object.assign(st, { state: 'failed', phase: 'failed', error: 'S3 answered 403 when reading s3://maint-exports/semaphore/broken.csv: AccessDenied: Access Denied. The AWS session needs s3:ListBucket on the bucket and s3:GetObject on its objects.' });
+      else Object.assign(st, { state: 'done', phase: 'done', bytes: st.totalBytes, objects: st.objectCount, rows: 1250 * st.objectCount, columns: 6, ms: 2400 });
+    }
+    return sendJson(res, 200, s3Shown(st));
+  }
+  if (p === '/api/rds/discover') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const region = q.get('region') ?? '';
+    if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region)) return sendError(res, 400, 'bad-request', 'Give a region such as us-gov-west-1.');
+    const reader = `maint-aurora.cluster-ro-abc123.${region}.rds.amazonaws.com`;
+    const sql = `supply-sql.abc123.${region}.rds.amazonaws.com`;
+    return sendJson(res, 200, {
+      region,
+      note: 'Copy an entry into sources.json in the Semaphore folder; Semaphore does not write sources.json.',
+      databases: [
+        { type: 'cluster', id: 'maint-aurora', engine: 'aurora-postgresql', engineRaw: 'aurora-postgresql', version: '16.4', host: `maint-aurora.cluster-abc123.${region}.rds.amazonaws.com`, readerHost: reader, port: 5432, database: 'maint', iam: true, status: 'available', suggested: { id: 'maint-aurora', label: 'maint-aurora', kind: 'aws-rds', provider: 'odbc', engine: 'aurora-postgresql', host: reader, port: 5432, database: 'maint', region, auth: 'iam', user: 'semaphore_ro', vault: { accessKeyId: 'AWS_ACCESS_KEY_ID', secretAccessKey: 'AWS_SECRET_ACCESS_KEY', sessionToken: 'AWS_SESSION_TOKEN' } } },
+        { type: 'instance', id: 'supply-sql', engine: 'sqlserver', engineRaw: 'sqlserver-se', version: '16.00', host: sql, readerHost: '', port: 1433, database: '', iam: false, status: 'available', suggested: { id: 'supply-sql', label: 'supply-sql', kind: 'aws-rds', provider: 'odbc', engine: 'sqlserver', host: sql, port: 1433, database: 'master', region, auth: 'password', vault: { password: 'RDS_PASSWORD', user: 'RDS_USER' } } },
+      ],
+    });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
 function apiRoute(req, res, p, query, json, body) {
   const m = req.method;
+  if (p.startsWith('/api/s3/') || p.startsWith('/api/rds/')) return s3Route(req, res, p, query, json);
   if (p === '/api/commands') return m === 'GET' ? sendJson(res, 200, []) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/info') return m === 'GET' ? sendJson(res, 200, info()) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/heartbeat') {
@@ -630,6 +802,8 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
+  const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
+  if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
   if (p.startsWith('/api/local/')) return localRoute(req, res, p, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
@@ -667,6 +841,7 @@ function handle(req, res, body) {
       saves = 0;
       localTables.clear();
       localJobs.clear();
+      s3Jobs.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
     }

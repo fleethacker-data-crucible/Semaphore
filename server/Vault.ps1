@@ -41,6 +41,15 @@ $script:SemVaultRoles = @{
     athena          = $script:SemVaultAwsRoles
     'redshift-data' = $script:SemVaultAwsRoles
     foundry         = @(@{ Role = 'token'; Optional = $false })
+    # An aws-rds source signing in with IAM (Aws.ps1): the AWS session that signs the token, and optionally the database user.
+    'aws-rds-iam'   = @($script:SemVaultAwsRoles + @(@{ Role = 'user'; Optional = $true }))
+}
+
+function Get-SemVaultRoleKey {
+    # The key of $script:SemVaultRoles for a sources.json entry: its provider, except an aws-rds source with "auth": "iam".
+    param($Raw, [string]$Provider)
+    if ($Provider -eq 'odbc' -and ([string](Get-SemJsonProp $Raw 'kind')).ToLowerInvariant() -eq 'aws-rds' -and ([string](Get-SemJsonProp $Raw 'auth')).ToLowerInvariant() -eq 'iam') { return 'aws-rds-iam' }
+    return $Provider
 }
 
 # ---------------------------------------------------------------------------
@@ -58,6 +67,7 @@ function Test-SemVaultBlock {
     if ($null -ne (Get-SemJsonProp $Raw 'vaultItem')) { return '"vaultItem" is no longer read: Semaphore reads the secrets Lazarette shares with it, by variable name. Write "vault": { "password": "SMDATS_PASSWORD", "user": "SMDATS_USER" } (docs/VAULT.md).' }
     $vault = Get-SemRawVault $Raw
     if ($null -eq $vault) { return $null }
+    $Provider = Get-SemVaultRoleKey -Raw $Raw -Provider $Provider
     $roles = $script:SemVaultRoles[$Provider]
     if ($null -eq $roles) { return "The $Provider provider does not use Lazarette." }
     $known = @($roles | ForEach-Object { $_.Role })
@@ -89,7 +99,7 @@ function Get-SemVaultNeeds {
     param($Source)
     $vault = Get-SemSourceVault $Source
     if ($null -eq $vault) { return $null }
-    $roles = foreach ($r in @($script:SemVaultRoles[[string]$Source.provider])) {
+    $roles = foreach ($r in @($script:SemVaultRoles[(Get-SemVaultRoleKey -Raw $Source.raw -Provider ([string]$Source.provider))])) {
         $name = Get-SemJsonProp $vault $r.Role
         if ($name) { @{ Role = $r.Role; Name = [string]$name; Optional = [bool]$r.Optional } }
     }

@@ -4,7 +4,7 @@
 // exception is a cleaning suggestion the analyst asks for: one field's distinct values (TaskRequest).
 
 import type { Catalog, CatalogIndex } from '../catalog.ts';
-import { fitRichKind, isRichKind } from '../kinds.ts';
+import { fitPivot, fitRichKind, isRichKind } from '../kinds.ts';
 import { parseModelSpec } from '../predict/spec.ts';
 import type { ModelSpec } from '../predict/types.ts';
 import {
@@ -308,6 +308,11 @@ export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Beha
     const fit = fitRichKind(kind, b, index);
     kind = fit.kind;
     if (fit.note) notes.push(fit.note);
+  }
+  if (kind === 'pivot') {
+    const pivot = fitPivot(b);
+    kind = pivot.kind;
+    if (pivot.note) notes.push(pivot.note);
   }
   if (b.sort && !b.metrics.includes(b.sort.by) && !b.dimensions.some((d) => (d.grain ? `${d.field}@${d.grain}` : d.field) === b.sort!.by)) delete b.sort;
   return { kind, binding: b, behavior, notes };

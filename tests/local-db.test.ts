@@ -4,8 +4,7 @@ import { dialectForKind } from '../src/core/catalog.ts';
 import { formatBytes, isLocalImportFile } from '../web/src/lib/localdb.ts';
 
 test('the local database is a source kind with a SQL dialect', () => {
-  // ansi until the sqlite dialect lands in sql.ts (see the TODO in catalog.ts).
-  assert.equal(dialectForKind('local'), 'ansi');
+  assert.equal(dialectForKind('local'), 'sqlite');
 });
 
 test('the page offers the file types the server imports, gzipped too', () => {

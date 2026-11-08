@@ -27,6 +27,8 @@ export const DIALECT_NAMES: Record<Dialect, string> = {
   tsql: 'T-SQL (SQL Server, Azure SQL)',
   synapse: 'T-SQL (Azure Synapse)',
   spark: 'Spark SQL (Databricks, Foundry)',
+  mysql: 'MySQL / MariaDB (RDS, Aurora MySQL)',
+  sqlite: 'SQLite (the local database)',
   ansi: 'ANSI-like SQL (Athena, Redshift, DuckDB, Trino)',
 };
 
@@ -148,7 +150,7 @@ const grainOf = (t: Tok[]): TimeGrain | null => {
 };
 
 function quoteName(name: string, to: Dialect): string | null {
-  if (to === 'spark') return name.includes('`') ? null : `\`${name}\``;
+  if (to === 'spark' || to === 'mysql') return name.includes('`') ? null : `\`${name}\``;
   if (bracketed(to)) return name.includes(']') ? null : `[${name}]`;
   return name.includes('"') ? null : `"${name}"`;
 }
@@ -208,6 +210,8 @@ export function translateSql(sql: string, from: Dialect, to: Dialect): Translati
       continue;
     }
     if (t.kind === 'punct' && t.text === '||') {
+      // In MySQL || means OR unless the server runs with PIPES_AS_CONCAT.
+      if (to === 'mysql') notes.add('In MySQL || means OR unless the server sets PIPES_AS_CONCAT; join text with CONCAT(a, b) there.');
       out.push({ kind: 'punct', text: tsqlLike(to) ? '+' : to === 'access' ? '&' : '||' });
       continue;
     }
@@ -279,8 +283,9 @@ export function translateSql(sql: string, from: Dialect, to: Dialect): Translati
             done(to === 'access' ? `Nz(${a(0)}, ${a(1)})` : `COALESCE(${a(0)}, ${a(1)})`);
             continue;
           }
-          if ((name === 'LEN' || name === 'LENGTH') && args.length === 1) {
-            done(`${tsqlLike(to) ? 'LEN' : to === 'access' ? 'Len' : 'LENGTH'}(${a(0)})`);
+          if ((name === 'LEN' || name === 'LENGTH' || name === 'CHAR_LENGTH') && args.length === 1) {
+            // MySQL's LENGTH counts bytes; CHAR_LENGTH counts characters, like LEN and LENGTH elsewhere.
+            done(`${tsqlLike(to) ? 'LEN' : to === 'access' ? 'Len' : to === 'mysql' ? 'CHAR_LENGTH' : 'LENGTH'}(${a(0)})`);
             continue;
           }
           if ((name === 'SUBSTRING' || name === 'SUBSTR' || name === 'MID') && (args.length === 2 || args.length === 3)) {
@@ -309,7 +314,7 @@ export function translateSql(sql: string, from: Dialect, to: Dialect): Translati
             continue;
           }
           if (name === 'CONCAT' && to === 'access') notes.add('Access has no CONCAT; join text with & instead.');
-          if (name === 'DATEADD' || name === 'DATEDIFF' || name === 'DATEPART' || name === 'EXTRACT' || name === 'TO_CHAR' || name === 'FORMAT' || name === 'CONVERT') {
+          if (['DATEADD', 'DATEDIFF', 'DATEPART', 'EXTRACT', 'TO_CHAR', 'FORMAT', 'CONVERT', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'STRFTIME', 'JULIANDAY'].includes(name)) {
             notes.add(`${t.text} differs between databases and was left as written; check it works in ${DIALECT_NAMES[to]}.`);
           }
         }
