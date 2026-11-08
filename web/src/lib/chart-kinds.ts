@@ -406,7 +406,8 @@ export function richChartOption(input: ChartInput, base: Option): Option {
         tooltip: { ...(base.tooltip as Option), trigger: 'axis', axisPointer: { type: 'shadow' } },
         legend: place.legend,
         grid: { left: 8, right: place.right, top: place.top + (twoScales ? 16 : 0), bottom: place.bottom + (zoom ? 26 : 0), containLabel: true },
-        xAxis: catAxis(cats.map((v) => formatDim(v, x.grain))),
+        // Every name when there are few, wrapped onto two lines rather than skipped.
+        xAxis: catAxis(cats.map((v) => formatDim(v, x.grain)), cats.length <= 12 ? { axisLabel: { color: c.ink2, interval: 0, width: 80, overflow: 'break', lineHeight: 13 } } : {}),
         yAxis: [valueAxis(first(0), named(0)), ...(twoScales ? [valueAxis(first(1), { ...named(1), splitLine: { show: false } })] : [])],
         series: seriesList,
         ...(zoom

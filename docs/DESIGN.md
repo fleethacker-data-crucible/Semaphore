@@ -21,6 +21,8 @@ Select a flag and open **Look** in the inspector. It shows only what applies to 
 | Line and area | Smooth, straight or steps, thickness, points, scale start |
 | Pie | Donut, pie, rose, funnel or treemap |
 | Bar, line, area | Grid lines, average line, target line with a label (neither is drawn on a share-of-total or 100% chart, whose axis is a percentage), zoom slider |
+| Combo | Each measure as bars or a line, on the left or right scale; bars side by side or stacked; the bar and line settings above; target and average lines on the bars' scale ([MAPS.md](MAPS.md)) |
+| Map | What to draw on (US states or a region map from Settings > Maps), palette, region names ([MAPS.md](MAPS.md)) |
 | KPI | Number or gauge, size |
 | Table | Stripes, bars behind the numbers |
 | Any card | Title alignment, hidden title, coloured strip |
