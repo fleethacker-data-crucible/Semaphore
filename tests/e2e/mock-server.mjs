@@ -216,7 +216,7 @@ let saves = 0;
 let port = 0;
 let stopping = false;
 
-for (const k of [...KINDS, 'widgets']) mkdirSync(path.join(homeDir, k), { recursive: true });
+for (const k of [...KINDS, 'widgets', 'maps']) mkdirSync(path.join(homeDir, k), { recursive: true });
 const logFile = path.join(homeDir, 'semaphore-mock.log');
 function log(level, text) {
   const line = `${new Date().toISOString()} [${level}] ${text}`;
@@ -794,6 +794,108 @@ function widgetRoute(req, res, id, json) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Region maps (Invoke-SemMapRoute): <home>/maps/<id>.json says what the map is, <home>/maps/shapes/<id>.json its GeoJSON
+// ---------------------------------------------------------------------------------------------
+const MAP_MAX_BYTES = 2097152; // Routes.ps1 $script:SemMapMaxBytes
+const MAP_MAX_REGIONS = 2000;
+const MAP_MAX_COUNT = 50;
+const MAP_MAX_ALIASES = 500;
+const mapId = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48).replace(/-+$/g, '') || 'map';
+function mapAliases(v) {
+  const out = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [k, r] of Object.entries(v)) {
+    if (Object.keys(out).length >= MAP_MAX_ALIASES) break;
+    const a = widgetText(k, 80);
+    const t = widgetText(r, 80);
+    if (a && t && a !== '__proto__' && !Object.keys(out).some((x) => x.toLowerCase() === a.toLowerCase())) out[a] = t;
+  }
+  return out;
+}
+/** Test-SemMapShapes: the region names, or [status, code, error]. */
+function mapShapes(text) {
+  if (typeof text !== 'string' || text.trim() === '') return [400, 'invalid', 'The map has no shapes: send its GeoJSON as text.'];
+  if (Buffer.byteLength(text, 'utf8') > MAP_MAX_BYTES) return [413, 'too-large', 'A region map may be at most 2 MB of GeoJSON. Simplify the shapes or split the file.'];
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    return [400, 'invalid', 'The shapes are not valid JSON.'];
+  }
+  if (!j || typeof j !== 'object' || Array.isArray(j) || j.type !== 'FeatureCollection') return [400, 'invalid', 'The shapes must be a GeoJSON FeatureCollection.'];
+  if (!Array.isArray(j.features) || !j.features.length) return [400, 'invalid', 'The map has no regions.'];
+  if (j.features.length > MAP_MAX_REGIONS) return [413, 'too-large', `A region map may have at most ${MAP_MAX_REGIONS} regions.`];
+  const names = [];
+  for (const [i, f] of j.features.entries()) {
+    const g = f?.geometry;
+    const name = f?.properties?.name;
+    if (f?.type !== 'Feature' || !g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon') || !Array.isArray(g.coordinates) || !g.coordinates.length || typeof name !== 'string' || !name || widgetText(name, 80) !== name) {
+      return [400, 'invalid', `Region ${i + 1} is not a named polygon (a Feature with a Polygon or MultiPolygon geometry and properties.name).`];
+    }
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+function mapRoute(req, res, id, json) {
+  const dir = docDir('maps');
+  const shapes = docDir(path.join('maps', 'shapes'));
+  if (id === null) {
+    if (req.method === 'GET') {
+      const out = [];
+      for (const name of docFiles(dir).slice(0, MAP_MAX_COUNT)) {
+        const doc = readJsonObject(path.join(dir, name));
+        if (!doc) continue;
+        const mid = name.slice(0, -5);
+        out.push({ id: mid, name: widgetText(doc.j.name, 80) || mid, regions: Number.isInteger(doc.j.regions) ? doc.j.regions : 0, aliases: mapAliases(doc.j.aliases), lonLat: doc.j.lonLat !== false, bytes: Number.isInteger(doc.j.bytes) ? doc.j.bytes : 0, by: widgetText(doc.j.by, 64), updated: typeof doc.j.updated === 'string' ? doc.j.updated : '' });
+      }
+      out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return sendJson(res, 200, out);
+    }
+    if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const name = widgetText(json.name, 80);
+    if (!name) return sendError(res, 400, 'invalid', 'Give the map a name (at most 80 characters).');
+    let mid = json.id;
+    if (mid !== undefined && mid !== null && (typeof mid !== 'string' || !validId(mid))) return sendError(res, 400, 'bad-id', 'Invalid map id: use 1 to 64 letters, digits, _ or -.');
+    let old = null;
+    if (typeof mid === 'string') {
+      old = readJsonObject(path.join(dir, `${mid}.json`))?.j ?? null;
+      if (!existsSync(path.join(dir, `${mid}.json`))) return sendError(res, 404, 'not-found', `No region map '${mid}'.`);
+    } else if (json.geojson === undefined || json.geojson === null) return sendError(res, 400, 'invalid', 'The map has no shapes: send its GeoJSON as text.');
+    let regions = null;
+    if (json.geojson !== undefined && json.geojson !== null) {
+      const check = mapShapes(json.geojson);
+      if (!Array.isArray(check) || typeof check[0] === 'number') return sendError(res, check[0], check[1], check[2]);
+      regions = check;
+    }
+    if (typeof mid !== 'string') {
+      if (docFiles(dir).length >= MAP_MAX_COUNT) return sendError(res, 409, 'full', `The Semaphore folder holds ${MAP_MAX_COUNT} region maps at most. Remove some first.`);
+      const stem = mapId(name);
+      mid = stem;
+      for (let n = 2; existsSync(path.join(dir, `${mid}.json`)); n++) mid = `${stem}-${n}`;
+    }
+    const lonLat = typeof json.lonLat === 'boolean' ? json.lonLat : old?.lonLat !== false;
+    const meta = { version: 1, id: mid, name, regions: regions ? regions.length : (old?.regions ?? 0), aliases: mapAliases(json.aliases), lonLat, bytes: regions ? Buffer.byteLength(json.geojson, 'utf8') : (old?.bytes ?? 0), by: widgetText(info().user, 64), updated: new Date().toISOString() };
+    if (regions) saveDoc(shapes, mid, Buffer.from(json.geojson, 'utf8'));
+    saveDoc(dir, mid, Buffer.from(JSON.stringify(meta), 'utf8'));
+    log('INFO', `Saved region map ${mid} (${meta.regions} regions)`);
+    return sendJson(res, 200, { ok: true, map: meta });
+  }
+  if (!validId(id)) return sendError(res, 400, 'bad-id', 'Invalid map id: use 1 to 64 letters, digits, _ or -.');
+  if (req.method === 'GET') {
+    const file = path.join(shapes, `${id}.json`);
+    return existsSync(file) && existsSync(path.join(dir, `${id}.json`)) ? sendJsonText(res, 200, stripBom(readFileSync(file, 'utf8'))) : sendError(res, 404, 'not-found', `No region map '${id}'.`);
+  }
+  if (req.method === 'DELETE') {
+    if (!removeDoc(dir, id)) return sendError(res, 404, 'not-found', `No region map '${id}'.`);
+    removeDoc(shapes, id);
+    log('INFO', `Moved region map ${id} to .trash`);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendError(res, 405, 'method', 'Method not allowed.');
+}
+
+// ---------------------------------------------------------------------------------------------
 // Local database (server/LocalDb.ps1), in memory: name -> { columns: [{ name, type }], rows: string[][], source }
 // ---------------------------------------------------------------------------------------------
 const localTables = new Map();
@@ -1254,6 +1356,11 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
   const widget = /^\/api\/widgets(?:\/([^/]*))?$/.exec(p);
   if (widget) return widgetRoute(req, res, p === '/api/widgets' ? null : (widget[1] ?? ''), json);
+  const maps = /^\/api\/maps(?:\/([^/]*))?$/.exec(p);
+  if (maps) {
+    if (body.length > 3145728) return sendError(res, 413, 'too-large', 'A region map may be at most 3 MB as sent (its GeoJSON at most 2 MB).');
+    return mapRoute(req, res, p === '/api/maps' ? null : (maps[1] ?? ''), json);
+  }
   const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
   if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
@@ -1284,7 +1391,7 @@ function handle(req, res, body) {
       return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
-      for (const k of [...KINDS, 'widgets', 'alerts', 'mail']) {
+      for (const k of [...KINDS, 'widgets', 'maps', 'alerts', 'mail']) {
         rmSync(path.join(homeDir, k), { recursive: true, force: true });
         mkdirSync(path.join(homeDir, k), { recursive: true });
       }

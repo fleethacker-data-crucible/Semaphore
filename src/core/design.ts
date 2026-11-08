@@ -63,6 +63,10 @@ export interface FlagStyle extends ChartLook {
   /** A coloured strip along the top of the card. */
   accent?: string;
   hideTitle?: boolean;
+  /** Combo flags: per measure key, bars or a line and which scale (src/core/combo.ts comboRoles). */
+  combo?: Record<string, { as?: 'bar' | 'line'; axis?: 'left' | 'right' }>;
+  /** Map flags: 'us-states' (the built-in tile map, the default) or the id of a region map in the Semaphore folder. */
+  map?: string;
 }
 
 export interface HoistDesign {
@@ -148,6 +152,17 @@ function parseChartLook(raw: Record<string, unknown>): ChartLook {
   }) as ChartLook;
 }
 
+function parseCombo(raw: unknown): FlagStyle['combo'] {
+  if (!isObj(raw)) return undefined;
+  const out: NonNullable<FlagStyle['combo']> = {};
+  for (const [k, v] of Object.entries(raw).slice(0, 50)) {
+    if (k.length > 128 || k === '__proto__' || !isObj(v)) continue;
+    const one = kept({ as: oneOf<'bar' | 'line'>(v.as, ['bar', 'line']), axis: oneOf<'left' | 'right'>(v.axis, ['left', 'right']) });
+    if (Object.keys(one).length) out[k] = one;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export function parseFlagStyle(raw: unknown): FlagStyle | undefined {
   if (!isObj(raw)) return undefined;
   const t = raw.target;
@@ -168,6 +183,8 @@ export function parseFlagStyle(raw: unknown): FlagStyle | undefined {
     zoom: bool(raw.zoom),
     accent: isHex(raw.accent) ? raw.accent : undefined,
     hideTitle: bool(raw.hideTitle),
+    combo: parseCombo(raw.combo),
+    map: typeof raw.map === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw.map) ? raw.map : undefined,
   }) as FlagStyle;
   return Object.keys(style).length ? style : undefined;
 }

@@ -1,7 +1,11 @@
 // ECharts, imported piece by piece so the bundle carries only the charts Semaphore draws.
 
 import { useEffect, useRef, useState } from 'react';
-import * as echarts from 'echarts/core';
+// The core by its own files, not through echarts/core: that index also exports the GeoJSON reader, and
+// with it the map code in chart-extras.ts would come into the page's start (web/size-budget.json).
+// The label layout comes with chart-extras.ts, as before (the bundler always left echarts/core's out).
+import { init } from 'echarts/lib/core/echarts.js';
+import { use } from 'echarts/lib/extension.js';
 // Direct paths, not the echarts/charts index: importing the index would carry chart-extras.ts into the page's start.
 import 'echarts/lib/chart/bar';
 import 'echarts/lib/chart/line';
@@ -11,11 +15,11 @@ import 'echarts/lib/component/legend';
 import 'echarts/lib/component/tooltip';
 import 'echarts/lib/component/markLine';
 import { SVGRenderer } from 'echarts/renderers';
-import type { EChartsCoreOption } from 'echarts/core';
+import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import type { Motion } from '../../../src/core/design.ts';
 import { chartMotion } from '../lib/motion.ts';
 
-echarts.use([SVGRenderer]);
+use([SVGRenderer]);
 
 let extras: Promise<unknown> | null = null;
 let extrasReady = false;
@@ -31,7 +35,24 @@ function needsExtras(option: EChartsCoreOption): boolean {
   const o = option as { series?: Array<{ type?: string }>; dataZoom?: unknown };
   return !!o.dataZoom || (o.series ?? []).some((s) => !!s.type && EXTRA_SERIES.has(s.type));
 }
-const EXTRA_SERIES = new Set(['gauge', 'funnel', 'treemap', 'radar', 'scatter', 'heatmap', 'sankey', 'sunburst', 'themeRiver']);
+const EXTRA_SERIES = new Set(['gauge', 'funnel', 'treemap', 'radar', 'scatter', 'heatmap', 'sankey', 'sunburst', 'themeRiver', 'map']);
+
+/** Loads the extras and registers a region map with the chart library (chart-extras.ts ensureMap). */
+export const loadMap = (id: string): Promise<void> => loadExtras().then(() => import('./chart-extras.ts')).then((m) => m.ensureMap(id));
+
+/** Asks for a map flag's region map and re-renders when it is registered (or known to be missing). */
+export function useMap(id: string | null): number {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    loadMap(id).then(() => live && setTick((t) => t + 1), () => {});
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  return tick;
+}
 
 /** True once chart-extras.ts has loaded; asks for it when `wanted`, and re-renders when it lands. */
 export function useExtras(wanted: boolean): boolean {
@@ -65,7 +86,7 @@ export const APPLY_OPTION: { replaceMerge: string[] } = { replaceMerge: ['series
 
 export function EChart({ option, onClick, label, describedBy, motion = 'calm' }: { option: EChartsCoreOption; onClick?: (e: ChartClick) => void; label: string; describedBy?: string; motion?: Motion }) {
   const el = useRef<HTMLDivElement>(null);
-  const chart = useRef<echarts.ECharts | null>(null);
+  const chart = useRef<ECharts | null>(null);
   const click = useRef(onClick);
   click.current = onClick;
   const [failed, setFailed] = useState<string | null>(null);
@@ -74,7 +95,7 @@ export function EChart({ option, onClick, label, describedBy, motion = 'calm' }:
   // A chart keeps the steps that existed when it was made, so one made before chart-extras.ts loaded
   // has to be made again to draw those forms.
   const create = () => {
-    const c = echarts.init(el.current!, undefined, { renderer: 'svg' });
+    const c = init(el.current!, undefined, { renderer: 'svg' });
     chart.current = c;
     hasExtras.current = extrasReady;
     c.on('click', (p) => click.current?.({ name: String((p as { name?: unknown }).name ?? ''), seriesName: (p as { seriesName?: string }).seriesName, dataIndex: (p as { dataIndex: number }).dataIndex, raw: ((p as { data?: { raw?: unknown } }).data ?? {}).raw }));
@@ -140,7 +161,7 @@ const SERIES_FALLBACK = {
 /** The chart as an SVG document at a fixed size, drawn off the page and with no motion, for exports. */
 export async function chartToSvg(option: EChartsCoreOption, width: number, height: number): Promise<string> {
   if (needsExtras(option)) await loadExtras();
-  const c = echarts.init(null as unknown as HTMLElement, undefined, { renderer: 'svg', ssr: true, width, height });
+  const c = init(null as unknown as HTMLElement, undefined, { renderer: 'svg', ssr: true, width, height });
   try {
     c.setOption({ ...option, animation: false });
     return c.renderToSVGString();

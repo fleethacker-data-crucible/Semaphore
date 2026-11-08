@@ -10,10 +10,10 @@ import type { Cell, DisplayRow, Selections } from '../../../src/core/crossfilter
 import { FONT_STACK, type FlagStyle, type HoistDesign, type KpiSize, paletteColors, resolveStyle } from '../../../src/core/design.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
 import { type Behavior, type Threshold, type Tone, type Flag, toneFor } from '../../../src/core/hoist.ts';
-import { chartCategories, flagChartOption, formatDim, gaugeOption, isSelected } from '../lib/chart-option.ts';
+import { chartCategories, flagChartOption, formatDim, gaugeOption, isSelected, richNote } from '../lib/chart-option.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { reducedMotion } from '../lib/motion.ts';
-import { EChart, themeColors, themeMode, useExtras } from './Chart.tsx';
+import { EChart, themeColors, themeMode, useExtras, useMap } from './Chart.tsx';
 import { isRichKind } from '../../../src/core/kinds.ts';
 
 export interface FlagViewProps {
@@ -215,12 +215,15 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
   const style = useMemo(() => resolveStyle(design, flag.style), [design, flag.style]);
   const rich = isRichKind(flag.kind);
   const extras = useExtras(rich);
-  const option = useMemo<EChartsCoreOption>(() => {
+  // A map flag's region map is read from the Semaphore folder the first time it is drawn.
+  const mapTick = useMap(flag.kind === 'map' ? (style.map ?? 'us-states') : null);
+  const [option, note] = useMemo<[EChartsCoreOption, string | null]>(() => {
     const c = themeColors();
-    return flagChartOption({ flag, result, index, selections, style, c, colors: paletteColors(style, themeMode(), c.series), ...(design?.font ? { fontFamily: FONT_STACK[design.font] } : {}) });
+    const input = { flag, result, index, selections, style, c, colors: paletteColors(style, themeMode(), c.series), ...(design?.font ? { fontFamily: FONT_STACK[design.font] } : {}) };
+    return [flagChartOption(input), rich ? richNote(input) : null];
     // themeKey is a dependency so a theme switch re-reads the colour tokens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flag, result, index, selections, themeKey, style, design?.font, extras]);
+  }, [flag, result, index, selections, themeKey, style, design?.font, extras, mapTick]);
 
   const fieldLabel = index.field(x.field)?.label ?? x.field;
   const drills = flag.behavior.onClick === 'drill';
@@ -272,6 +275,11 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
           </div>
         )}
       </div>
+      {note && (
+        <p data-testid="chart-note" className="shrink-0 truncate pt-0.5 text-[11px] text-ink-2" title={note}>
+          {note}
+        </p>
+      )}
       {broken.length > 0 && (
         <ul aria-label="Colour rules" className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-[11px] text-ink-2">
           {broken.map((t) => (

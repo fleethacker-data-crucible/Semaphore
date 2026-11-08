@@ -1,6 +1,7 @@
 // The richer chart kinds (src/core/kinds.ts) as ECharts options: spider, scatter, heatmap, calendar,
-// waterfall, Pareto, Sankey, sunburst and stream. Loaded with chart-extras.ts the first time a flag
-// needs one, so a page of bars and lines never pays for them (web/size-budget.json).
+// waterfall, Pareto, Sankey, sunburst, stream, combo (bars and a line) and map. Loaded with
+// chart-extras.ts the first time a flag needs one, so a page of bars and lines never pays for them
+// (web/size-budget.json).
 //
 // The same rules as chart-option.ts: text stays in the ink colours, a value the page is filtered
 // away from is dimmed rather than hidden, and every mark that stands for a value of the flag's first
@@ -8,8 +9,12 @@
 
 import type { Cell } from '../../../src/core/crossfilter.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
-import type { RichKind } from '../../../src/core/kinds.ts';
-import { type ChartInput, chartCategories, formatDim, isSelected, legendFor } from './chart-option.ts';
+import { combine, coord, looksLikeLatLon, matchRegions, matchStates, parseLatLon, stateName, unmatchedNote, US_STATES } from '../../../src/core/geo.ts';
+import { toneFor } from '../../../src/core/hoist.ts';
+import { comboRoles } from '../../../src/core/combo.ts';
+import { latLonFields, type RichKind } from '../../../src/core/kinds.ts';
+import { type ChartInput, chartCategories, flagChartOption, formatDim, isSelected, legendFor } from './chart-option.ts';
+import { chartMapName, mapEntry } from './map-registry.ts';
 
 type Option = Record<string, unknown>;
 
@@ -24,6 +29,72 @@ function distinct(rows: ChartInput['result']['display']['rows'], key: string): C
     if (!out.some((x) => String(x) === String(v))) out.push(v);
   }
   return out;
+}
+
+interface MapPoint {
+  name: string;
+  raw: Cell;
+  lat: number;
+  lon: number;
+  v: number | null;
+}
+type MapPlan =
+  | { mode: 'points'; points: MapPoint[]; missing: number; onMap: boolean }
+  | { mode: 'regions'; regions: Array<{ name: string; value: number; raw: Cell }>; unmatched: string[] }
+  | { mode: 'loading' }
+  | { mode: 'missing'; error: string };
+
+/** What a map flag draws: points (latitude and longitude) or regions, matched to the map's names. */
+function mapPlan(input: ChartInput): MapPlan {
+  const { flag, result, index, style } = input;
+  const b = flag.binding!;
+  const plan = result.plan;
+  const own = plan.dimensions.filter((d) => plan.own.includes(d.key));
+  const x = own[0]!;
+  const rows = result.display.rows;
+  const m0 = b.metrics[0]!;
+  const id = style.map ?? US_STATES;
+  const tile = id === US_STATES;
+  const entry = tile ? undefined : mapEntry(id);
+  if (!tile && entry?.state === 'missing') return { mode: 'missing', error: entry.error ?? 'it is not in the Semaphore folder' };
+  const ll = latLonFields(b, index);
+  if (ll || looksLikeLatLon(rows.map((r) => r.dims[x.key] ?? null))) {
+    if (!tile && entry?.state !== 'ready') return { mode: 'loading' };
+    const points: MapPoint[] = [];
+    for (const r of rows) {
+      const raw = r.dims[x.key] ?? null;
+      const p = ll ? { lat: coord(r.dims[own[ll.lat]!.key], 90), lon: coord(r.dims[own[ll.lon]!.key], 180) } : parseLatLon(raw);
+      if (!p || p.lat === null || p.lon === null) continue;
+      const v = r.values[m0];
+      points.push({ name: ll ? `${p.lat}, ${p.lon}` : formatDim(raw), raw, lat: p.lat, lon: p.lon, v: typeof v === 'number' ? v : null });
+    }
+    return { mode: 'points', points, missing: rows.length - points.length, onMap: !tile && !!entry?.lonLat };
+  }
+  if (!tile && entry?.state !== 'ready') return { mode: 'loading' };
+  const values = rows.map((r) => r.dims[x.key] ?? null);
+  const { matched, unmatched } = tile ? matchStates(values) : matchRegions(values, entry!.regions, entry!.aliases);
+  const agg = index.metric(m0)?.agg;
+  const groups = new Map<string, { vals: number[]; raw: Cell }>();
+  for (const r of rows) {
+    const raw = r.dims[x.key] ?? null;
+    const region = matched.get(String(raw ?? ''));
+    const v = r.values[m0];
+    if (!region || typeof v !== 'number') continue;
+    const g = groups.get(region) ?? { vals: [], raw };
+    g.vals.push(b.share && result.display.totals[m0] ? v / (result.display.totals[m0] as number) : v);
+    groups.set(region, g);
+  }
+  return { mode: 'regions', regions: [...groups].map(([name, g]) => ({ name, value: combine(agg, g.vals), raw: g.raw })), unmatched: unmatched.map((u) => (u === '' ? '(blank)' : u)) };
+}
+
+/** The line under a map: values that are on no region, or rows with no position. */
+export function richChartNote(input: ChartInput): string | null {
+  if (input.flag.kind !== 'map' || !input.flag.binding?.metrics.length || !input.result.plan.own.length) return null;
+  const p = mapPlan(input);
+  if (p.mode === 'regions') return unmatchedNote(p.unmatched);
+  if (p.mode === 'points') return p.missing ? `${p.missing} row${p.missing === 1 ? ' has' : 's have'} no latitude and longitude, so ${p.missing === 1 ? 'it is' : 'they are'} not on the map.` : null;
+  if (p.mode === 'missing') return `The region map "${input.style.map}" could not be loaded (${p.error}), so this is drawn as bars.`;
+  return null;
 }
 
 export function richChartOption(input: ChartInput, base: Option): Option {
@@ -278,6 +349,139 @@ export function richChartOption(input: ChartInput, base: Option): Option {
         legend: { ...(legendFor(style, bands.length, c.ink2).legend ?? { show: false }), data: bands.map((v) => formatDim(v, band.grain)) },
         singleAxis: { type: 'time', top: legendFor(style, bands.length, c.ink2).top, bottom: 28, left: 12, right: 12, axisLine: { lineStyle: { color: c.line } }, axisLabel: { color: c.ink2, hideOverlap: true }, splitLine: { show: style.gridLines !== false, lineStyle: { color: c.line, type: 'dashed' } }, name: dimLabel(when), nameTextStyle: { color: c.ink3 } },
         series: [{ type: 'themeRiver', data, label: { show: false }, emphasis: { focus: 'self' }, itemStyle: { opacity: 0.9 } }],
+      };
+    }
+
+    case 'combo': {
+      // Bars and a line along one field: each measure on the left or the right scale (combo.ts comboRoles).
+      const cats = chartCategories(flag, result);
+      const roles = comboRoles(b.metrics, style.combo);
+      const hasLeft = roles.some((r) => r.axis === 'left');
+      const axisOf = (r: { axis: 'left' | 'right' }) => (hasLeft && r.axis === 'right' ? 1 : 0);
+      const twoScales = roles.some((r) => axisOf(r) === 1);
+      const share = (k: string, v: number | null) => (b.share && typeof v === 'number' && result.display.totals[k] ? v / (result.display.totals[k] as number) : v);
+      const decal = (tone: 'good' | 'warn' | 'bad') => ({ symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: (tone === 'warn' ? 1 : -1) * (Math.PI / 4), color: c.panel });
+      const curve = style.curve === 'straight' ? { smooth: false } : style.curve === 'step' ? { step: 'middle' } : { smooth: 0.2 };
+      const showSymbol = style.markers === 'on' ? true : style.markers === 'off' ? false : cats.length <= 24;
+      const fill = (color: string) => (style.fill === 'gradient' && isPlainHex(color) ? { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color }, { offset: 1, color: withAlpha(color, 0.55) }] } : color);
+      const seriesList: Option[] = roles.map((r, i) => {
+        const k = r.metric;
+        const color = colors[i % colors.length]!;
+        const bar = r.as === 'bar';
+        return {
+          name: label(k),
+          type: r.as,
+          yAxisIndex: axisOf(r),
+          ...(bar ? { barMaxWidth: 42, ...(style.barLayout === 'stacked' ? { stack: `bars-${axisOf(r)}` } : {}) } : { ...curve, showSymbol, symbolSize: 6, lineStyle: { width: style.lineWidth ?? 2 }, z: 3 }),
+          itemStyle: { color: bar ? fill(color) : color, ...(bar && style.corners ? { borderRadius: [style.corners, style.corners, 0, 0] } : {}) },
+          tooltip: { valueFormatter: (n: number | null) => fmt(k)(n) },
+          ...(style.labels === 'on' ? { label: { show: true, position: 'top', color: c.ink2, fontSize: 11, formatter: (p: { value: unknown }) => { const v = typeof p.value === 'object' && p.value !== null ? (p.value as { value: unknown }).value : p.value; return typeof v === 'number' ? fmt(k)(v) : ''; } }, labelLayout: { hideOverlap: true } } : {}),
+          ...(style.focus ? { emphasis: { focus: 'series' } } : {}),
+          data: cats.map((cat) => {
+            const row = rows.find((rr) => String(rr.dims[x.key]) === String(cat));
+            const v = row ? (row.values[k] ?? null) : null;
+            const tone = typeof v === 'number' ? toneFor(flag.behavior, k, v) : null;
+            const sel = isSelected(selections, x.key, cat);
+            return { value: share(k, v), raw: cat, itemStyle: { ...(tone ? { color: c[tone] } : {}), ...(tone && bar ? { decal: decal(tone) } : {}), ...(sel === false ? { opacity: DIM } : {}) } };
+          }),
+        };
+      });
+      // A goal line and the average go on the bars' scale: the first bar on the left, else the first measure.
+      const anchorAt = Math.max(0, roles.findIndex((r) => r.as === 'bar' && axisOf(r) === 0));
+      const anchorKey = roles[anchorAt]!.metric;
+      const lines: Option[] = [];
+      if (style.target && !b.share) {
+        const name = style.target.label || 'Target';
+        lines.push({ yAxis: style.target.value, name, label: { formatter: () => name, position: 'insideEndTop', color: c.ink }, lineStyle: { color: c.ink, type: 'dashed', width: 1.5 } });
+      }
+      if (style.average && !b.share) lines.push({ type: 'average', name: 'Average', label: { formatter: (p: { value: number }) => `Average ${fmt(anchorKey)(p.value)}`, position: 'insideEndBottom', color: c.ink2 }, lineStyle: { color: c.ink3, type: 'dotted', width: 1.5 } });
+      if (lines.length) seriesList[anchorAt]!.markLine = { silent: true, symbol: 'none', data: lines };
+      const place = legendFor(style, seriesList.length, c.ink2);
+      const first = (axis: number) => roles.find((r) => axisOf(r) === axis)!.metric;
+      const scaleName = (axis: number) => roles.filter((r) => axisOf(r) === axis).map((r) => label(r.metric)).join(', ');
+      const named = (axis: number) => (twoScales ? { name: scaleName(axis), nameTextStyle: { color: c.ink3, align: axis ? 'right' : 'left' }, nameGap: 8 } : {});
+      const zoom = style.zoom && cats.length > 1;
+      return {
+        ...base,
+        tooltip: { ...(base.tooltip as Option), trigger: 'axis', axisPointer: { type: 'shadow' } },
+        legend: place.legend,
+        grid: { left: 8, right: place.right, top: place.top + (twoScales ? 16 : 0), bottom: place.bottom + (zoom ? 26 : 0), containLabel: true },
+        // Every name when there are few, wrapped onto two lines rather than skipped.
+        xAxis: catAxis(cats.map((v) => formatDim(v, x.grain)), cats.length <= 12 ? { axisLabel: { color: c.ink2, interval: 0, width: 80, overflow: 'break', lineHeight: 13 } } : {}),
+        yAxis: [valueAxis(first(0), named(0)), ...(twoScales ? [valueAxis(first(1), { ...named(1), splitLine: { show: false } })] : [])],
+        series: seriesList,
+        ...(zoom
+          ? { dataZoom: [{ type: 'inside', xAxisIndex: 0, zoomOnMouseWheel: 'ctrl', moveOnMouseWheel: false, moveOnMouseMove: true, preventDefaultMouseMove: false }, { type: 'slider', xAxisIndex: 0, height: 16, bottom: place.bottom + 2, brushSelect: false, showDetail: false, borderColor: c.line, textStyle: { color: c.ink3 } }] }
+          : {}),
+      };
+    }
+
+    case 'map': {
+      const p = mapPlan(input);
+      if (p.mode === 'missing') return flagChartOption({ ...input, flag: { ...flag, kind: 'bar' } });
+      if (p.mode === 'loading') return { ...base, series: [] };
+      const id = style.map ?? US_STATES;
+      const tile = id === US_STATES;
+      const tip = (name: string, v: number | null | undefined) => `${name}<br/>${label(m0)}: ${typeof v === 'number' && Number.isFinite(v) ? fmt(m0)(v) : 'no value'}`;
+      if (p.mode === 'points') {
+        const values = p.points.map((pt) => pt.v).filter((v): v is number => v !== null);
+        const big = Math.max(1, ...values.map((v) => Math.abs(v)));
+        const data = p.points.map((pt) => ({ name: pt.name, raw: pt.raw, value: [pt.lon, pt.lat, pt.v ?? 0], symbolSize: 6 + 22 * Math.sqrt(Math.abs(pt.v ?? 0) / big), itemStyle: { borderColor: c.panel, borderWidth: 1, ...dimmed(x.key, pt.raw) } }));
+        const dots = { type: 'scatter', data, label: { show: labelled && data.length <= 12, formatter: '{b}', position: 'right', color: c.ink2, fontSize: 11 }, labelLayout: { hideOverlap: true }, tooltip: { formatter: (q: { name: string; value: number[] }) => tip(q.name, q.value[2]) } };
+        const visualMap = { ...scale(values), dimension: 2, seriesIndex: 0 };
+        if (p.onMap) {
+          return {
+            ...base,
+            tooltip: item,
+            visualMap,
+            geo: { map: chartMapName(id), roam: false, top: 8, bottom: 40, left: 8, right: 8, silent: true, itemStyle: { areaColor: withAlpha(c.line, 0.6), borderColor: c.ink3, borderWidth: 0.6 }, label: { show: false } },
+            series: [{ ...dots, coordinateSystem: 'geo' }],
+          };
+        }
+        // No map with longitude and latitude to put them on: a plain frame, longitude across and latitude up.
+        const lons = p.points.map((pt) => pt.lon);
+        const lats = p.points.map((pt) => pt.lat);
+        const pad = (xs: number[], lo: number, hi: number) => {
+          const a = Math.min(...xs);
+          const z = Math.max(...xs);
+          const m = Math.max(0.5, (z - a) * 0.08);
+          return { min: Math.max(lo, Math.floor((a - m) * 10) / 10), max: Math.min(hi, Math.ceil((z + m) * 10) / 10) };
+        };
+        const deg = (n: number) => `${Math.round(n * 10) / 10}°`;
+        const axis = (name: string, range: object, extra: Option = {}) => ({ type: 'value', name, nameLocation: 'middle', nameTextStyle: { color: c.ink3 }, ...range, splitLine: { show: style.gridLines !== false, lineStyle: { color: c.line } }, axisLabel: { color: c.ink3, formatter: deg, hideOverlap: true }, ...extra });
+        return {
+          ...base,
+          tooltip: item,
+          visualMap,
+          grid: { left: 30, right: 16, top: 12, bottom: 56, containLabel: true },
+          xAxis: axis('Longitude', data.length ? pad(lons, -180, 180) : {}, { nameGap: 24 }),
+          yAxis: axis('Latitude', data.length ? pad(lats, -90, 90) : {}, { nameGap: 36, nameRotate: 90 }),
+          series: [dots],
+        };
+      }
+      const values = p.regions.map((r) => r.value);
+      return {
+        ...base,
+        tooltip: item,
+        visualMap: { ...scale(values), seriesIndex: 0 },
+        series: [
+          {
+            type: 'map',
+            map: chartMapName(id),
+            roam: false,
+            ...(tile ? { aspectScale: 1 } : {}),
+            top: 8,
+            bottom: 40,
+            left: 8,
+            right: 8,
+            selectedMode: false,
+            itemStyle: { areaColor: withAlpha(c.line, 0.6), borderColor: c.panel, borderWidth: tile ? 2 : 0.8 },
+            label: { show: labelled && (tile || (mapEntry(id)?.regions.length ?? 0) <= 40), color: c.ink, fontSize: tile ? 10 : 11 },
+            emphasis: { label: { show: true, color: c.ink }, itemStyle: { areaColor: withAlpha(colors[1] ?? colors[0]!, 0.85), borderColor: c.ink, borderWidth: 1 } },
+            tooltip: { formatter: (q: { name: string; value: number }) => tip(tile ? stateName(q.name) : q.name, q.value) },
+            data: p.regions.map((r) => ({ name: r.name, value: r.value, raw: r.raw, ...(isSelected(selections, x.key, r.raw) === false ? { itemStyle: { opacity: DIM } } : {}) })),
+          },
+        ],
       };
     }
   }

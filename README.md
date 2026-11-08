@@ -98,6 +98,7 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 | **Assistant and voice** | An assistant panel and orb answer questions about using Semaphore (through Fairlead, or from a built-in guide without it). Answers can be read aloud through TalkForge, which Semaphore starts when needed or reuses if it is already running, with a voice picked from the ones installed. Voice input takes your question down as you speak, with speech recognition running in the page. See [docs/VOICE.md](docs/VOICE.md). |
 | **Themes** | Lazarette's ten presets, Surprise me and Make it yours (mode, accent, tint, shape, density, type, motion, pattern, contrast), with theme files that move between the two apps. |
 | **Regular reports and briefings** | A page you open every Monday keeps coming while you are away, for leadership to read; "Brief me" says what a page shows in a few sentences, each linked to its flag. |
+| **Combos and maps** | Bars with a line on its own scale; a US state tile map, your own region maps from a GeoJSON or TopoJSON file, and points from latitude and longitude, all drawn on this computer with no map service. See [docs/MAPS.md](docs/MAPS.md). |
 | **Page design and exports** | Restyle a page or one flag: palettes, gradients, glow, gauges, funnels, target lines, zoom and motion. Export to PDF, Excel with native charts, PowerPoint, Word, HTML, CSV or JSON. See [docs/DESIGN.md](docs/DESIGN.md). |
 | **Flag kits** | Save a set of flags as a kit and fly it on another catalog: each metric and field is matched by key, then label, then synonym, and anything that does not match arrives as an empty draft with a reason ([docs/FLAG_KITS.md](docs/FLAG_KITS.md)). |
 | **Comparisons that follow a drill** | A flag set to compare keeps its comparison as you drill (2026 Q3 against 2025 Q3), and shared reports carry the earlier window too ([docs/DRILL_COMPARISONS.md](docs/DRILL_COMPARISONS.md)). |
@@ -194,6 +195,7 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 - [docs/PLAYBOOK.md](docs/PLAYBOOK.md): learning from analysts, the leadership view, snapshots, standing in for an absent analyst
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, the thin-client data strategy, storage, and how the TechStack maps on
 - [docs/FLAG_SPEC.md](docs/FLAG_SPEC.md): the catalog, hoist and flag formats
+- [docs/MAPS.md](docs/MAPS.md): combo charts, the US state tile map, region maps from GeoJSON or TopoJSON, and points
 - [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md): what local rules understand, AI providers, and the contract
 - [docs/ROADMAP.md](docs/ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md)
 - [examples/fleet-maintenance/](examples/fleet-maintenance/): the sample catalog and hoist (synthetic)

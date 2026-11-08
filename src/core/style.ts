@@ -28,8 +28,8 @@ export const SHAPE_LABEL: Record<Shape, string> = {
 /** Kinds a shape can be drawn as; a learnt kind outside this list is never applied. */
 const KINDS_FOR: Record<Shape, FlagKind[]> = {
   number: ['kpi', 'table'],
-  trend: ['line', 'area', 'bar', 'calendar', 'table'],
-  category: ['bar', 'pie', 'radar', 'waterfall', 'pareto', 'table'],
+  trend: ['line', 'area', 'bar', 'calendar', 'combo', 'table'],
+  category: ['bar', 'pie', 'radar', 'waterfall', 'pareto', 'combo', 'map', 'table'],
   'two-categories': ['bar', 'heatmap', 'sankey', 'sunburst', 'radar', 'stream', 'pivot', 'table'],
 };
 
@@ -174,7 +174,7 @@ function on<T>(style: TeamStyle, rule: StyleRule<T> | null | undefined): rule is
   return !!rule && !style.off.includes(rule.key);
 }
 
-const KIND_WORD = /\b(kpi|bar|bars|line|lines|area|pie|table|chart|graph|number|headline)\b/i;
+const KIND_WORD = /\b(kpi|bar|bars|line|lines|area|pie|table|chart|graph|number|headline|combo|map)\b/i;
 // "top 5", "bottom 3", "first 10"; "last 10" too, unless it is a window ("last 12 months").
 const LIMIT_WORD = /\b(?:top|bottom|first)\s+\d+\b|\blast\s+\d+\b(?!\s*(?:day|week|month|quarter|year)s?\b)/i;
 

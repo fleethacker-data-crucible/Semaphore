@@ -11,7 +11,7 @@ import type { ModelSpec } from './predict/types.ts';
 import { type FlagWidget, parseWidget } from './widget.ts';
 
 export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'pivot' | 'custom' | RichKind;
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'pivot', 'custom'];
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'combo', 'map', 'model', 'pivot', 'custom'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
