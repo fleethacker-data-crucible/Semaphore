@@ -128,9 +128,13 @@ function pieOption(input: ChartInput, base: Option, x: { key: string; grain?: Ti
 type RichBuilder = (input: ChartInput, base: Option) => Option;
 let richBuilder: RichBuilder | null = null;
 /** chart-kinds.ts registers itself here when chart-extras.ts loads (Chart.tsx loadExtras). */
-export function setRichBuilder(f: RichBuilder): void {
+export function setRichBuilder(f: RichBuilder, note?: (input: ChartInput) => string | null): void {
   richBuilder = f;
+  if (note) richNoter = note;
 }
+let richNoter: ((input: ChartInput) => string | null) | null = null;
+/** A line to show under a richer chart (a map's values that are on no region), once the extras have loaded. */
+export const richNote = (input: ChartInput): string | null => richNoter?.(input) ?? null;
 /** Whether the richer kinds can be drawn yet. */
 export const richReady = (): boolean => richBuilder !== null;
 

@@ -104,7 +104,8 @@ export function drillView(flag: Flag, steps: readonly DrillStep[], index: Catalo
   // A comparison carries down a drill: the earlier window is narrowed by the same steps, moved back
   // with it (drill-compare.ts). The rows behind a value are a list, not a series, so it ends there.
   if (detail) delete binding.compare;
-  return { flag: { ...flag, kind: kind === 'kpi' || kind === 'pie' || isRichKind(kind) ? 'bar' : kind, binding }, detail };
+  // A combo keeps its bars and line one level down: the next level is one field with the same measures.
+  return { flag: { ...flag, kind: kind === 'kpi' || kind === 'pie' || (isRichKind(kind) && kind !== 'combo') ? 'bar' : kind, binding }, detail };
 }
 
 /** "Destroyer › 2026 Q3" for the breadcrumb. */

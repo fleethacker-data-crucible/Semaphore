@@ -9,6 +9,19 @@ import type { TableRows } from '../core/engine.ts';
 const REGIONS = ['Northeast', 'Southeast', 'Gulf', 'Pacific Northwest', 'Southwest', 'Great Lakes'];
 const CLASSES = ['Cutter', 'Patrol boat', 'Buoy tender', 'Icebreaker', 'Tug', 'Landing craft', 'Frigate', 'Destroyer', 'Survey vessel', 'Supply ship', 'Ferry', 'Research vessel'];
 const STATUSES = ['Open', 'In progress', 'Awaiting parts', 'Closed', 'Cancelled'];
+/** The states each region's home ports are in, for the map example. */
+const HOME_STATES: Record<string, readonly string[]> = {
+  Northeast: ['Maine', 'Massachusetts', 'Rhode Island', 'Connecticut', 'New York', 'New Jersey'],
+  Southeast: ['Virginia', 'North Carolina', 'South Carolina', 'Georgia', 'Florida'],
+  Gulf: ['Texas', 'Louisiana', 'Mississippi', 'Alabama', 'Florida'],
+  'Pacific Northwest': ['Washington', 'Oregon', 'Alaska'],
+  Southwest: ['California', 'Hawaii', 'California', 'Arizona'],
+  'Great Lakes': ['Michigan', 'Ohio', 'Wisconsin', 'Illinois', 'Minnesota', 'Pennsylvania'],
+};
+const homeState = (region: string, hull: string) => {
+  const list = HOME_STATES[region]!;
+  return list[Number(hull.slice(2)) % list.length]!;
+};
 const PARTS = ['Impeller', 'Gasket set', 'Fuel injector', 'Bilge pump', 'Radar module', 'Shaft seal', 'Anode', 'Filter cartridge', 'Hydraulic hose', 'Alternator', 'Propeller', 'Battery bank'];
 
 /** Mulberry32: small, fast and the same everywhere. */
@@ -61,6 +74,8 @@ export function fleetSampleRows(today: Date = new Date(), count = 6000): TableRo
       hull_no: hull,
       labor_cost: cost,
       days_open: daysOpen,
+      // From the region and the hull, not the random walk, so every other value stays as it was.
+      home_state: homeState(region, hull),
     });
   }
   const parts: Array<Record<string, Cell>> = PARTS.map((p, i) => ({ 'Item Name': p, QtyOnHand: Math.round(5 + r() * 400 * (i % 3 === 0 ? 0.2 : 1)) }));
