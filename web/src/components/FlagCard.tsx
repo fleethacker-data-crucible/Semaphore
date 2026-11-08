@@ -63,7 +63,10 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
   // The page part of the key is worked out once per hoist object, however many cards ask (#83).
   const sliceKey = cachedSliceKey(hoist);
   const planKey = useMemo(() => JSON.stringify([flag.id, flag.kind, flag.binding, flag.behavior.ignore, sliceKey]), [flag.id, flag.kind, flag.binding, flag.behavior.ignore, sliceKey]);
-  const relevant = useMemo(() => relevantSelections(selections, flagKeys(hoist, sliceKey, flag, ctx.index), flag.behavior), [selections, hoist, sliceKey, flag, ctx.index]);
+  // Asked again once a result is in: a flag over several tables plans only after that code has loaded (planner.ts loadAcross).
+  const ready = load.state === 'ready';
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const relevant = useMemo(() => relevantSelections(selections, flagKeys(hoist, sliceKey, flag, ctx.index), flag.behavior), [selections, hoist, sliceKey, flag, ctx.index, ready]);
   const selKey = JSON.stringify(relevant);
   useEffect(() => {
     if (!flag.binding || flag.kind === 'text') {
@@ -122,7 +125,9 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     [result, flag, index, ctx.today],
   );
   const sqlPref = useSqlPref();
-  const described = useMemo(() => (flag.kind === 'text' ? '' : describeFlag(flag, hoist, index).join(' ')), [flag, hoist, index]);
+  const hasResult = result !== undefined;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const described = useMemo(() => (flag.kind === 'text' ? '' : describeFlag(flag, hoist, index).join(' ')), [flag, hoist, index, hasResult]);
   const descId = useId();
   const lowConfidence = flag.status === 'drafted' && (flag.confidence ?? 1) < 0.6;
   const reviewedAt = useReviewedAt(hoist.id, own.id);

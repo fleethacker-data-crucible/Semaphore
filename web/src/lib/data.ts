@@ -8,7 +8,7 @@ import { applySelections, type CrossfilterResult, type DisplayRow, lineUp, type 
 import { runPlan, type TableRows } from '../../../src/core/engine.ts';
 import { comparisonPlanFor, comparisonSelections } from '../../../src/core/drill-compare.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
-import { comparisonShift, planFlag, planLeaves, type QueryPlan } from '../../../src/core/planner.ts';
+import { comparisonShift, loadAcross, overlaps, planFlag, planLeaves, planTables, type QueryPlan } from '../../../src/core/planner.ts';
 import { loadReshaping, storedTables } from '../../../src/core/reshape.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
@@ -177,7 +177,7 @@ async function run(plan: QueryPlan, ctx: DataContext) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
     // A reshaped table (reshape.ts) is built from its stored table, wherever that is held.
-    const read = storedTables(ctx.index, plan.source, [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])]);
+    const read = storedTables(ctx.index, plan.source, planTables(plan));
     const inWorker = !!ctx.worker && read.every((t) => ctx.workerTables?.has(t));
     return { origin: 'page' as const, result: await cache.remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
@@ -225,7 +225,11 @@ function withSelectionFilters(flag: Flag, keys: string[], selections: Selections
 }
 
 export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext): Promise<FlagResult> {
-  const first = planFlag(hoist, flag, ctx.index);
+  let first = planFlag(hoist, flag, ctx.index);
+  if (!first.ok && first.reason === 'loading') {
+    await loadAcross();
+    first = planFlag(hoist, flag, ctx.index);
+  }
   if (!first.ok) throw new DataError(first.error);
   let plan = first.plan;
   let ran = await run(plan, ctx);
@@ -246,6 +250,8 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
       }
     }
   }
+  // Measures from several tables: say when some groups are in only some of them (across.ts).
+  if (display.gaps) plan = { ...plan, notes: [...plan.notes, `${display.gaps} of these groups ${display.gaps > 1 ? 'are' : 'is'} found in only some of ${plan.across!.map((p) => p.table).join(', ')}, so a measure worked out from more than one of them shows nothing there.`] };
   const out: FlagResult = { plan, sql: sourceSql(plan, ctx), display, origin: ran.origin, ms: ran.result.ms, requeried, raw: ran.result.rows };
   const lake = ran.result as { cached?: boolean; asOf?: string; scannedBytes?: number; estimate?: { warnings: string[] } };
   if (lake.cached || lake.scannedBytes !== undefined) {
@@ -277,7 +283,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
 async function formulaTotals(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext, out: FlagResult): Promise<void> {
   const b = flag.binding;
   const { plan, display } = out;
-  if (!b || !b.dimensions.length || plan.many?.overlap || display.rows.length < 2) return;
+  if (!b || !b.dimensions.length || overlaps(plan) || display.rows.length < 2) return;
   const keys = plan.metrics.filter((m) => m.agg === 'formula' && display.totals[m.key] === null && planLeaves(m).some((l) => l.agg === 'count_distinct')).map((m) => m.key);
   if (!keys.length) return;
   const whole: Flag = { ...flag, kind: 'kpi', binding: { metrics: keys, dimensions: [], filters: b.filters, ...(b.compare ? { compare: b.compare } : {}) } };

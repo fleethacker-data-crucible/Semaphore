@@ -15,12 +15,14 @@ import { checkFormulas, parseFormula, printFormula } from '../src/core/formula.t
 import type { Binding, Flag, Hoist } from '../src/core/hoist.ts';
 import { draftFlagLocally } from '../src/core/intelligence/local-rules.ts';
 import { buildPivot, levelKey, neededLevels } from '../src/core/pivot.ts';
-import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from '../src/core/planner.ts';
+import { comparisonPlan, comparisonShift, loadAcross, planFlag, type QueryPlan } from '../src/core/planner.ts';
 import { renderSql } from '../src/core/sql.ts';
 import { proposeMeasure } from '../src/core/formula-words.ts';
 import { applyModelImport } from '../src/core/model-import.ts';
 import { mapPowerBi, readBim } from '../src/core/powerbi.ts';
 import { proposeCatalog } from '../src/core/profile.ts';
+
+await loadAcross();
 
 const base: Catalog = {
   version: 1,
@@ -166,15 +168,19 @@ test('the planner: inputs as hidden aggregates shared with plain measures; ranki
   const sql = renderSql(plan, index, today).sql;
   assert.doesNotMatch(sql, /ORDER BY/);
   assert.match(sql, /SUM\("cost"\) AS "a0", COUNT\(DISTINCT "hull"\) AS "a1", COUNT\(\*\) AS "a2"/);
-  // Inputs from two tables are refused with a reason.
+  // Inputs from two unrelated tables: one query each (tests/across.test.ts). A total needs no
+  // relationship; a split by a field one of them cannot reach is refused, naming field and table.
   const two: Catalog = {
     ...base,
     fields: [...base.fields, { key: 'parts.qty', label: 'Qty', source: 's', table: 'parts', column: 'qty', type: 'number' }],
     metrics: [...base.metrics, { key: 'qty', label: 'Qty', agg: 'sum', field: 'parts.qty', source: 's' }, { key: 'mix', label: 'Mix', agg: 'formula', formula: 'labor_cost / qty', source: 's' }],
   };
-  const { hoist, flag } = flagOf({ metrics: ['mix'] });
-  const refused = planFlag(hoist, flag, indexCatalog(two));
-  assert.ok(!refused.ok && /different tables/.test(refused.error));
+  const kpi = flagOf({ metrics: ['mix'] });
+  const whole = planFlag(kpi.hoist, kpi.flag, indexCatalog(two));
+  assert.ok(whole.ok && whole.plan.across?.map((p) => p.table).join() === 'jobs,parts');
+  const split = flagOf({ metrics: ['mix'], dimensions: [{ field: 'jobs.region' }] });
+  const refused = planFlag(split.hoist, split.flag, indexCatalog(two));
+  assert.ok(!refused.ok && /worked out from jobs and parts/.test(refused.error) && /"Region" is in a table not related to parts/.test(refused.error), !refused.ok ? refused.error : '');
 });
 
 test('comparisons: the earlier window’s ratio is its own ratio, lined up per row', () => {

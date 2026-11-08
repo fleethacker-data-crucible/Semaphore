@@ -10,7 +10,7 @@ import { makerOf, reshapedTable, reshaping } from './reshape.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { MANY_ALIAS, manyJoinSql, manyParts, renderManyBlock, type SqlKit } from './manyjoin.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
-import type { PlannedAggregate, PlannedDimension, QueryPlan } from './planner.ts';
+import { acrossPart, type PlannedAggregate, type PlannedDimension, type QueryPlan } from './planner.ts';
 
 export interface SqlParam {
   /** Dates are YYYY-MM-DD; the server binds them as real date values. */
@@ -39,7 +39,7 @@ export interface RenderOptions {
   dialect?: Dialect;
 }
 
-export const TILES_ELSEWHERE = 'Equal-count groups (quartiles and the like) rank every row of their own table, so they are only read on charts of that table, without a one-to-many split.';
+export const TILES_ELSEWHERE = 'Equal-count groups (quartiles and the like) rank every row of their own table, so they are read on charts of that table, or from the many side of a one-to-many split, never through a join.';
 
 export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date(), options: RenderOptions = {}): RenderedSql {
   const source = index.source(plan.source);
@@ -54,159 +54,165 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     return dialect === 'postgres' ? `$${n}` : dialect === 'oracle' ? `:p${n}` : dialect === 'tsql' || dialect === 'synapse' ? `@p${n}` : '?';
   };
 
-  const joins = plan.joins ?? [];
-  const dedupe = !plan.raw && dedupes(index, plan.source, plan.table);
-  // Columns are qualified by table alias whenever more than one table, or a subquery, is read.
-  const aliased = joins.length > 0 || dedupe || !!plan.many;
-  // A one-to-many split reads the many side through a derived table of distinct pairs (manyjoin.ts).
-  const many = plan.many ? manyParts(plan, index) : null;
-  const kit: SqlKit = {
-    quote,
-    quoteTable: (name, d) => {
-      if (reshapedTable(index, plan.source, name)) throw new SqlError('A table made by a cleaning step (reshape) cannot be on the many side of a one-to-many split yet.');
-      return quoteTable(name, d);
-    },
-    truncate,
-    filterSql,
-    SqlError,
-  };
-  // Oracle takes no AS before a table alias; the others accept it.
-  const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${quote(alias, dialect)}`;
-  const stored = (fieldKey: string): string => {
-    const f = index.field(fieldKey);
-    if (!f) throw new SqlError(`Unknown field "${fieldKey}".`);
-    const alias = f.source === plan.source ? aliasOf(plan.table, joins, f.table) : undefined;
-    if (!alias) throw new SqlError(`Field "${fieldKey}" is not in ${plan.table} or a table joined to it.`);
-    return aliased ? `${quote(alias, dialect)}.${quote(f.column, dialect)}` : quote(f.column, dialect);
-  };
-  const typeOf = (fieldKey: string): FieldType => (plan.raw ? (index.field(fieldKey)?.type ?? 'string') : cleanType(index, fieldKey));
+  // One SELECT for one table and its joins; `pad` lists every aggregate of a drill-across plan.
+  const query = (plan: QueryPlan, pad?: readonly PlannedAggregate[]): string => {
+    const joins = plan.joins ?? [];
+    const dedupe = !plan.raw && dedupes(index, plan.source, plan.table);
+    // Columns are qualified by table alias whenever more than one table, or a subquery, is read.
+    const aliased = joins.length > 0 || dedupe || !!plan.many;
+    // A one-to-many split reads the many side through a derived table of distinct pairs (manyjoin.ts).
+    const many = plan.many ? manyParts(plan, index) : null;
+    const kit: SqlKit = { quote, table: (name, alias) => tableText(name, alias), truncate, filterSql, SqlError };
+    // Oracle takes no AS before a table alias; the others accept it.
+    const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${quote(alias, dialect)}`;
+    const stored = (fieldKey: string): string => {
+      const f = index.field(fieldKey);
+      if (!f) throw new SqlError(`Unknown field "${fieldKey}".`);
+      const alias = f.source === plan.source ? aliasOf(plan.table, joins, f.table) : undefined;
+      if (!alias) throw new SqlError(`Field "${fieldKey}" is not in ${plan.table} or a table joined to it.`);
+      return aliased ? `${quote(alias, dialect)}.${quote(f.column, dialect)}` : quote(f.column, dialect);
+    };
+    const typeOf = (fieldKey: string): FieldType => (plan.raw ? (index.field(fieldKey)?.type ?? 'string') : cleanType(index, fieldKey));
 
-  // A reshaped table (an unpivot step, reshape.ts) is read as a derived table of UNION ALLs.
-  const reshaped = (name: string) => reshapedTable(index, plan.source, name);
-  const tableText = (name: string, alias: string | null): string => {
-    const step = reshaped(name);
-    if (!step) return alias ? `${quoteTable(name, dialect)} ${as(alias)}` : quoteTable(name, dialect);
-    const storedTable = index.field(step.field)!.table;
-    const { dedupesStored, unpivotSql } = reshaping();
-    const inner = () => (dedupesStored(index, step) ? `(SELECT DISTINCT * FROM ${quoteTable(storedTable, dialect)}) ${as('s')}` : quoteTable(storedTable, dialect));
-    return `${unpivotSql(index, step, dialect, (value, type) => bind({ value, type }), (n) => quote(n, dialect), inner)} ${as(alias ?? 'v')}`;
-  };
-  // Built when it is written into the text, so its bound values come in the order they appear.
-  const fromText = (): string => {
-    let from = dedupe ? `(SELECT DISTINCT * FROM ${tableText(plan.table, null)}) ${as(BASE_ALIAS)}` : tableText(plan.table, aliased ? BASE_ALIAS : null);
-    for (const j of joins) {
-      const on = `${quote(j.left.alias, dialect)}.${quote(j.left.column, dialect)} = ${quote(j.alias, dialect)}.${quote(j.column, dialect)}`;
-      const joined = `LEFT JOIN ${tableText(j.table, j.alias)} ON ${on}`;
-      // Access needs each join but the last wrapped: FROM ((a LEFT JOIN b ON …) LEFT JOIN c ON …).
-      from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
-    }
-    return from;
-  };
-
-  // The derived table is added after the cleaning columns are written, because the "?" dialects
-  // need values bound in the order they appear in the text.
-  const withMany = (f: string): string => {
-    if (!plan.many) return f;
-    const j = manyJoinSql(plan, renderManyBlock(plan, index, dialect, bind, today, kit), dialect, kit);
-    return dialect === 'access' && joins.length > 0 ? `(${f}) ${j}` : `${f} ${j}`;
-  };
-
-  // Cleaning steps are applied once, in an inner query, and everything else reads its columns.
-  // Repeating a cleaned expression in GROUP BY would bind its values twice, and Postgres would not
-  // accept "CASE x WHEN $1 …" in SELECT as the same expression as "CASE x WHEN $5 …" in GROUP BY.
-  const used = [
-    ...new Set([
-      ...plan.dimensions.filter((d) => !many?.owns(d.field)).map((d) => d.field),
-      ...plan.aggregates.flatMap((a) => (a.field ? [a.field] : [])),
-      ...plan.filters.filter((f) => !many?.owns(f.field)).map((f) => f.field),
-    ]),
-  ];
-  let from: string;
-  const inner = new Map<string, string>();
-  // Fields made by a step (split, merge, bucket) are computed in the inner query too, raw or not.
-  const made = used.some((k) => makerOf(index, k));
-  if ((!plan.raw && used.some((k) => stepsFor(index, k).length)) || made) {
-    const cols = used.map((k, i) => {
-      inner.set(k, `c${i}`);
-      const bindv = (value: string | number, type: 'string' | 'number') => bind({ value, type });
-      let expr: string;
-      try {
-        if (made) {
-          // Equal-count groups rank every row of the base table, which is what the inner query reads.
-          const r = reshaping();
-          if (r.usesTiles(index, k) && (index.field(k)?.table !== plan.table || plan.many)) throw new SqlError(TILES_ELSEWHERE);
-          expr = r.fieldSql(index, k, !!plan.raw, stored, dialect, bindv)();
-        } else {
-          const steps = plan.raw ? [] : stepsFor(index, k);
-          expr = steps.length ? cleanSql(steps, stored(k), dialect, bindv) : stored(k);
-        }
-      } catch (e) {
-        if (e instanceof SqlError) throw e;
-        throw new SqlError((e as Error).message);
+    // A reshaped table (an unpivot step, reshape.ts) is read as a derived table of UNION ALLs.
+    const reshaped = (name: string) => reshapedTable(index, plan.source, name);
+    const tableText = (name: string, alias: string | null): string => {
+      const step = reshaped(name);
+      if (!step) return alias ? `${quoteTable(name, dialect)} ${as(alias)}` : quoteTable(name, dialect);
+      const storedTable = index.field(step.field)!.table;
+      const { dedupesStored, unpivotSql } = reshaping();
+      const inner = () => (dedupesStored(index, step) ? `(SELECT DISTINCT * FROM ${quoteTable(storedTable, dialect)}) ${as('s')}` : quoteTable(storedTable, dialect));
+      return `${unpivotSql(index, step, dialect, (value, type) => bind({ value, type }), (n) => quote(n, dialect), inner)} ${as(alias ?? 'v')}`;
+    };
+    // Built when it is written into the text, so its bound values come in the order they appear.
+    const fromText = (): string => {
+      let from = dedupe ? `(SELECT DISTINCT * FROM ${tableText(plan.table, null)}) ${as(BASE_ALIAS)}` : tableText(plan.table, aliased ? BASE_ALIAS : null);
+      for (const j of joins) {
+        const on = `${quote(j.left.alias, dialect)}.${quote(j.left.column, dialect)} = ${quote(j.alias, dialect)}.${quote(j.column, dialect)}`;
+        const joined = `LEFT JOIN ${tableText(j.table, j.alias)} ON ${on}`;
+        // Access needs each join but the last wrapped: FROM ((a LEFT JOIN b ON …) LEFT JOIN c ON …).
+        from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
       }
-      return `${expr} AS ${quote(`c${i}`, dialect)}`;
-    });
-    // The group values of the many side pass through unchanged (cleaned inside the derived table).
-    for (const g of many?.dims ?? []) cols.push(`${quote(MANY_ALIAS, dialect)}.${quote(g.col, dialect)} AS ${quote(g.col, dialect)}`);
-    from = `(SELECT ${cols.join(', ')} FROM ${withMany(fromText())}) ${as('q')}`;
-  } else from = withMany(fromText());
-  const column = (fieldKey: string): string => {
-    if (!inner.size) return stored(fieldKey);
-    const c = inner.get(fieldKey);
-    if (!c) throw new SqlError(`Field "${fieldKey}" is not read by this query.`);
-    return `${quote('q', dialect)}.${quote(c, dialect)}`;
-  };
+      return from;
+    };
 
-  const dimExpr = (d: PlannedDimension): string => {
-    // Many-side group values arrive already cleaned and truncated to their grain.
-    const g = many?.dims.find((x) => x.dim.alias === d.alias);
-    if (g) return `${quote(inner.size ? 'q' : MANY_ALIAS, dialect)}.${quote(g.col, dialect)}`;
-    return d.grain ? truncate(column(d.field), d.grain, dialect) : column(d.field);
-  };
-  const aggExpr = (a: PlannedAggregate): string => {
-    const col = a.field === null ? '*' : column(a.field);
-    if (a.fn === 'count_distinct') {
-      if (dialect === 'access') throw new SqlError('Access has no COUNT(DISTINCT …); use a count metric or another source.');
-      if (col === '*') throw new SqlError('A distinct count needs a field.');
-      return `COUNT(DISTINCT ${col})`;
+    // The derived table is added after the cleaning columns are written, because the "?" dialects
+    // need values bound in the order they appear in the text.
+    const withMany = (f: string): string => {
+      if (!plan.many) return f;
+      const j = manyJoinSql(plan, renderManyBlock(plan, index, dialect, bind, today, kit), dialect, kit);
+      return dialect === 'access' && joins.length > 0 ? `(${f}) ${j}` : `${f} ${j}`;
+    };
+
+    // Cleaning steps are applied once, in an inner query, and everything else reads its columns.
+    // Repeating a cleaned expression in GROUP BY would bind its values twice, and Postgres would not
+    // accept "CASE x WHEN $1 …" in SELECT as the same expression as "CASE x WHEN $5 …" in GROUP BY.
+    const used = [
+      ...new Set([
+        ...plan.dimensions.filter((d) => !many?.owns(d.field)).map((d) => d.field),
+        ...plan.aggregates.flatMap((a) => (a.field ? [a.field] : [])),
+        ...plan.filters.filter((f) => !many?.owns(f.field)).map((f) => f.field),
+      ]),
+    ];
+    let from: string;
+    const inner = new Map<string, string>();
+    // Fields made by a step (split, merge, bucket) are computed in the inner query too, raw or not.
+    const made = used.some((k) => makerOf(index, k));
+    if ((!plan.raw && used.some((k) => stepsFor(index, k).length)) || made) {
+      const cols = used.map((k, i) => {
+        inner.set(k, `c${i}`);
+        const bindv = (value: string | number, type: 'string' | 'number') => bind({ value, type });
+        let expr: string;
+        try {
+          if (made) {
+            // Equal-count groups rank every row of the base table, which is what the inner query reads.
+            const r = reshaping();
+            if (r.usesTiles(index, k) && (index.field(k)?.table !== plan.table || plan.many)) throw new SqlError(TILES_ELSEWHERE);
+            expr = r.fieldSql(index, k, !!plan.raw, stored, dialect, bindv)();
+          } else {
+            const steps = plan.raw ? [] : stepsFor(index, k);
+            expr = steps.length ? cleanSql(steps, stored(k), dialect, bindv) : stored(k);
+          }
+        } catch (e) {
+          if (e instanceof SqlError) throw e;
+          throw new SqlError((e as Error).message);
+        }
+        return `${expr} AS ${quote(`c${i}`, dialect)}`;
+      });
+      // The group values of the many side pass through unchanged (cleaned inside the derived table).
+      for (const g of many?.dims ?? []) cols.push(`${quote(MANY_ALIAS, dialect)}.${quote(g.col, dialect)} AS ${quote(g.col, dialect)}`);
+      from = `(SELECT ${cols.join(', ')} FROM ${withMany(fromText())}) ${as('q')}`;
+    } else from = withMany(fromText());
+    const column = (fieldKey: string): string => {
+      if (!inner.size) return stored(fieldKey);
+      const c = inner.get(fieldKey);
+      if (!c) throw new SqlError(`Field "${fieldKey}" is not read by this query.`);
+      return `${quote('q', dialect)}.${quote(c, dialect)}`;
+    };
+
+    const dimExpr = (d: PlannedDimension): string => {
+      // Many-side group values arrive already cleaned and truncated to their grain.
+      const g = many?.dims.find((x) => x.dim.alias === d.alias);
+      if (g) return `${quote(inner.size ? 'q' : MANY_ALIAS, dialect)}.${quote(g.col, dialect)}`;
+      return d.grain ? truncate(column(d.field), d.grain, dialect) : column(d.field);
+    };
+    const aggExpr = (a: PlannedAggregate): string => {
+      const col = a.field === null ? '*' : column(a.field);
+      if (a.fn === 'count_distinct') {
+        if (dialect === 'access') throw new SqlError('Access has no COUNT(DISTINCT …); use a count metric or another source.');
+        if (col === '*') throw new SqlError('A distinct count needs a field.');
+        return `COUNT(DISTINCT ${col})`;
+      }
+      if (col === '*' && a.fn !== 'count') throw new SqlError(`${a.fn} needs a field.`);
+      return `${a.fn.toUpperCase()}(${col})`;
+    };
+
+    const select = [
+      ...plan.dimensions.map((d) => `${dimExpr(d)} AS ${quote(d.alias, dialect)}`),
+      // One table of a drill-across gives NULL for the aggregates of the others.
+      ...(pad ?? plan.aggregates).map((a) => `${plan.aggregates.includes(a) ? aggExpr(a) : 'NULL'} AS ${quote(a.alias, dialect)}`),
+    ];
+    if (select.length === 0) throw new SqlError('Nothing to select.');
+
+    // Filters on the many side already apply inside the derived table.
+    const where = plan.filters.filter((f) => !many?.owns(f.field)).map((f) => filterSql(f, column(f.field), typeOf(f.field), bind, today));
+    const groupBy = plan.dimensions.map(dimExpr);
+
+    let orderBy = '';
+    if (plan.sort) {
+      const dim = plan.dimensions.find((d) => d.key === plan.sort!.by);
+      const metric = plan.metrics.find((m) => m.key === plan.sort!.by);
+      let expr: string | null = null;
+      if (dim) expr = dimExpr(dim);
+      else if (metric && metric.agg !== 'avg') {
+        // An average is rebuilt locally from its sum and count, and sorted there; the planner never
+        // cuts an average-ranked top N at the source.
+        const alias = metric.parts.sum ?? metric.parts.count ?? metric.parts.min ?? metric.parts.max ?? metric.parts.distinct;
+        const a = plan.aggregates.find((x) => x.alias === alias);
+        if (a) expr = aggExpr(a);
+      }
+      if (expr) orderBy = ` ORDER BY ${expr} ${plan.sort.dir === 'desc' ? 'DESC' : 'ASC'}`;
     }
-    if (col === '*' && a.fn !== 'count') throw new SqlError(`${a.fn} needs a field.`);
-    return `${a.fn.toUpperCase()}(${col})`;
+
+    let sql = `SELECT ${select.join(', ')} FROM ${from}`;
+    if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+    if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
+    // A flag with fields and no metrics (a filter list) asks for the distinct values.
+    else if (groupBy.length) sql = sql.replace(/^SELECT /, 'SELECT DISTINCT ');
+    return sql + orderBy;
   };
-
-  const select = [
-    ...plan.dimensions.map((d) => `${dimExpr(d)} AS ${quote(d.alias, dialect)}`),
-    ...plan.aggregates.map((a) => `${aggExpr(a)} AS ${quote(a.alias, dialect)}`),
-  ];
-  if (select.length === 0) throw new SqlError('Nothing to select.');
-
-  // Filters on the many side already apply inside the derived table.
-  const where = plan.filters.filter((f) => !many?.owns(f.field)).map((f) => filterSql(f, column(f.field), typeOf(f.field), bind, today));
-  const groupBy = plan.dimensions.map(dimExpr);
-
-  let orderBy = '';
-  if (plan.sort) {
-    const dim = plan.dimensions.find((d) => d.key === plan.sort!.by);
-    const metric = plan.metrics.find((m) => m.key === plan.sort!.by);
-    let expr: string | null = null;
-    if (dim) expr = dimExpr(dim);
-    else if (metric && metric.agg !== 'avg') {
-      // An average is rebuilt locally from its sum and count, and sorted there; the planner never
-      // cuts an average-ranked top N at the source.
-      const alias = metric.parts.sum ?? metric.parts.count ?? metric.parts.min ?? metric.parts.max ?? metric.parts.distinct;
-      const a = plan.aggregates.find((x) => x.alias === alias);
-      if (a) expr = aggExpr(a);
-    }
-    if (expr) orderBy = ` ORDER BY ${expr} ${plan.sort.dir === 'desc' ? 'DESC' : 'ASC'}`;
-  }
 
   const limit = Math.max(1, Math.floor(plan.limit));
-  let sql = `SELECT ${dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `TOP ${limit} ` : ''}${select.join(', ')} FROM ${from}`;
-  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-  if (groupBy.length && plan.aggregates.length) sql += ` GROUP BY ${groupBy.join(', ')}`;
-  // A flag with fields and no metrics (a filter list) asks for the distinct values.
-  else if (groupBy.length) sql = sql.replace(/^SELECT /, 'SELECT DISTINCT ');
-  sql += orderBy;
+  let sql: string;
+  if (plan.across) {
+    // Measures from several tables (across.ts): one grouped SELECT per table, each giving every
+    // aggregate (NULL for the other tables'), lined up by grouping their UNION ALL once more.
+    const x = (alias: string) => `${quote('x', dialect)}.${quote(alias, dialect)}`;
+    const parts = plan.across.map((p) => query(acrossPart(plan, p), plan.aggregates)).join(' UNION ALL ');
+    const cols = [...plan.dimensions.map((d) => `${x(d.alias)} AS ${quote(d.alias, dialect)}`), ...plan.aggregates.map((a) => `MAX(${x(a.alias)}) AS ${quote(a.alias, dialect)}`)];
+    sql = `SELECT ${cols.join(', ')} FROM (${parts}) ${dialect === 'oracle' ? '' : 'AS '}${quote('x', dialect)}${plan.dimensions.length ? ` GROUP BY ${plan.dimensions.map((d) => x(d.alias)).join(', ')}` : ''}`;
+  } else sql = query(plan);
+  if (dialect === 'access' || dialect === 'tsql' || dialect === 'synapse') sql = sql.replace(/^SELECT (DISTINCT )?/, (m) => `${m}TOP ${limit} `);
   if (dialect === 'postgres' || dialect === 'ansi' || dialect === 'spark' || dialect === 'mysql' || dialect === 'sqlite') sql += ` LIMIT ${limit}`;
   else if (dialect === 'oracle') sql += ` FETCH FIRST ${limit} ROWS ONLY`;
   return { dialect, sql, params };

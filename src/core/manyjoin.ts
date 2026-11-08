@@ -23,6 +23,7 @@ import { cleanSql, cleanType, cleanValue, stepsFor } from './cleaning.ts';
 import type { Cell } from './crossfilter.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import { BASE_ALIAS, type Relationship, reachable } from './joins.ts';
+import { hasMaking, makerOf, reshaping } from './reshape.ts';
 import type { PlannedDimension, QueryPlan } from './planner.ts';
 
 /** Alias of the derived many-side table in SQL: columns "k" (the key) and "g0", "g1", … (group values). */
@@ -295,12 +296,11 @@ export function manyParts(plan: QueryPlan, index: CatalogIndex): ManyParts {
 // ---------------------------------------------------------------------------------------------
 // SQL: the derived table of distinct (key, group values) pairs.
 
-const MADE_ON_MANY = 'A field or table made by a cleaning step (split, merge, bucket or reshape) cannot be on the many side of a one-to-many split yet.';
-
 /** The pieces of sql.ts this file needs, passed in so the two files do not import each other. */
 export interface SqlKit {
   quote(name: string, dialect: Dialect): string;
-  quoteTable(name: string, dialect: Dialect): string;
+  /** A table of the query's source, quoted, as `alias`: a reshaped table is its derived table (reshape.ts). */
+  table(name: string, alias: string): string;
   truncate(col: string, grain: TimeGrain, dialect: Dialect): string;
   filterSql(f: Filter, col: string, type: FieldType, bind: (p: { value: string | number | boolean; type: 'string' | 'number' | 'date' | 'boolean' }) => string, today: Date): string;
   SqlError: new (message: string) => Error;
@@ -318,22 +318,44 @@ export function renderManyBlock(plan: QueryPlan, index: CatalogIndex, dialect: D
   const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${q(alias)}`;
   const aliasOf = new Map([[many.root.table, many.root.alias], ...many.steps.map((s) => [s.table, s.alias] as const)]);
 
-  let from = `${kit.quoteTable(many.root.table, dialect)} ${as(many.root.alias)}`;
-  for (const s of many.steps) {
-    const on = `${q(s.left.alias)}.${q(s.left.column)} = ${q(s.alias)}.${q(s.column)}`;
-    const joined = `LEFT JOIN ${kit.quoteTable(s.table, dialect)} ${as(s.alias)} ON ${on}`;
-    from = dialect === 'access' && s !== many.steps[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
-  }
+  const used = [...new Set([...parts.dims.map((d) => d.dim.field), ...parts.filters.map((f) => f.field)])];
+  // Fields made by a step (split, merge, bucket) are computed over their own table's rows, in a
+  // derived table of it, so equal-count groups rank that table's rows and nothing else. A reshaped
+  // table is its derived table of UNION ALLs (kit.table). Written when the text is, so values bind in order.
+  const made = used.filter((k) => makerOf(index, k));
+  const madeCol = (k: string) => `sem_made${made.indexOf(k)}`;
+  const tableText = (table: string, alias: string): string => {
+    const mine = made.filter((k) => index.field(k)!.table === table);
+    if (!mine.length) return kit.table(table, alias);
+    const cols = mine.map((k) => {
+      try {
+        return `${reshaping().fieldSql(index, k, !!plan.raw, (x) => `${q('s')}.${q(index.field(x)!.column)}`, dialect, (value, type) => bind({ value, type }))()} AS ${q(madeCol(k))}`;
+      } catch (e) {
+        throw new kit.SqlError((e as Error).message);
+      }
+    });
+    return `(SELECT ${q('s')}.*, ${cols.join(', ')} FROM ${kit.table(table, 's')}) ${as(alias)}`;
+  };
+  const fromText = (): string => {
+    let from = tableText(many.root.table, many.root.alias);
+    for (const s of many.steps) {
+      const on = `${q(s.left.alias)}.${q(s.left.column)} = ${q(s.alias)}.${q(s.column)}`;
+      const joined = `LEFT JOIN ${tableText(s.table, s.alias)} ON ${on}`;
+      from = dialect === 'access' && s !== many.steps[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
+    }
+    return from;
+  };
 
   const stored = (field: string): string => {
     const f = index.field(field)!;
-    if (f.derived) throw new kit.SqlError(MADE_ON_MANY);
     const alias = aliasOf.get(f.table);
     if (!alias) throw new kit.SqlError(`Field "${field}" is not in the many-side tables of this query.`);
-    return `${q(alias)}.${q(f.column)}`;
+    return `${q(alias)}.${q(made.includes(field) ? madeCol(field) : f.column)}`;
   };
-  const used = [...new Set([...parts.dims.map((d) => d.dim.field), ...parts.filters.map((f) => f.field)])];
-  const cleaned = !plan.raw && used.some((k) => stepsFor(index, k).length > 0);
+  // A made field's own cleaning steps are part of its expression already.
+  const stepsOf = (k: string) => (plan.raw || made.includes(k) ? [] : stepsFor(index, k));
+  const cleaned = used.some((k) => stepsOf(k).length > 0);
+  let from = '';
   let key = `${q(many.root.alias)}.${q(many.root.column)}`;
   let col = stored;
   if (cleaned) {
@@ -341,7 +363,7 @@ export function renderManyBlock(plan: QueryPlan, index: CatalogIndex, dialect: D
     const cols = used.map((k, i) => {
       at.set(k, `c${i}`);
       let expr = stored(k);
-      const steps = stepsFor(index, k);
+      const steps = stepsOf(k);
       if (steps.length) {
         try {
           expr = cleanSql(steps, expr, dialect, (value, type) => bind({ value, type }));
@@ -351,12 +373,13 @@ export function renderManyBlock(plan: QueryPlan, index: CatalogIndex, dialect: D
       }
       return `${expr} AS ${q(`c${i}`)}`;
     });
-    from = `(SELECT ${key} AS ${q('k')}, ${cols.join(', ')} FROM ${from}) ${as('mi')}`;
+    from = `(SELECT ${key} AS ${q('k')}, ${cols.join(', ')} FROM ${fromText()}) ${as('mi')}`;
     key = `${q('mi')}.${q('k')}`;
     col = (field) => `${q('mi')}.${q(at.get(field)!)}`;
   }
   const typeOf = (field: string): FieldType => (plan.raw ? (index.field(field)?.type ?? 'string') : cleanType(index, field));
   const select = [`${key} AS ${q('k')}`, ...parts.dims.map(({ dim, col: g }) => `${dim.grain ? kit.truncate(col(dim.field), dim.grain, dialect) : col(dim.field)} AS ${q(g)}`)];
+  from ||= fromText();
   const where = parts.filters.map((f) => kit.filterSql(f, col(f.field), typeOf(f.field), bind, today));
   return `(SELECT DISTINCT ${select.join(', ')} FROM ${from}${where.length ? ` WHERE ${where.join(' AND ')}` : ''})`;
 }
@@ -434,12 +457,17 @@ export function prepareManyRows(
 
   const reader = (field: string): { get: (row: JoinedRow) => Cell; type: FieldType } => {
     const f = index.field(field)!;
-    if (f.derived) throw new kit.EngineError(MADE_ON_MANY);
     const at = tableSlot.get(f.table);
     if (at === undefined) throw new kit.EngineError(`Field "${field}" is not in the many-side tables of this query.`);
+    const type = plan.raw ? f.type : cleanType(index, field);
+    if (hasMaking(index.catalog)) {
+      // Made fields (and reshaped tables' rows) as reshape-impl.ts reads them; equal-count groups rank their own table's rows.
+      const read = reshaping().fieldReader(index, field, !!plan.raw, need);
+      return { get: (row) => read(row[at]), type };
+    }
     const steps = plan.raw ? [] : stepsFor(index, field);
     const read = (row: JoinedRow): Cell => row[at]?.[f.column] ?? null;
-    return { get: steps.length ? (row) => cleanValue(steps, read(row)) : read, type: plan.raw ? f.type : cleanType(index, field) };
+    return { get: steps.length ? (row) => cleanValue(steps, read(row)) : read, type };
   };
   const tests = parts.filters.map((f) => kit.filterTest(f, reader(f.field), today));
   const dimReaders = parts.dims.map(({ dim }) => ({ get: reader(dim.field).get, grain: dim.grain }));

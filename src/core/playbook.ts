@@ -202,7 +202,7 @@ function healthProblem(e: PlaybookEntry, index: CatalogIndex, now: Date): string
   parseFilters(e.pageFilters, index, warnings, 'Entry');
   if (!b || warnings.length) return `It uses something the catalog no longer has (${warnings[0] ?? 'its binding'}).`;
   const plan = planFlag(entryHoist(e), entryFlag(e), index);
-  if (!plan.ok) return `It no longer runs: ${plan.error}`;
+  if (!plan.ok && plan.reason !== 'loading') return `It no longer runs: ${plan.error}`;
   const last = Date.parse(e.lastUsed ?? e.acceptedAt);
   if (Number.isFinite(last) && now.getTime() - last > STALE_DAYS * 86_400_000) return `Nobody has used it for ${STALE_DAYS / 30} months.`;
   return null;
