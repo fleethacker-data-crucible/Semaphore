@@ -49,11 +49,11 @@ $script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=()
 # loads it only in <iframe sandbox="allow-scripts">, and the CSP's own sandbox directive makes the
 # document an opaque origin even when it is opened on its own, so it can never read the page's session
 # token, storage or DOM. default-src 'none' leaves it no network at all (no fetch, no images from
-# anywhere, no frames, no workers); 'unsafe-eval' is how the analyst's code runs (new Function),
-# inside that box only. frame-ancestors 'self': only Semaphore's own page may embed it. Its bundle is
+# anywhere, no frames, no workers). The analyst's code runs as a blob: script the frame makes from it
+# (never eval, so no 'unsafe-eval'), inside that box only. frame-ancestors 'self': only Semaphore's own page may embed it. Its bundle is
 # loaded from the opaque origin, so these files say Cross-Origin-Resource-Policy: cross-origin (they
 # are the same static code for everyone and hold no data), and X-Frame-Options allows the same origin.
-$script:SemSandboxCsp = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+$script:SemSandboxCsp = "sandbox allow-scripts; default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 $script:SemSandboxFrameOptions = 'SAMEORIGIN'
 $script:SemSandboxResourcePolicy = 'cross-origin'
 # Hashed build outputs under /assets/ (contract 4, issue #78): a hash segment of 8+ letters/digits.

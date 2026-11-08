@@ -238,6 +238,10 @@ test('an error line is read from the evaluated code\'s stack frame, less the wra
   assert.equal(errorLine('Error: x\n    at Function:9:1', 2), 7);
   assert.equal(errorLine('SecurityError: Blocked a frame with origin "null"', 2), undefined, 'no stack frames, no line');
   assert.equal(errorLine(undefined, 2), undefined);
+  // The widget's code is loaded as a blob: script now; its frames name the blob URL.
+  const blobStack = ['TypeError: x is undefined', '    at render (blob:null/6f1c9a2e-0b7d-4f3e-9a1b-2c3d4e5f6a7b:7:12)', '    at run (https://localhost/sandbox/widget-host.js:1:900)'].join('\n');
+  assert.equal(errorLine(blobStack, 2), 5);
+  assert.equal(errorLine('at blob:null/abc:2:1', 2), undefined, "a line inside the wrapper is not the analyst's");
   assert.equal(errorLine('at <anonymous>:1:1', 2), undefined, 'a line inside the wrapper is not the analyst\'s');
 });
 

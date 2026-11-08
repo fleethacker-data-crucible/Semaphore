@@ -190,7 +190,8 @@ test('the sandbox page is served with its own locked-down policy', async ({ requ
   const csp = r.headers()['content-security-policy']!;
   expect(csp).toContain('sandbox allow-scripts');
   expect(csp).toContain("default-src 'none'");
-  expect(csp).toContain("script-src 'self' 'unsafe-eval'");
+  expect(csp).toContain("script-src 'self' blob:");
+  expect(csp).not.toContain('unsafe-eval');
   expect(csp).toContain("frame-ancestors 'self'");
   expect(csp).not.toContain('connect-src');
   expect(r.headers()['x-frame-options']).toBe('SAMEORIGIN');

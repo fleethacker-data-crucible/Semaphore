@@ -56,7 +56,7 @@ Describe 'The custom widget sandbox page' {
         $r = Invoke-TestRequest -Path '/sandbox/widget.html'
         $r.Status | Should -Be 200
         $csp = Get-HeaderValue $r 'Content-Security-Policy'
-        $csp | Should -Be "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+        $csp | Should -Be "sandbox allow-scripts; default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
         $csp | Should -Not -Match 'connect-src|allow-same-origin|allow-top-navigation|allow-popups|allow-forms'
         $csp | Should -Not -Match "img-src[^;]*('self'|https?:|\*)"
         Get-HeaderValue $r 'X-Frame-Options' | Should -Be 'SAMEORIGIN'

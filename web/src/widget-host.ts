@@ -25,25 +25,54 @@ function post(m: Outgoing): void {
   host.postMessage({ ...m, nonce }, '*');
 }
 
-// The code is wrapped in a function so `render` and the analyst's top-level names stay local. The
-// lines the wrapper adds before the code are measured once, so error lines point at the editor's.
-const HEAD = '"use strict";\n';
-const TAIL = '\n;return typeof render === "function" ? render : null;';
+// The analyst's code runs as a script of its own, never through eval: it is wrapped, turned into a
+// blob: URL in this frame and loaded with a <script> element, so the frame's CSP needs no 'unsafe-eval'
+// (script-src 'self' blob:). The wrapper keeps `render` and the analyst's top-level names local and
+// hands `render` back through a one-time token. It adds two lines before the code (OFFSET), so error
+// lines point at the editor's.
 type Render = (api: WidgetApi) => unknown;
-function compile(code: string): (lib: typeof echarts) => Render | null {
-  // eslint-disable-next-line no-new-func
-  return new Function('echarts', HEAD + code + TAIL) as (lib: typeof echarts) => Render | null;
-}
-const OFFSET = (() => {
-  try {
-    // eslint-disable-next-line no-new-func
-    new Function('echarts', HEAD + 'throw new Error("line")')();
-  } catch (e) {
-    const at = errorLine((e as Error).stack, 0);
-    if (at) return at - 1;
+const OFFSET = 2;
+const waiting = new Map<string, { url: string; resolve: (r: Render | null) => void; reject: (e: unknown) => void }>();
+
+/** An error with the editor's line already worked out (a syntax error has no stack to read it from). */
+class CodeError extends Error {
+  readonly line: number | undefined;
+  constructor(message: string, line?: number) {
+    super(message);
+    this.line = line;
   }
-  return 2;
-})();
+}
+
+function compile(code: string): Promise<Render | null> {
+  return new Promise((resolve, reject) => {
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    const source = `"use strict";\n(function (echarts) {\n${code}\n;self.__semWidget.done(${JSON.stringify(token)}, typeof render === "function" ? render : null);\n})(self.__semWidget.lib);\n`;
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    waiting.set(token, { url, resolve, reject });
+    const script = document.createElement('script');
+    const finish = () => {
+      URL.revokeObjectURL(url);
+      script.remove();
+    };
+    // A script that loaded but never handed render back stopped early (its error is reported first).
+    script.onload = () => {
+      finish();
+      if (waiting.delete(token)) reject(new Error('The widget code stopped before it finished.'));
+    };
+    script.onerror = () => {
+      finish();
+      if (waiting.delete(token)) reject(new Error('The widget code could not be loaded.'));
+    };
+    script.src = url;
+    document.head.appendChild(script);
+  });
+}
+
+/** The compile a window error came from, if any: its script's URL is the error's file. */
+function compileFor(file: string): string | null {
+  for (const [token, w] of waiting) if (w.url === file) return token;
+  return null;
+}
 
 interface WidgetApi {
   data: WidgetData;
@@ -82,9 +111,20 @@ function message(e: unknown): string {
 }
 
 function fail(e: unknown): void {
-  const line = e instanceof Error ? errorLine(e.stack, OFFSET) : undefined;
+  const line = e instanceof CodeError && e.line ? e.line : e instanceof Error ? errorLine(e.stack, OFFSET) : undefined;
   post({ type: 'error', message: message(e).slice(0, 500), ...(line ? { line } : {}) });
 }
+
+// What the wrapped code reaches: the tracked library, and the hand-back for its compile's token.
+(self as unknown as { __semWidget: unknown }).__semWidget = Object.freeze({
+  lib: library,
+  done(token: unknown, render: unknown) {
+    const w = waiting.get(String(token));
+    if (!w) return;
+    waiting.delete(String(token));
+    w.resolve(typeof render === 'function' ? (render as Render) : null);
+  },
+});
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** As the page shows a field value (web/src/lib/chart-option.ts formatDim). */
@@ -170,13 +210,18 @@ function makeApi(data: WidgetData, t: WidgetTheme, target: HTMLElement): WidgetA
   };
 }
 
-function run(code: string, css: string, data: WidgetData, t: WidgetTheme): void {
+// Renders can overlap while a new script loads; only the newest one reports.
+let runSeq = 0;
+async function run(code: string, css: string, data: WidgetData, t: WidgetTheme): Promise<void> {
+  const seq = ++runSeq;
   applyTheme(t, css);
   teardown();
   try {
     if (!compiled || compiled.code !== code) {
       compiled = null;
-      compiled = { code, render: compile(code)(library) };
+      const render = await compile(code);
+      if (seq !== runSeq) return;
+      compiled = { code, render };
     }
     if (!compiled.render) throw new Error('Define a function render(api) that draws the widget.');
     const out = compiled.render(makeApi(data, t, el!));
@@ -190,7 +235,7 @@ function run(code: string, css: string, data: WidgetData, t: WidgetTheme): void 
     }
     post({ type: 'rendered' });
   } catch (e) {
-    fail(e);
+    if (seq === runSeq) fail(e);
   }
 }
 
@@ -224,10 +269,22 @@ if (isNonce(nonce) && host !== window) {
     if (!m) return;
     if (m.type === 'ping') post({ type: 'pong', seq: m.seq });
     else if (m.type === 'picture') picture(m.seq);
-    else run(m.code, m.css, m.data, m.theme);
+    else void run(m.code, m.css, m.data, m.theme);
   });
-  // Errors after render (a click handler, a timer) are the widget's too.
-  window.addEventListener('error', (e) => fail(e.error ?? e.message));
+  // A syntax error or a throw while the code first runs belongs to that compile; errors after render
+  // (a click handler, a timer) are the widget's too.
+  window.addEventListener('error', (e) => {
+    const token = compileFor(e.filename);
+    if (token) {
+      const w = waiting.get(token)!;
+      waiting.delete(token);
+      const line = e.lineno > OFFSET ? e.lineno - OFFSET : undefined;
+      const text = String(e.message || 'The widget code has an error.').replace(/^Uncaught /, '');
+      w.reject(e.error instanceof Error && errorLine(e.error.stack, OFFSET) ? e.error : new CodeError(text, line));
+      return;
+    }
+    fail(e.error ?? e.message);
+  });
   window.addEventListener('unhandledrejection', (e) => fail(e.reason));
   let frame = 0;
   new ResizeObserver(() => {

@@ -145,7 +145,8 @@ export function selectAllowed(key: string, columns: readonly WidgetColumn[]): bo
  */
 export function errorLine(stack: unknown, offset: number): number | undefined {
   if (typeof stack !== 'string') return undefined;
-  const m = /(?:<anonymous>|Function|eval)[^:\n]*:(\d+):(\d+)/.exec(stack);
+  // A blob: script's frames (the widget's code is loaded as one) or, from older builds, eval's.
+  const m = /blob:[^\s)]+?:(\d+):(\d+)/.exec(stack) ?? /(?:<anonymous>|Function|eval)[^:\n]*:(\d+):(\d+)/.exec(stack);
   if (!m) return undefined;
   const line = Number(m[1]) - offset;
   return line > 0 ? line : undefined;
