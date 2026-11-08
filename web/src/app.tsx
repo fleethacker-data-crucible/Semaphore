@@ -6,7 +6,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, dialectForSource, indexCatalog, type Metric, pruneCatalog, type RdsEngine } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { impactFor, impactLine } from '../../src/core/impact.ts';
 import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/csv.ts';
@@ -609,8 +609,8 @@ export function App() {
         const p = await profileTable(source, table);
         const s = server?.sources.find((x) => x.id === source);
         const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = dialectForKind(kind);
-        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
+        const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -637,8 +637,8 @@ export function App() {
             const p = await profileTable(t.source, t.table);
             const s = server?.sources.find((x) => x.id === t.source);
             const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = dialectForKind(kind);
-            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
+            const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });

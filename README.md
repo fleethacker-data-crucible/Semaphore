@@ -119,7 +119,7 @@ Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database d
 
 Semaphore reads the shared names from the running, unlocked Lazarette over loopback for each query; it never loads Lazarette's engine or holds the vault key. If Lazarette is stopped, locked, not paired or a name is not shared, the flag says so in a sentence. See [docs/VAULT.md](docs/VAULT.md).
 
-**More connectors.** `redshift-data` (Amazon Redshift Data API), `synapse` (Azure Synapse and Azure SQL through ODBC Driver 17/18 with Entra sign-in) and `foundry` (Palantir Foundry SQL). Examples, limits and what has and has not been validated against real services are in [docs/CONNECTORS.md](docs/CONNECTORS.md).
+**More connectors.** `redshift-data` (Amazon Redshift Data API), `synapse` (Azure Synapse and Azure SQL through ODBC Driver 17/18 with Entra sign-in), `foundry` (Palantir Foundry SQL), and Amazon RDS and Aurora (`"kind": "aws-rds"` with an `engine`: PostgreSQL, MySQL, MariaDB, SQL Server or Oracle through the ODBC driver already installed, TLS on, password or IAM sign-in). The Data panel can also browse allowlisted S3 buckets and import objects into the local database. Examples, limits and what has and has not been validated against real services are in [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 > **What has been tested for real.** ODBC and OLE DB run through the real Microsoft Access Text and ACE drivers in the Pester suite (binding, types, errors), but not against a Postgres, Oracle, SQL Server or Access `.accdb` server. Athena, Redshift and Foundry are tested against simulated services only. Real-service checks are listed for Anthony in [docs/CONNECTORS.md](docs/CONNECTORS.md) and [docs/VAULT.md](docs/VAULT.md).
 

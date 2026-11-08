@@ -14,6 +14,8 @@ export interface ServerSource {
   kind: string;
   provider: string;
   placeholders?: 'question' | 'native';
+  /** For kind 'aws-rds': the database engine (postgres, aurora-postgresql, mysql, mariadb, aurora-mysql, sqlserver, oracle). */
+  engine?: string;
 }
 
 export interface ServerInfo {

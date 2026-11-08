@@ -176,8 +176,13 @@ function Invoke-SemSelfCheck {
     $s = Read-SemSettings -Root $root
     $homeDir = Resolve-SemHome -Settings $s
     foreach ($src in @(Get-SemSources -HomeDir $homeDir)) {
-        $bad = Test-SemConnectionString -Connection $src.connection
+        $bad = Test-SemSourceConnection $src
         if ($bad) { $problems.Add("Source '$($src.id)': $bad") }
+        if ($src.kind -eq 'aws-rds') {
+            # The driver an RDS source would use on this computer (Aws.ps1); a missing one is a note, not a failure.
+            try { Write-Host ("Source '{0}' ({1}): ODBC driver ""{2}""" -f $src.id, $src.engine, (Find-SemRdsDriver -Rds (Get-SemRdsSettings $src.raw))) }
+            catch { Write-Host ("Note: source '{0}': {1}" -f $src.id, ([string]$_.Exception.Message -replace '^provider-unavailable:\s*', '')) -ForegroundColor Yellow }
+        }
     }
     if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($root, 'web', 'dist', 'index.html')))) { Write-Host 'Note: web\dist\index.html is missing (the UI is not built). Use the Semaphore-<version>.zip from the Releases page, not the source code; the server would show a "not built" page with these steps.' -ForegroundColor Yellow }
     Write-Host ("Semaphore {0}, home {1}, auto-stop {2}" -f $v, $homeDir, $(if (Test-SemAutoStopEnabled -Root $root) { 'on' } else { 'off' }))
@@ -209,6 +214,7 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Lake.ps1')
 . (Join-Path $here 'Vault.ps1')
 . (Join-Path $here 'Connectors.ps1')
+. (Join-Path $here 'S3.ps1')
 . (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
@@ -327,6 +333,7 @@ if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
 $script:Sem.Social = Get-SemSocialSettings -Settings $settings
+$script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {

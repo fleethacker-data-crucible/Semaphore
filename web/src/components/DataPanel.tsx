@@ -2,7 +2,7 @@
 // this page, never uploaded), profile a server source into a proposed catalog, and rename
 // measures and fields or teach them more words. Every change is checked before it is used.
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Database, FileSpreadsheet, Network, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
@@ -12,6 +12,9 @@ import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
 import { useModal } from '../lib/modal.ts';
 import { recordSkill, takeDataTab } from '../lib/skills.ts';
 import { EmptyState, emptyActionClass } from './EmptyState.tsx';
+
+// Amazon S3 browser and RDS help (AwsData.tsx), loaded when the Sources tab first shows with a server.
+const AwsData = lazy(() => import('./AwsData.tsx').then((m) => ({ default: m.AwsData })));
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -202,6 +205,12 @@ function Sources(p: DataPanelProps) {
         {p.server && p.server.sources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
         {p.busy && <p className="text-xs text-accent">{p.busy}</p>}
       </section>
+
+      {p.server && (
+        <Suspense fallback={<p className="text-xs text-ink-3">Loading Amazon S3 and RDS…</p>}>
+          <AwsData home={p.server.home} />
+        </Suspense>
+      )}
 
       {p.notes.length > 0 && (
         <section className="space-y-1">

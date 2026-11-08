@@ -65,6 +65,8 @@ function Get-SemDefaultSettings {
         fairleadPath = ''
         # Social and motivational features (docs/PLAYBOOK.md); each can be switched off per deployment.
         signalBook = $true; impact = $true; teamLog = $true; showAskers = $true; bz = $true
+        # Amazon S3 browsing and import (S3.ps1) and the AWS session for it (aws.vault, aws.fips); checked where used.
+        s3 = $null; aws = $null
     }
 }
 
@@ -94,6 +96,7 @@ function Merge-SemSettingsFile {
     if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
     if ($names -contains 'fairleadPath' -and $null -ne $j.fairleadPath) { $Settings.fairleadPath = ([string]$j.fairleadPath).Trim() }
+    foreach ($k in @('s3', 'aws')) { if ($names -contains $k -and $j.$k -is [Management.Automation.PSCustomObject]) { $Settings[$k] = $j.$k } }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0

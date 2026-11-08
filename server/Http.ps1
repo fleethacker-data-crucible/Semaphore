@@ -46,7 +46,7 @@ if ($null -eq $script:Sem) {
         Stream = $null; Responded = $false; Deferred = $false
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
-        Workers = $null; Pool = $null; WorkerContext = $null
+        Workers = $null; Pool = $null; WorkerContext = $null; AwsSettings = $null; S3Jobs = [hashtable]::Synchronized(@{})
         OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
         Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
     }

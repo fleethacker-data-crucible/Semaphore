@@ -26,6 +26,9 @@
 # =============================================================================
 
 $script:SemLakeMaxListObjects = 50000
+
+# Presigning, endpoints, RDS and the S3 response seam (one file shared with S3.ps1).
+. (Join-Path $PSScriptRoot 'Aws.ps1')
 $script:SemLakeEmptySha = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 # ---------------------------------------------------------------------------
