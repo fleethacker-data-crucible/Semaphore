@@ -84,16 +84,24 @@ export function tileLabel(tile: number, tiles: number): string {
 }
 
 /**
- * NTILE(k) over the non-blank values in ascending order: the first n mod k groups hold one row more.
- * A value shared by several rows takes the group of its first row.
+ * The one rule for equal-count groups, in the page, the worker, every SQL dialect and Access's bounds:
+ *
+ *   group = floor((rank - 1) * k / n) + 1
+ *
+ * where rank is the value's RANK() among the non-blank values in ascending order (equal values share
+ * the lowest rank: one more than the number of values below it) and n is how many values are not
+ * blank. Blanks stay blank. Equal values always share a group, so groups can differ in size.
  */
+export function tileOf(below: number, n: number, k: number): number {
+  return n > 0 ? Math.min(k, Math.floor((below * k) / n) + 1) : 1;
+}
+
+/** The group of a value among `values` (blanks ignored), by tileOf. */
 export function tileRanker(values: ReadonlyArray<number | null>, k: number): (v: number) => number {
   const sorted = values.filter((v): v is number => v !== null).sort((a, b) => a - b);
   const n = sorted.length;
-  const q = Math.floor(n / k);
-  const r = n % k;
-  const tileAt = (i: number) => (i < r * (q + 1) ? Math.floor(i / (q + 1)) + 1 : r + Math.floor((i - r * (q + 1)) / Math.max(q, 1)) + 1);
   return (v) => {
+    // How many values are below v: its rank less one.
     let lo = 0;
     let hi = n;
     while (lo < hi) {
@@ -101,22 +109,28 @@ export function tileRanker(values: ReadonlyArray<number | null>, k: number): (v:
       if (sorted[mid]! < v) lo = mid + 1;
       else hi = mid;
     }
-    return Math.min(k, tileAt(Math.min(lo, n - 1)));
+    return tileOf(lo, n, k);
   };
 }
 
-/** Upper bounds of each group but the last, from the values and their counts (for Access, which has no NTILE). */
+/**
+ * Upper bounds of each group but the last, from the values and their counts, by the same rule (for
+ * Access, which has no window functions). A group no value falls in takes the bound before it.
+ */
 export function tileBounds(values: ReadonlyArray<{ value: Cell; count: number }>, k: number): number[] {
-  const all: number[] = [];
+  const counts = new Map<number, number>();
   for (const v of values) {
-    const n = toNum(v.value);
-    if (n !== null) for (let i = 0; i < Math.min(v.count, 100_000); i++) all.push(n);
+    const x = toNum(v.value);
+    const c = Number.isFinite(v.count) ? Math.max(0, Math.floor(v.count)) : 0;
+    if (x !== null && c > 0) counts.set(x, (counts.get(x) ?? 0) + c);
   }
-  const rank = tileRanker(all, k);
+  const n = [...counts.values()].reduce((a, b) => a + b, 0);
   const bounds: number[] = [];
-  for (const v of [...new Set(all)].sort((a, b) => a - b)) {
-    const t = rank(v);
+  let below = 0;
+  for (const [v, c] of [...counts].sort((a, b) => a[0] - b[0])) {
+    const t = tileOf(below, n, k);
     if (t < k) bounds[t - 1] = v;
+    below += c;
   }
   for (let i = 0; i < k - 1; i++) bounds[i] ??= i ? bounds[i - 1]! : -Infinity;
   return bounds.slice(0, k - 1).map((b) => (Number.isFinite(b) ? b : 0));
@@ -252,13 +266,17 @@ export function bucketSql(step: CleaningStep, x: Thunk, dialect: Dialect, bind: 
     const k = step.tiles;
     const labels = Array.from({ length: k }, (_, i) => tileLabel(i + 1, k));
     if (dialect === 'access') {
-      // No NTILE: the group bounds read from the data when the step was accepted.
+      // No window functions: the group bounds read from the data when the step was accepted (tileBounds).
       const bounds = step.bounds ?? [];
       const arms = () => [...bounds.map((b, i) => `${x()} <= ${bind(b, 'number')}, ${bind(labels[i]!, 'string')}`), `True, ${bind(labels[k - 1]!, 'string')}`].join(', ');
       return `IIf(${x()} Is Null, Null, Switch(${arms()}))`;
     }
-    const tile = () => `NTILE(${k}) OVER (PARTITION BY CASE WHEN ${x()} IS NULL THEN 1 ELSE 0 END ORDER BY ${x()})`;
-    return `CASE WHEN ${x()} IS NULL THEN NULL ELSE CASE ${tile()} ${labels.map((l, i) => `WHEN ${i + 1} THEN ${bind(l, 'string')}`).join(' ')} END END`;
+    // tileOf in SQL: group g holds the values with (g - 1) * n <= (rank - 1) * k < g * n. Written with
+    // whole-number products and comparisons only, so no dialect's division or FLOOR can differ.
+    const below = () => `(RANK() OVER (PARTITION BY CASE WHEN ${x()} IS NULL THEN 1 ELSE 0 END ORDER BY ${x()}) - 1) * ${k}`;
+    const n = () => `COUNT(${x()}) OVER ()`;
+    const arms = labels.slice(0, -1).map((l, i) => `WHEN ${below()} < ${n()} * ${i + 1} THEN ${bind(l, 'string')}`);
+    return `CASE WHEN ${x()} IS NULL THEN NULL ${arms.join(' ')} ELSE ${bind(labels[k - 1]!, 'string')} END`;
   }
   const buckets = (step.buckets ?? []).slice(0, BUCKETS_MAX);
   if (!buckets.length) return 'NULL';

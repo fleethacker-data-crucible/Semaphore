@@ -3,7 +3,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, Check, CircleSlash, Download, LayoutDashboard, Package, Upload, X } from 'lucide-react';
-import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import type { CatalogIndex, Metric } from '../../../src/core/catalog.ts';
+import { parseFormula, printFormula } from '../../../src/core/formula.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { applyKit, exportKit, type FlagOutcome, type FlagReport, type Kit, kitId, KIT_LIMITS, makeKit, type Mapping, parseKitText } from '../../../src/core/kits.ts';
 import type { KitStore } from '../lib/kits.ts';
@@ -16,7 +17,8 @@ export interface KitsPanelProps {
   store: KitStore;
   hoist: Hoist;
   index: CatalogIndex;
-  onApply: (hoist: Hoist, summary: string) => void;
+  /** `metrics`: calculated measures the kit adds to the catalog, which the flags bind to. */
+  onApply: (hoist: Hoist, summary: string, metrics: Metric[]) => void;
   onClose: () => void;
 }
 
@@ -154,8 +156,8 @@ export function KitsPanel({ store, hoist, index, onApply, onClose }: KitsPanelPr
               hoist={hoist}
               index={index}
               onSelect={setSelectedId}
-              onApply={(h, summary) => {
-                onApply(h, summary);
+              onApply={(h, summary, metrics) => {
+                onApply(h, summary, metrics);
                 recordSkill('fly', { hoistId: hoist.id });
                 onClose();
               }}
@@ -269,7 +271,7 @@ function ApplyTab({
   hoist: Hoist;
   index: CatalogIndex;
   onSelect: (id: string) => void;
-  onApply: (hoist: Hoist, summary: string) => void;
+  onApply: (hoist: Hoist, summary: string, metrics: Metric[]) => void;
   onMessage: (m: { tone: 'good' | 'bad'; text: string[] } | null) => void;
 }) {
   const [closeMatches, setCloseMatches] = useState(false);
@@ -359,6 +361,18 @@ function ApplyTab({
             <FlagLine key={f.flagId} f={f} />
           ))}
         </ul>
+        {report.measures.length > 0 && (
+          <div className="mt-3">
+            <h4 className="text-xs font-semibold">Calculated measures added to this catalog</h4>
+            <ul className="mt-1 space-y-0.5">
+              {report.measures.map((m) => (
+                <li key={m.key} className="text-xs">
+                  <span className="font-medium">{m.label}</span> = {inWords(m.formula, index, result.metrics)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {report.pageFilters.length > 0 && (
           <div className="mt-3">
             <h4 className="text-xs font-semibold">Page filters</h4>
@@ -376,7 +390,13 @@ function ApplyTab({
       <button
         type="button"
         disabled={!report.applied || kit.flags.length === 0}
-        onClick={() => onApply(result.hoist, `Added ${kit.flags.length} flag${kit.flags.length === 1 ? '' : 's'} from the kit "${kit.name}": ${c.kept + c.remapped + c.partial} wired, ${c.unbound} not wired. Check the drafts before accepting them.`)}
+        onClick={() =>
+          onApply(
+            result.hoist,
+            `Added ${kit.flags.length} flag${kit.flags.length === 1 ? '' : 's'} from the kit "${kit.name}": ${c.kept + c.remapped + c.partial} wired, ${c.unbound} not wired${result.metrics.length ? `, and ${result.metrics.length} calculated measure${result.metrics.length === 1 ? '' : 's'}` : ''}. Check the drafts before accepting them.`,
+            result.metrics,
+          )
+        }
         className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-panel disabled:opacity-40"
       >
         Add {kit.flags.length} flag{kit.flags.length === 1 ? '' : 's'} to this page
@@ -386,7 +406,7 @@ function ApplyTab({
 }
 
 function FlagLine({ f }: { f: FlagReport }) {
-  const shown = f.mappings.filter((m) => !m.to || m.from.key !== m.to.key);
+  const shown = f.mappings.filter((m) => !m.to || m.from.key !== m.to.key || m.formula === 'made');
   const o = OUTCOME[f.outcome];
   return (
     <li className="rounded-lg border border-line p-2.5">
@@ -414,12 +434,20 @@ function FlagLine({ f }: { f: FlagReport }) {
   );
 }
 
+/** A formula over this catalog's keys, in its measures' labels. */
+function inWords(formula: string, index: CatalogIndex, extra: readonly Metric[]): string {
+  const p = parseFormula(formula);
+  if (!p.ok) return formula;
+  return printFormula(p.node, (k) => index.metric(k)?.label ?? extra.find((m) => m.key === k)?.label ?? k);
+}
+
 function MappingText({ m }: { m: Mapping }) {
   if (m.to) {
+    const how = m.formula === 'made' ? 'calculated measure added here' : m.formula === 'reused' ? 'the same calculated measure, already here' : TIER[m.tier ?? 'exact'];
     return (
       <span>
         <span className="text-ink-2">{m.from.label}</span> <ArrowRight size={11} className="inline" aria-label="became" /> <span className="font-medium">{m.to.label}</span>{' '}
-        <span className="text-[11px] text-ink-3">({TIER[m.tier ?? 'exact']}{m.from.key === m.to.key ? '' : `, ${m.from.key} → ${m.to.key}`})</span>
+        <span className="text-[11px] text-ink-3">({how}{m.from.key === m.to.key ? '' : `, ${m.from.key} → ${m.to.key}`})</span>
       </span>
     );
   }
