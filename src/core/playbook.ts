@@ -74,7 +74,35 @@ export interface QuestionItem {
   notes: string[];
   status: 'open' | 'answered' | 'dismissed';
   entryId?: string;
+  /** When it was answered with a reviewed entry (review.ts, resolveQuestions); older files have only `updated`. */
+  answeredAt?: string;
+  /** The answer Semaphore drafted live for the asker, when they pressed "Ask for review" (review.ts). */
+  draft?: DraftedAnswer;
+  /** When someone asked for the drafted answer to be reviewed. */
+  reviewRequested?: string;
+  /** The analyst who accepted the draft, edited it or rejected it. */
+  reviewedBy?: string;
+  /** An analyst looked at the draft and did not accept it. */
+  rejected?: { by: string; at: string; reason: string };
   updated: string;
+}
+
+/**
+ * A drafted answer as the asker saw it: what an analyst reviews. Kept with the question, never in
+ * the playbook: only an analyst's accept turns it into an entry (review.ts acceptDraft).
+ */
+export interface DraftedAnswer {
+  kind: FlagKind;
+  title: string;
+  binding: Binding;
+  /** The window it ran under. */
+  filters: Filter[];
+  thresholds: Threshold[];
+  /** "local rules" or the model's label. */
+  by: string;
+  draftedAt: string;
+  /** Where its numbers came from when it was shown. */
+  from: 'snapshot' | 'live';
 }
 
 /** Entries not used for this long are flagged for review. */
@@ -366,7 +394,7 @@ export function resolveQuestions(questions: readonly QuestionItem[], entries: re
     if (item.status !== 'open') continue;
     const asked = normalizeQuestion(item.title);
     const e = entries.find((x) => x.status !== 'retired' && (normalizeQuestion(x.question) === asked || x.phrasings.some((p) => normalizeQuestion(p) === asked)));
-    if (e) out.push({ ...item, status: 'answered', entryId: e.id, updated: now.toISOString() });
+    if (e) out.push({ ...item, status: 'answered', entryId: e.id, answeredAt: now.toISOString(), updated: now.toISOString() });
   }
   return out;
 }
