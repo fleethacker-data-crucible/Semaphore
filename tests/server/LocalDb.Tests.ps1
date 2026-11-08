@@ -257,21 +257,47 @@ Describe 'Replace and metadata' {
         $t.columns[0].name | Should -Be 'a'
         $t.bytes | Should -BeGreaterThan 0
     }
-    It 'swaps a table atomically with -Replace and refuses a taken name without it' {
+    It 'swaps a table atomically with -Replace, and gives a taken name a suffix without it' {
         $p1 = Write-TestFile 'v1.csv' "a`n1`n"
         $p2 = Write-TestFile 'v2.csv' "a,b`n1,x`n2,y`n"
         [void](Import-SemLocalFile -HomeDir $script:HomeDir -Path $p1 -Table 'swapme')
-        { Import-SemLocalFile -HomeDir $script:HomeDir -Path $p2 -Table 'swapme' } | Should -Throw '*already*'
+        $other = Import-SemLocalFile -HomeDir $script:HomeDir -Path $p2 -Table 'swapme'
+        $other.Table | Should -Be 'swapme_2'
+        (Get-Rows 'SELECT a FROM swapme').Count | Should -Be 1
         $r = Import-SemLocalFile -HomeDir $script:HomeDir -Path $p2 -Table 'swapme' -Replace
+        $r.Table | Should -Be 'swapme'
         $r.Rows | Should -Be 2
         (Get-Rows 'SELECT b FROM swapme').Count | Should -Be 2
+        { Import-SemLocalFile -HomeDir $script:HomeDir -Path $p2 -Table 'swapme' -Replace -Append } | Should -Throw '*not both*'
+    }
+    It 'appends by column name in one step: missing columns are NULL, extra columns are refused by name' {
+        $first = Write-TestFile 'part1.csv' "id,region,cost`n1,North,10`n2,South,20`n"
+        $r1 = Import-SemLocalFile -HomeDir $script:HomeDir -Path $first -Table 'parts' -Append
+        $r1.Appended | Should -BeFalse
+        $r1.TotalRows | Should -Be 2
+        $second = Write-TestFile 'part2.csv' "cost,id`n30,3`n"
+        $r2 = Import-SemLocalFile -HomeDir $script:HomeDir -Path $second -Table 'parts' -Append
+        $r2.Appended | Should -BeTrue
+        $r2.Rows | Should -Be 1
+        $r2.TotalRows | Should -Be 3
+        $rows = Get-Rows 'SELECT * FROM parts ORDER BY id'
+        $rows.Count | Should -Be 3
+        $rows[2].cost | Should -Be 30
+        $rows[2].region | Should -BeOfType [DBNull]
+        Get-Decl 'parts' | Should -Be 'INTEGER,TEXT,INTEGER'
+        @((Get-SemLocalTables -HomeDir $script:HomeDir).tables | Where-Object { $_.name -eq 'parts' })[0].rows | Should -Be 3
+        $bad = Write-TestFile 'part3.csv' "id,colour,size`n4,red,9`n"
+        { Import-SemLocalFile -HomeDir $script:HomeDir -Path $bad -Table 'parts' -Append } | Should -Throw '*colour, size*'
+        (Get-Rows 'SELECT id FROM parts').Count | Should -Be 3
+        $c = Open-SemLocalConnection -HomeDir $script:HomeDir
+        try { $c.ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '\_semaphore\_stage%' ESCAPE '\'") | Should -Be 0 } finally { $c.Dispose() }
     }
     It 'keeps the old table when a replacing import fails' {
         $bad = Write-TestFile 'bad.csv' ''
         { Import-SemLocalFile -HomeDir $script:HomeDir -Path $bad -Table 'swapme' -Replace } | Should -Throw
         (Get-Rows 'SELECT b FROM swapme').Count | Should -Be 2
         $c = Open-SemLocalConnection -HomeDir $script:HomeDir
-        try { @($c.UserTables() | Where-Object { $_[0] -like '_semaphore_stage*' }).Count | Should -Be 0 } finally { $c.Dispose() }
+        try { $c.ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '\_semaphore\_stage%' ESCAPE '\'") | Should -Be 0 } finally { $c.Dispose() }
     }
     It 'cancels an import part way: nothing is published and the staging table is gone' {
         $sb = New-Object Text.StringBuilder; [void]$sb.Append("a`n"); for ($i = 0; $i -lt 30000; $i++) { [void]$sb.Append("$i`n") }
@@ -280,7 +306,7 @@ Describe 'Replace and metadata' {
         $script:cancelOpts = $o
         { Import-SemLocalFile -HomeDir $script:HomeDir -Path $p -Options $o -Progress { param($x) if ($x.Rows -gt 8000) { $script:cancelOpts.Cancel() } } } | Should -Throw '*cancelled*'
         $c = Open-SemLocalConnection -HomeDir $script:HomeDir
-        try { $c.TableExists('cancelme') | Should -BeFalse; @($c.UserTables() | Where-Object { $_[0] -like '_semaphore_stage*' }).Count | Should -Be 0 } finally { $c.Dispose() }
+        try { $c.TableExists('cancelme') | Should -BeFalse; $c.ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '\_semaphore\_stage%' ESCAPE '\'") | Should -Be 0 } finally { $c.Dispose() }
     }
     It 'renames and drops tables with their metadata' {
         [void](Import-Text 'renameme.csv' "a`n1`n")

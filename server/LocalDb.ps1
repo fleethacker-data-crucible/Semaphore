@@ -182,7 +182,10 @@ function Import-SemLocalFile {
       Types, Names and Warnings), or throws a message for a person. The format comes from the content and
       the extension: csv/tsv/txt (delimiter sniffed), xlsx (-Sheet, else the first sheet), sqlite/db
       (-Sheet names the table inside the file, else every table), parquet/arrow/feather (Columnar.cs).
-      *.gz is decompressed transparently. -Replace swaps an existing table of that name in one
+      *.gz is decompressed transparently. An existing table name is never overwritten or added to by default: the new
+      table gets a unique suffix (orders_2). -Append adds the rows to an existing table, columns matched by name (columns
+      the file lacks are NULL; columns the table lacks are an error naming them), in one transaction, creating the table
+      when it does not exist. -Replace swaps an existing table of that name in one
       transaction (the data goes to a staging table first), so a re-import never leaves half a table.
       A metadata row in _semaphore_tables records source label, path, time, rows, file size and ETag.
     #>
@@ -193,6 +196,7 @@ function Import-SemLocalFile {
         [string]$Sheet,
         [string]$SourceLabel,
         [switch]$Replace,
+        [switch]$Append,
         [string]$ETag,
         [string]$FileName,
         [scriptblock]$Progress,
@@ -205,7 +209,9 @@ function Import-SemLocalFile {
     $o = $Options
     if ($null -eq $o) { $o = New-Object SemLocal.ImportOptions }
     if ($Table) { $o.Table = $Table }
+    if ($Replace -and $Append) { throw 'Choose -Replace or -Append, not both.' }
     $o.Replace = [bool]$Replace
+    $o.Append = [bool]$Append
     if ($SourceLabel) { $o.SourceLabel = $SourceLabel } elseif (-not $o.SourceLabel) { $o.SourceLabel = $FileName }
     if ($ETag) { $o.ETag = $ETag }
     if (-not $o.SourcePath) { $o.SourcePath = $Path }
@@ -260,6 +266,7 @@ function Import-SemLocalFile {
         Table = $first.Table; Rows = $rows; Columns = [int]$first.Columns; Ms = [long]$clock.ElapsedMilliseconds
         Tables = @($results | ForEach-Object { [ordered]@{ name = $_.Table; rows = $_.Rows; columns = $_.Columns } })
         Names = @($first.Names); Types = @($first.Types); Warnings = $warnings; Format = $format
+        TotalRows = [long]$first.TotalRows; Appended = [bool]$first.Appended
     }
 }
 
@@ -500,6 +507,7 @@ function Invoke-SemLocalJobBody {
         if ($Spec.Table) { $args2.Table = $Spec.Table }
         if ($Spec.Sheet) { $args2.Sheet = $Spec.Sheet }
         if ($Spec.Replace) { $args2.Replace = $true }
+        if ($Spec.Append) { $args2.Append = $true }
         $r = Import-SemLocalFile @args2
         $status.state = 'done'; $status.table = $r.Table; $status.rows = $r.Rows; $status.columns = $r.Columns; $status.ms = $r.Ms
         $status.tables = @($r.Tables); $status.warnings = @($r.Warnings)
@@ -603,7 +611,7 @@ function Get-SemLocalUploadName {
 }
 
 function Invoke-SemLocalUpload {
-    # POST /api/local/import: raw file body (Content-Length bytes), X-File-Name, optional X-Table, X-Sheet, X-Replace: 1.
+    # POST /api/local/import: raw file body (Content-Length bytes), X-File-Name, optional X-Table, X-Sheet, X-Replace: 1 or X-Append: 1.
     param($Req)
     $homeDir = $script:Sem.Home
     $name = Get-SemLocalUploadName $Req.Headers
@@ -615,6 +623,8 @@ function Invoke-SemLocalUpload {
     if ($Req.Headers.ContainsKey('X-Table')) { $table = [string]$Req.Headers['X-Table']; if ($table -cnotmatch $script:SemLocalTableRx) { Send-SemError 400 'bad-table' 'A table name has 1 to 64 letters, digits or _, and starts with a letter or _.'; return } }
     if ($Req.Headers.ContainsKey('X-Sheet')) { try { $sheet = [Uri]::UnescapeDataString([string]$Req.Headers['X-Sheet']) } catch { $sheet = $null } }
     $replace = ($Req.Headers.ContainsKey('X-Replace') -and [string]$Req.Headers['X-Replace'] -eq '1')
+    $append = ($Req.Headers.ContainsKey('X-Append') -and [string]$Req.Headers['X-Append'] -eq '1')
+    if ($replace -and $append) { Send-SemError 400 'bad-mode' 'Choose replace or append, not both.'; return }
     $incoming = Get-SemLocalDir -HomeDir $homeDir -Child 'incoming'
     try {
         $drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($incoming))
@@ -622,13 +632,13 @@ function Invoke-SemLocalUpload {
     } catch { }
     $job = [guid]::NewGuid().ToString('N')
     $safe = ($name -replace '[^A-Za-z0-9._-]', '_')
-    $spec = @{ Home = $homeDir; Job = $job; Path = (Join-Path $incoming ($job + '-' + $safe)); FileName = $name; TotalBytes = $len; Table = $table; Sheet = $sheet; Replace = $replace; SourceLabel = ($name + ' (uploaded)') }
+    $spec = @{ Home = $homeDir; Job = $job; Path = (Join-Path $incoming ($job + '-' + $safe)); FileName = $name; TotalBytes = $len; Table = $table; Sheet = $sheet; Replace = $replace; Append = $append; SourceLabel = ($name + ' (uploaded)') }
     Write-SemLog 'INFO' ("Local import {0}: receiving {1} ({2} bytes)" -f $job, $name, $len)
     Start-SemLocalJob -Spec $spec -Client $Req.Client
 }
 
 function Invoke-SemLocalPathImport {
-    # POST /api/local/import-path { path, sheet?, table?, replace? }: reads the file where it is.
+    # POST /api/local/import-path { path, sheet?, table?, replace?, append? }: reads the file where it is.
     param($Req)
     $j = $Req.Json
     if ($j -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
@@ -642,7 +652,8 @@ function Invoke-SemLocalPathImport {
     if ($res.ContainsKey('Error')) { Send-SemError 403 'path-refused' $res.Error; return }
     $job = [guid]::NewGuid().ToString('N')
     $label = [IO.Path]::GetFileName($res.Path)
-    $spec = @{ Home = $script:Sem.Home; Job = $job; Path = $res.Path; FileName = $label; TotalBytes = (New-Object IO.FileInfo $res.Path).Length; Table = [string]$table; Sheet = [string]$sheet; Replace = ((Get-SemJsonProp $j 'replace') -eq $true); SourceLabel = $res.Path }
+    $spec = @{ Home = $script:Sem.Home; Job = $job; Path = $res.Path; FileName = $label; TotalBytes = (New-Object IO.FileInfo $res.Path).Length; Table = [string]$table; Sheet = [string]$sheet; Replace = ((Get-SemJsonProp $j 'replace') -eq $true); Append = ((Get-SemJsonProp $j 'append') -eq $true); SourceLabel = $res.Path }
+    if ($spec.Replace -and $spec.Append) { Send-SemError 400 'bad-mode' 'Choose replace or append, not both.'; return }
     Write-SemLog 'INFO' ("Local import {0}: reading {1} in place" -f $job, $label)
     Start-SemLocalJob -Spec $spec
     Send-SemJson 202 ([ordered]@{ job = $job; file = $label; path = $res.Path })

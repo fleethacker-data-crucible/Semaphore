@@ -1158,6 +1158,7 @@ namespace SemLocal
     {
         public string Table;            // target name; null or empty: derived from the file name
         public bool Replace;            // swap an existing table of that name atomically
+        public bool Append;             // add the rows to an existing table of that name (columns matched by name)
         public string SourceLabel;      // where the data came from (shown on the page)
         public string SourcePath;
         public string ETag;
@@ -1204,6 +1205,8 @@ namespace SemLocal
         public string[] Types;
         public long Ms;
         public long TableBytes;
+        public long TotalRows;          // rows in the table afterwards (more than Rows after an append)
+        public bool Appended;
         public List<string> Warnings = new List<string>();
     }
 
@@ -1706,14 +1709,16 @@ namespace SemLocal
             _o = o ?? new ImportOptions();
             _o.Attach(conn);
             LocalImport.EnsureMeta(conn);
-            if (!string.IsNullOrEmpty(_o.Table))
+            if (_o.Replace && _o.Append) throw new LocalException("Choose Replace or Append, not both.");
+            // An existing name is replaced or appended to only when asked; otherwise the new table gets a unique suffix.
+            string wanted = _o.Table;
+            if (!string.IsNullOrEmpty(wanted))
             {
-                string bad = LocalImport.CheckTableName(_o.Table);
+                string bad = LocalImport.CheckTableName(wanted);
                 if (bad != null) throw new LocalException(bad);
-                Final = _o.Table;
-                if (!_o.Replace && conn.TableExists(Final)) throw new LocalException("A table named \"" + Final + "\" is already in the local database. Choose another name, or replace it.");
             }
-            else Final = LocalImport.UniqueTableName(conn, LocalImport.SafeTableName(defaultName));
+            else wanted = LocalImport.SafeTableName(defaultName);
+            Final = (_o.Replace || _o.Append) ? wanted : LocalImport.UniqueTableName(conn, wanted);
             Staging = "_semaphore_stage_" + Guid.NewGuid().ToString("N").Substring(0, 12);
             PagesBefore = conn.ScalarLong("PRAGMA page_count");
         }
@@ -1798,15 +1803,40 @@ namespace SemLocal
             _conn.Execute("BEGIN IMMEDIATE");
             try
             {
-                if (_conn.TableExists(Final))
+                long total = rows;
+                long oldBytes = 0;
+                string[] outNames = names, outDecls = decls;
+                bool exists = _conn.TableExists(Final);
+                if (exists && _o.Append)
                 {
-                    if (!_o.Replace) throw new LocalException("A table named \"" + Final + "\" appeared while importing; nothing was replaced.");
-                    _conn.Execute("DROP TABLE " + LocalConnection.Quote(Final));
+                    AppendInto(names, decls, out outNames, out outDecls);
+                    long oldRows = -1;
+                    using (LocalCommand q = new LocalCommand(_conn, "SELECT rows, table_bytes FROM _semaphore_tables WHERE name = ?"))
+                    {
+                        q.Parameters.Add(new LocalParameter("n", Final));
+                        using (LocalDataReader rd = q.ExecuteReader())
+                        {
+                            if (rd.Read())
+                            {
+                                if (!rd.IsDBNull(0)) oldRows = rd.GetInt64(0);
+                                if (!rd.IsDBNull(1)) oldBytes = rd.GetInt64(1);
+                            }
+                        }
+                    }
+                    total = oldRows >= 0 ? oldRows + rows : _conn.ScalarLong("SELECT COUNT(*) FROM " + LocalConnection.Quote(Final));
                 }
-                _conn.Execute("ALTER TABLE " + LocalConnection.Quote(Staging) + " RENAME TO " + LocalConnection.Quote(Final));
+                else
+                {
+                    if (exists)
+                    {
+                        if (!_o.Replace) throw new LocalException("A table named \"" + Final + "\" appeared while importing; nothing was replaced.");
+                        _conn.Execute("DROP TABLE " + LocalConnection.Quote(Final));
+                    }
+                    _conn.Execute("ALTER TABLE " + LocalConnection.Quote(Staging) + " RENAME TO " + LocalConnection.Quote(Final));
+                }
                 long pages = _conn.ScalarLong("PRAGMA page_count") - PagesBefore;
                 long pageSize = _conn.ScalarLong("PRAGMA page_size");
-                long bytes = Math.Max(0, pages) * pageSize;
+                long bytes = oldBytes + Math.Max(0, pages) * pageSize;
                 using (LocalCommand c = new LocalCommand(_conn, "INSERT OR REPLACE INTO _semaphore_tables (name, source, path, format, imported_at, rows, columns, file_bytes, etag, table_bytes, ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
                 {
                     c.Parameters.Add(new LocalParameter("name", Final));
@@ -1814,8 +1844,8 @@ namespace SemLocal
                     c.Parameters.Add(new LocalParameter("path", (object)_o.SourcePath ?? DBNull.Value));
                     c.Parameters.Add(new LocalParameter("format", (object)_o.Format ?? DBNull.Value));
                     c.Parameters.Add(new LocalParameter("at", DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", Inv)));
-                    c.Parameters.Add(new LocalParameter("rows", rows));
-                    c.Parameters.Add(new LocalParameter("columns", (long)names.Length));
+                    c.Parameters.Add(new LocalParameter("rows", total));
+                    c.Parameters.Add(new LocalParameter("columns", (long)outNames.Length));
                     c.Parameters.Add(new LocalParameter("file_bytes", _o.FileBytes >= 0 ? (object)_o.FileBytes : (_o.SourcePath != null && File.Exists(_o.SourcePath) ? (object)new FileInfo(_o.SourcePath).Length : DBNull.Value)));
                     c.Parameters.Add(new LocalParameter("etag", (object)_o.ETag ?? DBNull.Value));
                     c.Parameters.Add(new LocalParameter("table_bytes", bytes));
@@ -1824,7 +1854,7 @@ namespace SemLocal
                 }
                 _conn.Execute("COMMIT");
                 ImportResult r = new ImportResult();
-                r.Table = Final; r.Rows = rows; r.Columns = names.Length; r.Names = names; r.Types = decls; r.Ms = _clock.Ms; r.TableBytes = bytes;
+                r.Table = Final; r.Rows = rows; r.Columns = outNames.Length; r.Names = outNames; r.Types = outDecls; r.Ms = _clock.Ms; r.TableBytes = bytes; r.TotalRows = total; r.Appended = exists && _o.Append;
                 Report("done", rows, 0, 0);
                 return r;
             }
@@ -1833,6 +1863,33 @@ namespace SemLocal
                 try { _conn.Execute("ROLLBACK"); } catch { }
                 throw;
             }
+        }
+
+        /// <summary>Appends the staging rows to Final by column name (inside the caller's transaction) and drops the staging table.
+        /// Columns of the table the file lacks are left NULL; columns of the file the table lacks are an error naming them.</summary>
+        void AppendInto(string[] names, string[] decls, out string[] tableNames, out string[] tableDecls)
+        {
+            List<string[]> target = _conn.TableColumns(Final);
+            Dictionary<string, string> have = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            tableNames = new string[target.Count];
+            tableDecls = new string[target.Count];
+            for (int i = 0; i < target.Count; i++) { have[target[i][0]] = target[i][1]; tableNames[i] = target[i][0]; tableDecls[i] = target[i][1]; }
+            List<string> extra = new List<string>();
+            foreach (string n in names) if (!have.ContainsKey(n)) extra.Add(n);
+            if (extra.Count > 0)
+                throw new LocalException("The file has columns the table \"" + Final + "\" does not have: " + string.Join(", ", extra.ToArray()) + ". Appending needs the table's columns (any it lacks are left empty); import it as a new table, or replace the table.");
+            StringBuilder into = new StringBuilder(), sel = new StringBuilder();
+            for (int i = 0; i < names.Length; i++)
+            {
+                if (i > 0) { into.Append(", "); sel.Append(", "); }
+                string q = LocalConnection.Quote(names[i]);
+                into.Append(q);
+                Kind from = Values.FromDecl(decls[i]), to = Values.FromDecl(have[names[i]]);
+                if (from == Kind.Boolean && to == Kind.Text) sel.Append("CASE WHEN ").Append(q).Append(" IS NULL THEN NULL WHEN ").Append(q).Append(" THEN 'true' ELSE 'false' END");
+                else sel.Append(q);
+            }
+            _conn.Execute("INSERT INTO " + LocalConnection.Quote(Final) + " (" + into.ToString() + ") SELECT " + sel.ToString() + " FROM " + LocalConnection.Quote(Staging));
+            _conn.Execute("DROP TABLE " + LocalConnection.Quote(Staging));
         }
 
         // ---- String rows (CSV, XLSX) -----------------------------------------------------------------
@@ -2496,7 +2553,7 @@ namespace SemLocal
         static ImportOptions Clone(ImportOptions o)
         {
             ImportOptions c = new ImportOptions();
-            c.Table = o.Table; c.Replace = o.Replace; c.SourceLabel = o.SourceLabel; c.SourcePath = o.SourcePath; c.ETag = o.ETag; c.Format = o.Format;
+            c.Table = o.Table; c.Replace = o.Replace; c.Append = o.Append; c.SourceLabel = o.SourceLabel; c.SourcePath = o.SourcePath; c.ETag = o.ETag; c.Format = o.Format;
             c.FileBytes = o.FileBytes; c.NameHint = o.NameHint; c.Delimiter = o.Delimiter; c.HasHeader = o.HasHeader; c.SampleRows = o.SampleRows; c.BatchRows = o.BatchRows; c.Progress = o.Progress; c.ProgressMs = o.ProgressMs;
             return c;
         }

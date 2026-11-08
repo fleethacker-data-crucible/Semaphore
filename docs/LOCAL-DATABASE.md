@@ -36,7 +36,11 @@ Dates are stored as ISO text in SQLite's own form: `yyyy-MM-dd` for a date, `yyy
 date and time (offsets converted to UTC), so `date()`, `strftime()` and text comparison agree. A date
 parameter is bound the same way. Readers return `DATE` columns as `DateTime`.
 
-Imports go into a staging table and are renamed into place in one transaction at the end. Replacing a
+A name that is already taken is never overwritten or added to unless asked: the new table gets a suffix
+(`orders_2`). **Append** (`-Append`, `X-Append: 1`, `append: true`, `--append yes`) adds the rows to the
+table of that name, matching columns by name: columns the file lacks are left `NULL`, and columns the table
+lacks are refused with their names; the table is created when it does not exist. Imports go into a staging
+table and are renamed (or appended) into place in one transaction at the end. Replacing a
 table (`-Replace`, or `X-Replace: 1` on an upload) drops the old one in that same transaction, so a
 re-import never leaves half a table, and a failed or stopped import leaves the old table as it was.
 Every table has a row in `_semaphore_tables`: source label, path, format, time, rows, columns, file size,
@@ -87,8 +91,8 @@ queries.
 For other server code (a connector that downloads a file, a scheduled re-import):
 
 ```powershell
-Import-SemLocalFile -HomeDir $home -Path $file [-Table name] [-Sheet name] [-SourceLabel 's3://bucket/key'] [-ETag '"..."'] [-Replace]
-# -> @{ Table; Rows; Columns; Ms; Tables; Names; Types; Warnings; Format }
+Import-SemLocalFile -HomeDir $home -Path $file [-Table name] [-Sheet name] [-SourceLabel 's3://bucket/key'] [-ETag '"..."'] [-Replace | -Append]
+# -> @{ Table; Rows; Columns; Ms; Tables; Names; Types; Warnings; Format; TotalRows; Appended }
 Export-SemLocalTable -HomeDir $home -Name orders -Path C:\out\orders.parquet -Format parquet   # or arrow
 ```
 
