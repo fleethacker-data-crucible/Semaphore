@@ -32,8 +32,8 @@ export interface DataPanelProps {
   onRemoveSource: (id: string) => void;
   onProfile: (source: string, table: string) => void;
   onLoadExample: () => void;
-  /** Opens the Import from Qlik screen. */
-  onImportQlik: () => void;
+  /** Opens Import a model (Qlik, dbt or Power BI). */
+  onImportModel: () => void;
   /** For checking data quality and relationships against the data. */
   ctx: DataContext;
   /** The AI, when it is on, for cleaning suggestions. */
@@ -162,9 +162,9 @@ function Sources(p: DataPanelProps) {
           </span>
           <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && addFiles(e.target.files)} />
         </label>
-        <button type="button" onClick={p.onImportQlik} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
-          <span className="font-medium">Import from Qlik</span>
-          <span className="block text-[11px] text-ink-3">Paste a load script and chart expressions: tables, field names and measures come across for you to check.</span>
+        <button type="button" onClick={p.onImportModel} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
+          <span className="font-medium">Import a model</span>
+          <span className="block text-[11px] text-ink-3">From Qlik, dbt or Power BI: tables, field names, measures, links and drill paths come across for you to check.</span>
         </button>
         {!inCatalog.has('maint') && p.catalog.sources.length > 0 && (
           <button type="button" onClick={p.onLoadExample} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">

@@ -295,7 +295,7 @@ export function RelationshipsTab({ catalog, ctx, onCatalog }: Omit<Props, 'provi
                 <p className="text-[11px] text-ink-3">
                   {r.from.table} → {r.to.table}
                   {r.match !== undefined ? ` · ${Math.round(r.match * 100)}% of values match` : ''}
-                  {r.origin === 'qlik' ? ' · from a Qlik association' : r.origin === 'discovered' ? ' · found by Semaphore' : ''}
+                  {r.origin === 'qlik' ? ' · from a Qlik association' : r.origin === 'dbt' ? ' · from the dbt project' : r.origin === 'powerbi' ? ' · from the Power BI model' : r.origin === 'discovered' ? ' · found by Semaphore' : ''}
                 </p>
               </div>
               <button type="button" onClick={() => onCatalog({ ...catalog, relationships: rels.filter((x) => x.id !== r.id) })} aria-label={`Remove ${describeRelationship(r)}`} className="rounded p-1 text-ink-3 hover:text-bad">
