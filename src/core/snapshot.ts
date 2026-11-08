@@ -10,7 +10,7 @@
 import type { CatalogIndex } from './catalog.ts';
 import { applySelections, type CrossfilterResult, lineUp, type ResultRow, type Selections } from './crossfilter.ts';
 import { type Binding, dimensionKey, type Filter, type Flag, type Hoist } from './hoist.ts';
-import { comparisonPlan, comparisonShift, planFlag, planLeaves, type QueryPlan } from './planner.ts';
+import { comparisonPlan, comparisonShift, loadAcross, planFlag, planLeaves, type QueryPlan } from './planner.ts';
 import { entryFlag, entryHoist, isFilterShape, type PlaybookEntry } from './playbook.ts';
 
 export interface Snapshot {
@@ -76,6 +76,7 @@ export async function takeSnapshot(
   run: (plan: QueryPlan) => Promise<{ rows: ResultRow[]; truncated: boolean }>,
   now: Date = new Date(),
 ): Promise<Snapshot | null> {
+  await loadAcross(); // an entry may read measures from several tables
   const plan = snapshotPlan(entry, index);
   if (!plan) return null;
   const result = await run(plan);

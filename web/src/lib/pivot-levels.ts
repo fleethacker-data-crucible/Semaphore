@@ -7,6 +7,7 @@
 import type { DisplayRow, Selections } from '../../../src/core/crossfilter.ts';
 import type { Flag, Hoist } from '../../../src/core/hoist.ts';
 import { levelKey, neededLevels, needsLevels } from '../../../src/core/pivot.ts';
+import { overlaps } from '../../../src/core/planner.ts';
 import type { DataContext, FlagResult } from './data.ts';
 
 type Compute = (hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext) => Promise<FlagResult>;
@@ -14,7 +15,7 @@ type Compute = (hoist: Hoist, flag: Flag, selections: Selections, ctx: DataConte
 export async function pivotLevels(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext, main: FlagResult, compute: Compute): Promise<Record<string, DisplayRow[]> | undefined> {
   const b = flag.binding;
   if (!b || !b.dimensions.length) return undefined;
-  if (!needsLevels(main.plan.metrics, !!main.plan.many?.overlap)) return undefined;
+  if (!needsLevels(main.plan.metrics, overlaps(main.plan))) return undefined;
   const dims = b.dimensions;
   const hasColumn = dims.length > 1;
   const rowFields = hasColumn ? dims.length - 1 : dims.length;

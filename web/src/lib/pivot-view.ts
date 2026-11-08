@@ -6,6 +6,7 @@ import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Flag } from '../../../src/core/hoist.ts';
 import type { PivotInput } from '../../../src/core/pivot.ts';
 import type { PivotSort } from '../../../src/core/pivot-spec.ts';
+import { overlaps } from '../../../src/core/planner.ts';
 import type { FlagResult } from './data.ts';
 
 export interface PivotView {
@@ -48,7 +49,7 @@ export function pivotInput(flag: Flag, result: FlagResult, index: CatalogIndex, 
     measures: (flag.binding?.metrics ?? []).map((key) => ({ key, agg: index.metric(key)?.agg ?? 'sum' })),
     cells: result.display.rows,
     ...(result.levels ? { levels: result.levels } : {}),
-    ...(result.plan.many?.overlap ? { overlap: true } : {}),
+    ...(overlaps(result.plan) ? { overlap: true } : {}),
     ...(flag.pivot ? { spec: flag.pivot } : {}),
     ...(view?.sort ? { sort: view.sort } : {}),
     ...(view?.colSort ? { colSort: view.colSort } : {}),

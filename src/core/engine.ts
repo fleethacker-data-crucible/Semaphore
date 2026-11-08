@@ -5,7 +5,7 @@
 
 import type { CatalogIndex, FieldType } from './catalog.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
-import type { QueryPlan } from './planner.ts';
+import { acrossPart, planTables, type QueryPlan } from './planner.ts';
 import type { Cell, ResultRow } from './crossfilter.ts';
 import { cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
 import { hasMaking, reshapedTable, reshaping } from './reshape.ts';
@@ -27,6 +27,25 @@ export class EngineError extends Error {}
 
 export function runPlan(plan: QueryPlan, index: CatalogIndex, stored: TableRows, today: Date = new Date()): RunResult {
   const started = Date.now();
+  if (plan.across) {
+    // Measures from several tables (across.ts): each table's query on its own, the rows lined up by
+    // their group values like a full outer join. A table with no rows in a group leaves its aggregates null.
+    const merged = new Map<string, ResultRow>();
+    for (const part of plan.across) {
+      for (const r of runPlan(acrossPart(plan, part), index, stored, today).rows) {
+        const key = JSON.stringify(plan.dimensions.map((d) => r[d.alias] ?? null));
+        let m = merged.get(key);
+        if (!m) {
+          m = Object.fromEntries([...plan.dimensions.map((d) => [d.alias, r[d.alias] ?? null]), ...plan.aggregates.map((a) => [a.alias, null])]) as ResultRow;
+          merged.set(key, m);
+        }
+        for (const a of part.aggregates) m[a.alias] = r[a.alias] ?? null;
+      }
+    }
+    const rows = [...merged.values()];
+    const limit = Math.max(1, Math.floor(plan.limit));
+    return { rows: rows.slice(0, limit), truncated: rows.length > limit, ms: Date.now() - started };
+  }
   const making = hasMaking(index.catalog);
   const tables = making ? withReshaped(plan, index, stored) : stored;
   const loaded = tables[plan.table];
@@ -171,7 +190,7 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, stored: TableRows,
 /** The stored tables, plus the reshaped tables (unpivot steps) this plan reads, built from theirs. */
 function withReshaped(plan: QueryPlan, index: CatalogIndex, stored: TableRows): TableRows {
   let out = stored;
-  for (const name of [plan.table, ...(plan.joins ?? []).map((j) => j.table)]) {
+  for (const name of planTables(plan)) {
     const step = reshapedTable(index, plan.source, name);
     if (!step || stored[name]) continue;
     const from = stored[index.field(step.field)!.table];

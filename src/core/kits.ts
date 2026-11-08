@@ -888,6 +888,8 @@ class Resolver {
       }
       const all = [...this.metricList, ...this.made];
       const targets = inputs.map((m) => all.find((t) => t.key === m.to?.key) as Metric);
+      // Inputs in different tables of one source are fine: the planner reads each table on its own and
+      // lines them up (across.ts). Inputs in different sources cannot be.
       const sources = [...new Set(targets.map((t) => t.source))];
       if (sources.length !== 1) {
         out.reason = sources.length

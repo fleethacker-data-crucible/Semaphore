@@ -8,7 +8,7 @@
 import { calendarDay } from './dates.ts';
 import type { Behavior } from './hoist.ts';
 import { applyOp } from './formula.ts';
-import { type PlannedExpr, type PlannedMetric, planLeaves, type QueryPlan } from './planner.ts';
+import { overlaps, type PlannedExpr, type PlannedMetric, planLeaves, type QueryPlan } from './planner.ts';
 
 export type Cell = string | number | boolean | null;
 export type ResultRow = Record<string, Cell>;
@@ -36,6 +36,8 @@ export interface CrossfilterResult {
   truncated: boolean;
   /** Totals across every row before a top-N cut, for additive metrics (sum, count). */
   totals: Record<string, number | null>;
+  /** Measures from several tables (a drill-across): how many rows some of the tables have nothing for. */
+  gaps?: number;
 }
 
 export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], selections: Selections, behavior: Behavior): CrossfilterResult {
@@ -137,7 +139,7 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
     if (m.agg !== 'sum' && m.agg !== 'count' && m.agg !== 'formula') continue;
     // Split by a many-side field, a row can sit in several groups: adding the groups up would
     // count it more than once, so there is no total to give (manyjoin.ts).
-    if (plan.many?.overlap) {
+    if (overlaps(plan)) {
       totals[m.key] = null;
       continue;
     }
@@ -153,8 +155,9 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
     }
     totals[m.key] = t;
   }
+  const gaps = plan.across ? accs.filter((g) => plan.across!.some((p) => (g.acc.get(p.seen) ?? null) === null)).length : 0;
   if (plan.displayLimit) out = out.slice(0, plan.displayLimit);
-  return { rows: out, applied, live, truncated, totals };
+  return { rows: out, applied, live, truncated, totals, ...(gaps ? { gaps } : {}) };
 }
 
 /**
@@ -181,7 +184,7 @@ export function metricValue(m: Pick<PlannedMetric, 'agg' | 'parts' | 'expr'>, ge
       return get(m.parts.distinct) ?? 0;
     case 'formula': {
       const ev = (e: PlannedExpr): number | null =>
-        e.t === 'num' ? e.v : e.t === 'neg' ? applyOp('-', 0, ev(e.x)) : e.t === 'bin' ? applyOp(e.op, ev(e.l), ev(e.r)) : metricValue(e, get);
+        e.t === 'num' ? e.v : e.t === 'neg' ? applyOp('-', 0, ev(e.x)) : e.t === 'bin' ? applyOp(e.op, ev(e.l), ev(e.r)) : e.seen !== undefined && get(e.seen) === null ? null : metricValue(e, get);
       return m.expr ? ev(m.expr) : null;
     }
   }

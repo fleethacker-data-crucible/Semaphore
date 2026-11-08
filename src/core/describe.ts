@@ -94,8 +94,12 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
 
   // A measure on the one side split or filtered by a many-side field: say how rows are counted.
   const planned = planFlag(hoist ?? { version: 1, id: '', title: '', brief: '', grid: { cols: 12 }, filters: [], flags: [flag], updated: '' }, flag, index);
-  if (planned.ok && planned.plan.many) lines.push(...planned.plan.many.explain, ...planned.plan.many.warnings);
-  else if (!planned.ok && planned.reason === 'many-side') lines.push(planned.error);
+  // Measures from several tables: each read on its own and lined up by the split (across.ts).
+  if (planned.ok) {
+    const p = planned.plan;
+    if (p.across) lines.push(p.notes[0]!); // across.ts puts its sentence first
+    for (const x of p.across ?? [p]) if (x.many) lines.push(...x.many.explain, ...x.many.warnings);
+  } else if (!planned.ok && planned.reason === 'many-side') lines.push(planned.error);
 
   if (flag.kind !== 'filter') {
     if (flag.behavior.onClick === 'filter-page') lines.push('Clicking a value filters the whole page.');

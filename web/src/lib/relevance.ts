@@ -70,6 +70,8 @@ export function flagKeys(slice: Hoist, sliceKey: string, flag: Flag, index: Cata
   if (hit && hit.slice === sliceKey && hit.index === index) return hit.keys;
   const planned = flag.binding && flag.kind !== 'text' ? planFlag(slice, flag, index) : null;
   const keys = planned?.ok ? planKeys(planned.plan) : null;
+  // Measures from several tables plan once their code has loaded (planner.ts loadAcross): ask again then.
+  if (planned && !planned.ok && planned.reason === 'loading') return keys;
   keyCache.set(flag, { slice: sliceKey, index, keys });
   return keys;
 }

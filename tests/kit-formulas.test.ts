@@ -9,7 +9,7 @@ import { applySelections } from '../src/core/crossfilter.ts';
 import { runPlan } from '../src/core/engine.ts';
 import { type Flag, type Hoist, parseHoist } from '../src/core/hoist.ts';
 import { applyKit, exportKit, type Kit, makeKit, parseKit, parseKitText } from '../src/core/kits.ts';
-import { planFlag } from '../src/core/planner.ts';
+import { loadAcross, planFlag } from '../src/core/planner.ts';
 
 const now = new Date('2026-11-08T12:00:00Z');
 
@@ -230,6 +230,23 @@ test('inputs from two sources: not made, with the reason', () => {
   assert.deepEqual(r.metrics, []);
   assert.equal(r.report.flags[0]!.outcome, 'unbound');
   assert.match(r.report.flags[0]!.mappings[0]!.reason!, /different sources here \("yard", "hr"\); a calculated measure reads one source/);
+});
+
+test('inputs in two tables of one source: the measure is made, and its flag lines the tables up', async () => {
+  await loadAcross();
+  // Hulls are counted on a fleet table here, not on the tickets the spend is on.
+  const target = yard((c) => {
+    c.metrics = c.metrics.filter((m) => m.key !== 'ships');
+    c.fields.push(field('yard', 'fleet.hull_no', 'Hull number', 'string'), field('yard', 'fleet.area', 'Fleet region', 'string'));
+    c.metrics.push({ key: 'fleet_hulls', label: 'Hulls affected', agg: 'count_distinct', field: 'fleet.hull_no', source: 'yard' });
+  });
+  const r = applyKit(kitOf(), blank(), indexCatalog(target), { now });
+  const made = r.metrics.find((m) => m.formula === 'spend_total / fleet_hulls');
+  assert.ok(made, JSON.stringify(r.metrics));
+  const next = landed(target, r);
+  const flag = r.hoist.flags.find((f) => f.binding?.metrics[0] === made.key)!;
+  const planned = planFlag(r.hoist, flag, indexCatalog(next));
+  assert.ok(planned.ok && planned.plan.across?.map((p) => p.table).join() === 'tickets,fleet', planned.ok ? '' : planned.error);
 });
 
 test('older kits still load: no formulas section, and a formula flag saved before kits carried them', () => {
