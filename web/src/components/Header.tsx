@@ -4,7 +4,7 @@
 // The actions themselves come from the page's one action list, which the command palette shows too.
 
 import type { ReactNode } from 'react';
-import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, Paintbrush, Sparkles, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
+import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, Paintbrush, Sparkles, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, History, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
 import { LIMITS } from '../../../src/core/hoist.ts';
 import type { Command } from '../lib/commands.ts';
 import type { Actions } from '../hooks/useCommands.ts';
@@ -51,7 +51,7 @@ export function Header(p: HeaderProps) {
   const left = LIMITS.titleChars - p.title.length;
   const a = p.actions;
   const hoistMenu: MenuSection[] = [
-    { items: [entry(a.new, <FilePlus2 size={15} />), ...(a.open.disabled ? [] : [entry(a.open, <FolderOpen size={15} />)]), entry(a.import, <Upload size={15} />), entry(a.download, <Download size={15} />)] },
+    { items: [entry(a.new, <FilePlus2 size={15} />), ...(a.open.disabled ? [] : [entry(a.open, <FolderOpen size={15} />)]), entry(a.import, <Upload size={15} />), entry(a.download, <Download size={15} />), ...(a.snapshots.disabled ? [] : [entry(a.snapshots, <History size={15} />)])] },
     { label: 'Share', items: [entry(a.share, <FileDown size={15} />), entry(a.brief, <ScrollText size={15} />)] },
     { label: 'Look', items: [entry(a.design, <Paintbrush size={15} />)] },
     { label: 'Build', items: [entry(a.kits, <Package size={15} />), entry(a.lineage, <GitBranch size={15} />), ...(a.sql.disabled ? [] : [entry(a.sql, <TerminalSquare size={15} />)])] },

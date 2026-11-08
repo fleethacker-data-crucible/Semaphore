@@ -31,6 +31,7 @@ Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpL
                            ├─ /api/heartbeat, /api/leaving, /api/end   lifecycle per TechStack
                            ├─ /api/hoists, /api/catalogs, /api/playbook, /api/snapshots, /api/questions, /api/team
                            │                                           JSON files in the user's Semaphore folder (ETag / If-Match)
+                           ├─ /api/page-snapshots/<hoist>[/<id>]       saved copies of one page (named, automatic, before a restore)
                            ├─ /api/query, /api/profile                 rendered SQL + typed parameters → ODBC / OLE DB / lake / connectors
                            ├─ /api/refresh-report, /api/commands       the last --refresh run; the CLI command registry
                            ├─ /api/vault, /api/vault/pair, /unpair     Lazarette pairing and status (names, never values)
