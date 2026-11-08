@@ -346,7 +346,7 @@ export function App() {
       const id = newId();
       change((h) => {
         const items = h.flags.map((f) => ({ id: f.id, layout: f.layout }));
-        const flag: Flag = { id, kind: real, title: '', brief: '', layout: { x: 0, y: 0, ...size }, binding: null, behavior: emptyBehavior(), status: kind === 'text' ? 'ready' : 'empty', notes: [] };
+        const flag: Flag = { id, kind: real, title: '', brief: '', layout: { x: 0, y: 0, ...size }, binding: null, behavior: real === 'custom' ? { ...emptyBehavior(), onClick: 'filter-page' } : emptyBehavior(), status: kind === 'text' ? 'ready' : 'empty', notes: [] };
         if (at) {
           const placed = place([...items, { id, layout: { ...at, ...size } }], id, { ...at, ...size }, h.grid.cols, h.grid.mode ?? 'snap');
           const map = new Map(placed.map((p) => [p.id, p.layout]));

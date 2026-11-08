@@ -24,6 +24,7 @@
 #   DELETE /api/page-snapshots/<hoistId>/<snapId>   both files moved to that page's .trash
 #          Stored as <home>\snapshots\<hoistId>\<snapId>.json (what it is) and <snapId>.hoist.json (the page,
 #          verbatim). The last 30 automatic ones (auto and restore) are kept, and every named one (200 at most).
+#   GET/POST /api/widgets, GET/DELETE /api/widgets/<id>   the team widget library (below)
 #   POST   /api/client-log { level, message, stack?, view? }   a browser error, one log line -> 204
 #          (4 KB at most, 20 a minute, then 429; only message, stack and view are written)
 #   POST   /api/refresh-report { refreshed, skipped, failed: [{ id, title, error }] }
@@ -262,6 +263,148 @@ function Invoke-SemDocRoute {
             try { $done = Remove-SemDoc -Dir $dir -Id $Id } finally { $script:Sem.SyncBusy = $false }
             if (-not $done) { Send-SemError 404 'not-found' ("No $noun '$Id'."); return }
             Write-SemLog 'INFO' "Moved $noun $Id to .trash"
+            Send-SemJson 200 ([ordered]@{ ok = $true })
+        }
+        default { Send-SemError 405 'method' 'Method not allowed.' }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Team widget library: <home>\widgets\<id>.json, one custom chart widget each (src/core/widget.ts).
+#   GET    /api/widgets          [{ id, name, description, by, updated }], by name
+#   GET    /api/widgets/<id>     the stored widget verbatim
+#   POST   /api/widgets  { name, code, css?, description?, id? }
+#          A new widget gets an id made from its name (a -2, -3 ... suffix when taken); with id, that
+#          widget is replaced (404 when there is none). -> { ok: true, widget }
+#   DELETE /api/widgets/<id>     moved to .trash with a timestamp suffix
+# The code is stored and handed back as text, never run here: it runs only in the page's sandboxed
+# frame (Http.ps1 $script:SemSandboxCsp).
+# ---------------------------------------------------------------------------
+$script:SemWidgetCodeMax = 65536      # bytes of code (src/core/widget.ts WIDGET_LIMITS.codeBytes)
+$script:SemWidgetCssMax = 16384       # bytes of CSS
+$script:SemWidgetNameMax = 80
+$script:SemWidgetDescriptionMax = 500
+$script:SemWidgetMaxCount = 500
+
+function Get-SemWidgetDir {
+    param([string]$HomeDir = $script:Sem.Home)
+    $d = Join-Path $HomeDir 'widgets'
+    if (-not (Test-Path -LiteralPath $d)) { [void][IO.Directory]::CreateDirectory($d) }
+    return $d
+}
+
+function ConvertTo-SemWidgetText {
+    # One line of plain text: control and line-separator characters become spaces, runs of space one,
+    # trimmed, at most $Max characters (never half a surrogate pair). '' for anything but a string.
+    param($Value, [int]$Max)
+    if ($Value -isnot [string]) { return '' }
+    $t = [regex]::Replace($Value, '[\x00-\x1F\x7F-\x9F\u2028\u2029]', ' ')
+    $t = [regex]::Replace($t, '\s+', ' ').Trim()
+    if ($t.Length -gt $Max) {
+        $cut = $Max
+        if ([char]::IsHighSurrogate($t[$cut - 1])) { $cut-- }
+        $t = $t.Substring(0, $cut).Trim()
+    }
+    return $t
+}
+
+function ConvertTo-SemWidgetName {
+    # The name rule of src/core/widget.ts sanitizeWidgetName.
+    param($Value)
+    return (ConvertTo-SemWidgetText $Value $script:SemWidgetNameMax)
+}
+
+function ConvertTo-SemWidgetId {
+    # The id rule of src/core/widget.ts widgetIdFor: lower-case letters, digits and dashes, 48 at most.
+    param([string]$Name)
+    $s = [regex]::Replace($Name.ToLowerInvariant(), '[^a-z0-9]+', '-').Trim('-')
+    if ($s.Length -gt 48) { $s = $s.Substring(0, 48).TrimEnd('-') }
+    if (-not $s) { $s = 'widget' }
+    return $s
+}
+
+function Get-SemWidgetList {
+    # [{ id, name, description, by, updated }] from <dir>\*.json, by name; unreadable files are skipped.
+    param([Parameter(Mandatory = $true)][string]$Dir)
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        if ($out.Count -ge $script:SemWidgetMaxCount) { break }
+        $id = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+        if (-not (Test-SemDocId $id)) { continue }
+        if ($f.Length -gt 524288) { continue }
+        try { $j = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($j -isnot [Management.Automation.PSCustomObject]) { continue }
+        $name = ConvertTo-SemWidgetName (Get-SemJsonProp $j 'name')
+        if (-not $name) { $name = $id }
+        $updated = Get-SemJsonProp $j 'updated'
+        if ($updated -is [datetime]) { $updated = $updated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        if ($updated -isnot [string] -or $updated -eq '') { $updated = $f.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        $out.Add([ordered]@{ id = $id; name = $name; description = (ConvertTo-SemWidgetText (Get-SemJsonProp $j 'description') $script:SemWidgetDescriptionMax); by = (ConvertTo-SemWidgetText (Get-SemJsonProp $j 'by') 64); updated = $updated })
+    }
+    return , @($out.ToArray() | Sort-Object -Property @{ Expression = { $_.name } })
+}
+
+function Test-SemWidgetBody {
+    <#
+      Checks a POST body. Returns @{ Status; Code; Error } for a refusal, else @{ Widget } with the cleaned
+      fields (name, description, code, css, id or $null).
+    #>
+    param($Json)
+    if ($Json -isnot [Management.Automation.PSCustomObject]) { return @{ Status = 400; Code = 'bad-json'; Error = 'The body must be a JSON object.' } }
+    $name = ConvertTo-SemWidgetName (Get-SemJsonProp $Json 'name')
+    if (-not $name) { return @{ Status = 400; Code = 'invalid'; Error = 'Give the widget a name (letters, digits, spaces; at most 80 characters).' } }
+    $code = Get-SemJsonProp $Json 'code'
+    if ($code -isnot [string] -or $code.Trim() -eq '') { return @{ Status = 400; Code = 'invalid'; Error = 'The widget has no code.' } }
+    if ([Text.Encoding]::UTF8.GetByteCount($code) -gt $script:SemWidgetCodeMax) { return @{ Status = 413; Code = 'too-large'; Error = 'A widget''s code may be at most 64 KB.' } }
+    $css = Get-SemJsonProp $Json 'css'
+    if ($null -eq $css) { $css = '' }
+    if ($css -isnot [string]) { return @{ Status = 400; Code = 'invalid'; Error = 'The CSS must be text.' } }
+    if ([Text.Encoding]::UTF8.GetByteCount($css) -gt $script:SemWidgetCssMax) { return @{ Status = 413; Code = 'too-large'; Error = 'A widget''s CSS may be at most 16 KB.' } }
+    $id = Get-SemJsonProp $Json 'id'
+    if ($null -ne $id -and ($id -isnot [string] -or -not (Test-SemDocId $id))) { return @{ Status = 400; Code = 'bad-id'; Error = 'Invalid widget id: use 1 to 64 letters, digits, _ or -.' } }
+    return @{ Widget = @{ name = $name; description = (ConvertTo-SemWidgetText (Get-SemJsonProp $Json 'description') $script:SemWidgetDescriptionMax); code = $code; css = $css; id = $id } }
+}
+
+function Invoke-SemWidgetRoute {
+    param($Req, $Id)
+    $dir = Get-SemWidgetDir
+    if ($null -eq $Id) {
+        if ($Req.Method -eq 'GET') { Send-SemJson 200 (Get-SemWidgetList -Dir $dir); return }
+        if ($Req.Method -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        $check = Test-SemWidgetBody $Req.Json
+        if ($check.ContainsKey('Status')) { Send-SemError $check.Status $check.Code $check.Error; return }
+        $w = $check.Widget
+        $id = $w.id
+        if ($null -ne $id) {
+            if (-not [IO.File]::Exists((Join-Path $dir ($id + '.json')))) { Send-SemError 404 'not-found' ("No library widget '$id'."); return }
+        } else {
+            $count = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+            if ($count -ge $script:SemWidgetMaxCount) { Send-SemError 409 'full' ('The team library holds ' + $script:SemWidgetMaxCount + ' widgets at most. Remove some first.'); return }
+            $stem = ConvertTo-SemWidgetId $w.name
+            $id = $stem; $n = 1
+            while ([IO.File]::Exists((Join-Path $dir ($id + '.json')))) { $n++; $id = $stem + '-' + $n }
+        }
+        $doc = [ordered]@{ version = 1; id = $id; name = $w.name; description = $w.description; code = $w.code; css = $w.css; by = (ConvertTo-SemWidgetText ([string]$env:USERNAME) 64); updated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        $bytes = (New-Object Text.UTF8Encoding $false).GetBytes((ConvertTo-SemJson $doc))
+        $script:Sem.SyncBusy = $true
+        try { Save-SemDoc -Dir $dir -Id $id -Bytes $bytes } finally { $script:Sem.SyncBusy = $false }
+        Write-SemLog 'INFO' ("Saved library widget $id ($($bytes.Length) bytes)")
+        Send-SemJson 200 ([ordered]@{ ok = $true; widget = $doc })
+        return
+    }
+    if (-not (Test-SemDocId $Id)) { Send-SemError 400 'bad-id' 'Invalid widget id: use 1 to 64 letters, digits, _ or -.'; return }
+    switch ($Req.Method) {
+        'GET' {
+            $f = Join-Path $dir ($Id + '.json')
+            if (-not [IO.File]::Exists($f)) { Send-SemError 404 'not-found' ("No library widget '$Id'."); return }
+            $text = [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+            Send-SemJsonText 200 $text
+        }
+        'DELETE' {
+            $script:Sem.SyncBusy = $true
+            try { $done = Remove-SemDoc -Dir $dir -Id $Id } finally { $script:Sem.SyncBusy = $false }
+            if (-not $done) { Send-SemError 404 'not-found' ("No library widget '$Id'."); return }
+            Write-SemLog 'INFO' "Moved library widget $Id to .trash"
             Send-SemJson 200 ([ordered]@{ ok = $true })
         }
         default { Send-SemError 405 'method' 'Method not allowed.' }
@@ -529,6 +672,12 @@ function Invoke-SemRoute {
     }
     if ($p -match '^/api/page-snapshots/([^/]+)(?:/([^/]+))?$') {
         Invoke-SemSnapRoute -Req $Req -HoistId $Matches[1] -SnapId $Matches[2]
+        return
+    }
+    if ($p -match '^/api/(widgets)(?:/([^/]*))?$') {
+        $id = $null
+        if ($p -ne '/api/widgets') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
+        Invoke-SemWidgetRoute -Req $Req -Id $id
         return
     }
     if ($p -eq '/api/client-log') {

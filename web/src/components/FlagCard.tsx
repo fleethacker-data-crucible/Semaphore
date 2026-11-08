@@ -147,7 +147,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     return undefined;
   }, [own.binding, own.status, own.kind, own.id, hoist.id]);
 
-  const chartLike = CHART_KIND_SET.has(flag.kind) && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
+  const chartLike = (CHART_KIND_SET.has(flag.kind) || flag.kind === 'custom') && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
   const shownFlag = asTable && chartLike ? { ...flag, kind: 'table' as const } : flag;
   const reviewedLabel = reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed';
 

@@ -26,6 +26,7 @@ const KIND_NAMES: Record<Flag['kind'], string> = {
   stream: 'A stream chart of',
   model: 'A predictive model over',
   pivot: 'A pivot table of',
+  custom: 'A custom widget drawing',
 };
 
 const AGG_WORDS: Record<string, string> = {

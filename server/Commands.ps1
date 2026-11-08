@@ -37,6 +37,8 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/s3/import'                 = 'Starts an S3 import from the Data panel into the local database; the page follows it with import-status.'
     '/api/s3/import-status'          = 'Progress of an S3 import the page started (/api/s3/import-status/<job>); jobs live only in the running server.'
     '/api/rds/discover'              = 'The Data panel''s RDS help card: lists RDS instances and clusters so an admin can copy a sources.json entry.'
+    '/api/widgets'                   = 'The team widget library behind the custom widget editor (list and save); the files are plain JSON in the widgets folder.'
+    '/api/widgets/{id}'              = 'One team library widget for the custom widget editor (insert and remove); the files are plain JSON in the widgets folder.'
 }
 
 function New-SemCommandInput {

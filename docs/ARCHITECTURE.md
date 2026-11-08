@@ -36,11 +36,16 @@ Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpL
                            ├─ /api/refresh-report, /api/commands       the last --refresh run; the CLI command registry
                            ├─ /api/vault, /api/vault/pair, /unpair     Lazarette pairing and status (names, never values)
                            ├─ /api/ai, /api/ai/check, /api/ai/v1/chat/completions   Fairlead relay (the key stays server-side)
+                           ├─ /api/widgets, /api/widgets/<id>          the team widget library (JSON files in <home>\widgets)
+                           ├─ /sandbox/widget.html                     a custom widget's frame, under its own CSP (no network,
+                           │                                           sandboxed, framed by Semaphore only; no session)
                            └─ /api/client-log                          the page's own script errors, into the server log
 
 Browser
   web/src                 React 19 UI: canvas, palette, inspector, brief editor, ask box, data panel
     lib/data.ts           runs a flag: plan → page engine or /api/query → cross-filter → comparison
+    widget-host.ts        inside a custom widget's <iframe sandbox="allow-scripts">: the analyst's code, full
+                          ECharts, and the postMessage bridge (data in; errors, select() and pictures out)
   src/core                framework-free TypeScript, unit-tested, shared by the UI and the tests
     catalog.ts            semantic layer: sources, fields, metrics, defined once
     profile.ts, csv.ts    propose a catalog from a profiled table or a CSV file
