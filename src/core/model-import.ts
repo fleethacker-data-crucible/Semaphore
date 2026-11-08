@@ -277,7 +277,7 @@ export function applyModelImport(catalog: Catalog, read: ModelRead, placed: read
         added.labels++;
       }
       // Dates read as text are worth a cleaning step; an identifier profiled as text is not news.
-      if ((c.type === 'date' && f.type !== 'date') || (c.type === 'number' && f.type === 'string' && !/(^|_)(id|no|num|nbr|number|code|key)$/i.test(c.column))) lines.push(`${t.name}.${c.name}: ${what} has it as ${c.type === 'date' ? 'a date' : `a ${c.type}`}, the database reads ${f.type === 'date' ? 'a date' : `a ${f.type}`}. Add a cleaning step under Data > Clean if it should be ${c.type === 'date' ? 'a date' : `a ${c.type}`}.`);
+      if ((c.type === 'date' && f.type !== 'date') || (c.type === 'number' && f.type === 'string' && !/(^|_)(id|no|num|nbr|number|code|key)$/i.test(c.column))) lines.push(`${t.name}.${c.name}: ${what} has it as ${c.type === 'date' ? 'a date' : `a ${c.type}`}, the database reads a ${f.type}. Add a cleaning step under Data > Clean if it should be ${c.type === 'date' ? 'a date' : `a ${c.type}`}.`);
     }
     if (missing.length) lines.push(`${t.name}: ${missing.length} column${missing.length === 1 ? '' : 's'} the model names ${missing.length === 1 ? 'is' : 'are'} not in ${p.table} (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', ...' : ''}).`);
   }
