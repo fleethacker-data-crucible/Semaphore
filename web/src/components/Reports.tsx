@@ -2,6 +2,7 @@
 // answers, read like the page), and the analyst's offer to keep a page coming while away.
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { boardStyle, cardStyle } from '../lib/placement.ts';
 import { CalendarClock, Newspaper, ScrollText, Square, Volume2, X } from 'lucide-react';
 import type { Briefing } from '../../../src/core/briefing.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
@@ -18,11 +19,11 @@ const noop = () => undefined;
 /** Frozen flags laid out on the page's own grid, read-only, in the page's design. Used by editions. */
 export function FrozenGrid({ flags, cols, index, themeKey, design }: { flags: FrozenFlag[]; cols: number; index: CatalogIndex; themeKey: string; design?: HoistDesign }) {
   return (
-    <div className="grid gap-3" {...designAttrs(design)} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridAutoRows: '64px', ...designVars(design) } as CSSProperties}>
+    <div {...designAttrs(design)} style={{ ...boardStyle(flags.map((x) => x.flag.layout), 64, 12), ...designVars(design) } as CSSProperties}>
       {flags.map(({ flag, result, error, insights }) => {
         const look = resolveStyle(design, flag.style);
         return (
-        <article key={flag.id} id={`frozen-${flag.id}`} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${flag.layout.x + 1} / span ${flag.layout.w}`, gridRow: `${flag.layout.y + 1} / span ${flag.layout.h}`, ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) }}>
+        <article key={flag.id} id={`frozen-${flag.id}`} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ ...cardStyle(flag.layout, cols, 64, 12), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) }}>
           <h3 className={look.hideTitle ? 'sr-only' : `truncate px-1 text-[13px] font-semibold ${look.titleAlign === 'center' ? 'text-center' : ''}`}>{flag.title}</h3>
           <div className="min-h-0 flex-1">
             {flag.kind === 'text' ? (

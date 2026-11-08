@@ -3,7 +3,7 @@
 
 import type { CatalogIndex, FieldType } from './catalog.ts';
 import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
-import { compact, isValidLayout } from './layout.ts';
+import { compact, isValidLayout, snapAll } from './layout.ts';
 import type { RichKind } from './kinds.ts';
 import { parseModelSpec } from './predict/spec.ts';
 import type { ModelSpec } from './predict/types.ts';
@@ -72,6 +72,10 @@ export interface Behavior {
   thresholds: Threshold[];
 }
 
+/** How flags move on the grid (layout.ts): on whole cells with gaps kept, anywhere, or tidied up. */
+export type LayoutMode = 'snap' | 'free' | 'auto';
+export const LAYOUT_MODES: readonly LayoutMode[] = ['snap', 'free', 'auto'];
+
 export interface Layout {
   x: number;
   y: number;
@@ -110,7 +114,8 @@ export interface Hoist {
   title: string;
   /** The brief for the whole dashboard. Flag briefs refine it and win where they disagree. */
   brief: string;
-  grid: { cols: number };
+  /** `mode` is left out for snap, the default. */
+  grid: { cols: number; mode?: LayoutMode };
   /** Fixed filters every flag inherits, e.g. "fiscal year 2026". */
   filters: Filter[];
   flags: Flag[];
@@ -211,12 +216,13 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     return { hoist: null, warnings: ['Not a Semaphore hoist (version 1).'] };
   }
   const cols = isObject(raw.grid) && isInt(raw.grid.cols) && raw.grid.cols >= 4 && raw.grid.cols <= 24 ? raw.grid.cols : GRID_COLS;
+  const mode: LayoutMode = isObject(raw.grid) && LAYOUT_MODES.includes(raw.grid.mode as LayoutMode) ? (raw.grid.mode as LayoutMode) : 'snap';
   const flags: Flag[] = [];
   const ids = new Set<string>();
   const rawFlags = Array.isArray(raw.flags) ? raw.flags : [];
   if (rawFlags.length > LIMITS.flags) warnings.push(`Only the first ${LIMITS.flags} of ${rawFlags.length} flags were loaded.`);
   rawFlags.slice(0, LIMITS.flags).forEach((rf, i) => {
-    const flag = parseFlag(rf, cols, index, warnings, `Flag ${i + 1}`);
+    const flag = parseFlag(rf, cols, index, warnings, `Flag ${i + 1}`, mode);
     if (!flag) return;
     if (ids.has(flag.id)) {
       warnings.push(`Flag ${i + 1}: duplicate id "${flag.id}", dropped.`);
@@ -226,8 +232,9 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     flags.push(flag);
   });
   const filters = parseFilters(raw.filters, index, warnings, 'Hoist filters');
-  if (!isValidLayout(flags, cols)) {
-    const fixed = new Map(compact(flags).map((p) => [p.id, p.layout]));
+  if (!isValidLayout(flags, cols, mode)) {
+    // Snap keeps the gaps the analyst left; only the overlapping flags move down. Auto tidies as it always has.
+    const fixed = new Map((mode === 'auto' ? compact(flags) : snapAll(flags, cols)).map((p) => [p.id, p.layout]));
     for (const f of flags) f.layout = fixed.get(f.id) ?? f.layout;
     warnings.push('Some flags overlapped, so they were moved down to fit.');
   }
@@ -240,7 +247,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
       id: str(raw.id).slice(0, 64) || 'hoist',
       title: str(raw.title).slice(0, LIMITS.titleChars) || 'Untitled hoist',
       brief: brief.slice(0, LIMITS.briefChars),
-      grid: { cols },
+      grid: mode === 'snap' ? { cols } : { cols, mode },
       filters,
       flags,
       ...(raw.experiment === true ? { experiment: true } : {}),
@@ -251,7 +258,7 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
   };
 }
 
-function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, warnings: string[], where: string): Flag | null {
+function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, warnings: string[], where: string, mode: LayoutMode = 'snap'): Flag | null {
   if (!isObject(raw)) {
     warnings.push(`${where}: not an object, dropped.`);
     return null;
@@ -267,7 +274,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
     warnings.push(`${where}: unknown kind "${String(raw.kind)}", dropped.`);
     return null;
   }
-  const layout = parseLayout(raw.layout, cols);
+  const layout = parseLayout(raw.layout, cols, mode);
   if (!layout) {
     warnings.push(`${where}: invalid layout, dropped.`);
     return null;
@@ -310,13 +317,17 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   return flag;
 }
 
-function parseLayout(raw: unknown, cols: number): Layout | null {
+function parseLayout(raw: unknown, cols: number, mode: LayoutMode = 'snap'): Layout | null {
   if (!isObject(raw)) return null;
   const { x, y, w, h } = raw;
-  if (!isInt(x) || !isInt(y) || !isInt(w) || !isInt(h)) return null;
-  if (x < 0 || y < 0 || w < 1 || h < 1 || h > 24 || y > 1000) return null;
-  const width = Math.min(w, cols);
-  return { x: Math.min(x, cols - width), y, w: width, h };
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  // Free layouts sit on eighth-cell steps; the others on whole cells.
+  if (mode === 'free' ? ![x, y, w, h].every(num) : !isInt(x) || !isInt(y) || !isInt(w) || !isInt(h)) return null;
+  const step = (v: number) => (mode === 'free' ? Math.round(v * 8) / 8 : v);
+  const [sx, sy, sw, sh] = [step(x as number), step(y as number), step(w as number), step(h as number)];
+  if (sx < 0 || sy < 0 || sw < 1 || sh < 1 || sh > 24 || sy > 1000) return null;
+  const width = Math.min(sw, cols);
+  return { x: Math.min(sx, cols - width), y: sy, w: width, h: sh };
 }
 
 export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warnings: string[], where: string): Binding | null {

@@ -41,7 +41,7 @@ import {
   TIME_GRAINS,
   type Tone,
 } from './hoist.ts';
-import { clampLayout, compact, DEFAULT_SIZE, findSlot, isValidLayout, MAX_Y } from './layout.ts';
+import { clampLayout, compact, DEFAULT_SIZE, findSlot, isValidLayout, MAX_Y, snapAll } from './layout.ts';
 
 export const KIT_VERSION = 1;
 
@@ -286,7 +286,8 @@ function kitFlag(f: Flag, index: CatalogIndex, withLayout: boolean, warnings: st
     },
     reviewed: f.status === 'ready',
   };
-  if (withLayout) out.layout = { ...f.layout };
+  // Kits hold whole-cell layouts, so a flag placed freely rounds to the nearest cell and any hoist can take it.
+  if (withLayout) out.layout = { x: Math.round(f.layout.x), y: Math.round(f.layout.y), w: Math.max(1, Math.round(f.layout.w)), h: Math.max(1, Math.round(f.layout.h)) };
   if (f.kind === 'text' && f.text) out.text = f.text.slice(0, KIT_LIMITS.textChars);
   if (f.learn === false) out.learn = false;
   return out;
@@ -856,8 +857,9 @@ export function applyKit(kit: Kit, hoist: Hoist, index: CatalogIndex, options: K
       report.pageFiltersAdded++;
     }
   }
-  if (!isValidLayout(next.flags, cols)) {
-    const fixed = new Map(compact(next.flags).map((p) => [p.id, p.layout]));
+  const mode = hoist.grid.mode ?? 'snap';
+  if (!isValidLayout(next.flags, cols, mode)) {
+    const fixed = new Map((mode === 'auto' ? compact(next.flags) : snapAll(next.flags, cols)).map((p) => [p.id, p.layout]));
     next = { ...next, flags: next.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
   }
 

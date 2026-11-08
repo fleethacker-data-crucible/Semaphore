@@ -14,7 +14,7 @@ import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { fileStem } from '../../src/core/export/model.ts';
-import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, LIMITS, oversize, parseHoist, type TimeGrain } from '../../src/core/hoist.ts';
+import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, type LayoutMode, LIMITS, oversize, parseHoist, type TimeGrain } from '../../src/core/hoist.ts';
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
 import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
@@ -22,7 +22,7 @@ import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
 import type { QlikImported } from '../../src/core/qlik.ts';
 import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
-import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
+import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
@@ -59,6 +59,7 @@ import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../s
 import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
+import { LayoutBar } from './components/LayoutBar.tsx';
 import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
@@ -349,7 +350,7 @@ export function App() {
         const items = h.flags.map((f) => ({ id: f.id, layout: f.layout }));
         const flag: Flag = { id, kind: real, title: '', brief: '', layout: { x: 0, y: 0, ...size }, binding: null, behavior: emptyBehavior(), status: kind === 'text' ? 'ready' : 'empty', notes: [] };
         if (at) {
-          const placed = place([...items, { id, layout: { ...at, ...size } }], id, { ...at, ...size }, h.grid.cols);
+          const placed = place([...items, { id, layout: { ...at, ...size } }], id, { ...at, ...size }, h.grid.cols, h.grid.mode ?? 'snap');
           const map = new Map(placed.map((p) => [p.id, p.layout]));
           return { ...h, flags: [...h.flags, flag].map((f) => ({ ...f, layout: map.get(f.id) ?? f.layout })) };
         }
@@ -358,6 +359,36 @@ export function App() {
       setAutoKinds((a) => ({ ...a, [id]: kind === 'auto' }));
       setSelectedId(id);
     },
+    [change],
+  );
+
+  // How flags move on this hoist: switching snaps free positions to cells (or tidies, for auto).
+  const setLayoutMode = useCallback(
+    (mode: LayoutMode) =>
+      change((h) => {
+        if ((h.grid.mode ?? 'snap') === mode) return h;
+        const fixed = new Map(relayout(h.flags, h.grid.cols, mode).map((p) => [p.id, p.layout]));
+        return { ...h, grid: mode === 'snap' ? { cols: h.grid.cols } : { cols: h.grid.cols, mode }, flags: h.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
+      }),
+    [change],
+  );
+  const tidyUp = useCallback(
+    () =>
+      change((h) => {
+        const fixed = new Map(compact(snapAll(h.flags, h.grid.cols)).map((p) => [p.id, p.layout]));
+        return { ...h, flags: h.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
+      }),
+    [change],
+  );
+  // Free mode stacks flags in list order, the last on top.
+  const restack = useCallback(
+    (id: string, to: 'front' | 'back') =>
+      change((h) => {
+        const f = h.flags.find((x) => x.id === id);
+        if (!f) return h;
+        const rest = h.flags.filter((x) => x.id !== id);
+        return { ...h, flags: to === 'front' ? [...rest, f] : [f, ...rest] };
+      }),
     [change],
   );
 
@@ -415,7 +446,7 @@ export function App() {
       }
       change((h) => {
         const flags = h.flags.map((f) => (f.id === selected.id ? next : f));
-        const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols).map((p) => [p.id, p.layout]));
+        const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols, h.grid.mode ?? 'snap').map((p) => [p.id, p.layout]));
         return { ...h, flags: flags.map((f) => ({ ...f, layout: placed.get(f.id) ?? f.layout })) };
       });
       // No measure found: the "Why it didn't draft" card says what was understood and what to do next.
@@ -954,11 +985,15 @@ export function App() {
       setAsked(null);
     },
     onDelete: () => selectedId && removeFlag(selectedId),
+    ...(hoist.grid.mode === 'free' ? { onStack: (to: 'front' | 'back') => selectedId && restack(selectedId, to) } : {}),
     onArrow: (dx, dy, resize) => {
       if (!selected) return;
       const l = selected.layout;
-      const target = resize ? { ...l, w: Math.max(1, l.w + dx), h: Math.max(1, l.h + dy) } : { ...l, x: l.x + dx, y: Math.max(0, l.y + dy) };
-      onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols), `keys-${selected.id}`);
+      // Free mode moves an eighth of a cell per key press; the other modes a whole cell.
+      const mode = hoist.grid.mode ?? 'snap';
+      const s = mode === 'free' ? FREE_STEP : 1;
+      const target = resize ? { ...l, w: Math.max(1, l.w + dx * s), h: Math.max(1, l.h + dy * s) } : { ...l, x: l.x + dx * s, y: Math.max(0, l.y + dy * s) };
+      onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols, mode), `keys-${selected.id}`);
     },
   });
 
@@ -1303,6 +1338,16 @@ export function App() {
           )}
           <div className="mx-auto min-h-full max-w-[1400px] p-4" {...designAttrs(hoist.design)} style={designVars(hoist.design) as React.CSSProperties}>
             <Shakedown catalog={catalog} onAsk={() => setView('ask')} onTypeForMe={(brief) => { const id = newId(); change((h) => withBriefFlag(h, id, brief)); setAutoKinds((a) => ({ ...a, [id]: true })); setSelectedId(id); }} />
+            {hoist.flags.length > 0 && (
+              <LayoutBar
+                mode={hoist.grid.mode ?? 'snap'}
+                hasSelection={!!selected}
+                onMode={setLayoutMode}
+                onTidy={tidyUp}
+                onFront={() => selected && restack(selected.id, 'front')}
+                onBack={() => selected && restack(selected.id, 'back')}
+              />
+            )}
             <Canvas
               hoist={hoist}
               ctx={ctx}

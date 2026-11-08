@@ -479,3 +479,20 @@ body {
 /* A compact chip with a full 32 px hit area (UNIFIED-UI 7) that does not change its look. */
 .hit-32 { position: relative; }
 .hit-32::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 32px; min-width: 32px; transform: translateY(-50%); }
+
+/* The cells, drawn behind the flags while one is being dragged (Canvas.tsx sets the pitch). Each
+   cell's left and top edges, so a flag's corner lines up with a line when it sits on a cell. */
+.canvas-cells {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--ink-3) 28%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--ink-3) 28%, transparent) 1px, transparent 1px);
+  background-size: var(--cell-w) var(--cell-h);
+  border-radius: 6px;
+}
+.canvas-cells[data-layout-mode='free'] {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--ink-3) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--ink-3) 22%, transparent) 1px, transparent 1px),
+    radial-gradient(circle, color-mix(in oklab, var(--ink-3) 30%, transparent) 1px, transparent 1.5px);
+  background-size: var(--cell-w) var(--cell-h), var(--cell-w) var(--cell-h), calc(var(--cell-w) / 8) calc(var(--cell-h) / 8);
+}

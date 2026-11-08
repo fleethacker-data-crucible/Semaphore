@@ -2,6 +2,7 @@
 // filters working from the pre-split results in the file. No network: the file's own CSP forbids it.
 
 import { StrictMode, useMemo, useState } from 'react';
+import { boardStyle, cardStyle } from './lib/placement.ts';
 import { createRoot } from 'react-dom/client';
 import { Lock, X } from 'lucide-react';
 import { indexCatalog } from '../../src/core/catalog.ts';
@@ -107,8 +108,8 @@ function Report({ report }: { report: ReportPayload }) {
         )}
       </header>
       <main className="p-5">
-        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${report.cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
-          {report.flags.map((f) => {
+        <div style={boardStyle(report.flags.map((x) => x.flag.layout), 64, 12)}>
+          {report.flags.map((f, i) => {
             const look = resolveStyle(design, f.flag.style);
             const steps = drills[f.flag.id] ?? [];
             const drillable = !!f.drill && f.flag.behavior.onClick === 'drill';
@@ -125,7 +126,7 @@ function Report({ report }: { report: ReportPayload }) {
               select(key, value, additive);
             };
             return (
-              <article key={f.flag.id} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${f.flag.layout.x + 1} / span ${f.flag.layout.w}`, gridRow: `${f.flag.layout.y + 1} / span ${f.flag.layout.h}`, '--flag-i': Math.min(12, f.flag.layout.y + Math.floor(f.flag.layout.x / 3)), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) } as React.CSSProperties}>
+              <article key={f.flag.id} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ ...cardStyle(f.flag.layout, report.cols, 64, 12, i + 1), '--flag-i': Math.min(12, f.flag.layout.y + Math.floor(f.flag.layout.x / 3)), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) } as React.CSSProperties}>
                 <h2 className={look.hideTitle ? 'sr-only' : `truncate px-1 text-[13px] font-semibold ${look.titleAlign === 'center' ? 'text-center' : ''}`}>{f.flag.title}</h2>
                 {steps.length > 0 && (
                   <nav aria-label="Drill path" className="flex items-center gap-1 px-1 text-[11px] text-ink-3">
