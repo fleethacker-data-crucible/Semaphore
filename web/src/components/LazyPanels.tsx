@@ -14,6 +14,7 @@ export const ShareDialog = lazy(() => import('./ShareDialog.tsx').then((m) => ({
 export const DesignDialog = lazy(() => import('./DesignDialog.tsx').then((m) => ({ default: m.DesignDialog })));
 export const StylePanel = lazy(() => import('./StylePanel.tsx').then((m) => ({ default: m.StylePanel })));
 export const SignalBook = lazy(() => import('./SignalBook.tsx').then((m) => ({ default: m.SignalBook })));
+export const HelpDialog = lazy(() => import('./HelpDialog.tsx').then((m) => ({ default: m.HelpDialog })));
 export const PlaybookPanel = lazy(() => import('./PlaybookPanel.tsx').then((m) => ({ default: m.PlaybookPanel })));
 export const SettingsDialog = lazy(() => import('./SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })));
 export const AskView = lazy(() => import('./AskView.tsx').then((m) => ({ default: m.AskView })));

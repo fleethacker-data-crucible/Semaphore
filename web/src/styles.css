@@ -384,6 +384,47 @@ body {
 :root[data-reduce-motion='true'] * { transition: none !important; animation-duration: 0s !important; }
 :root[data-reduce-motion='true'] [data-design-motion='lively'] .flag-card { animation: none; }
 
+/* Personal themes (lib/theme.ts writes the variables; these are the parts CSS owns), as in Lazarette. */
+/* Calm motion: shorter, no bounce. Off is handled by data-reduce-motion. */
+:root[data-motion='calm'] *, :root[data-motion='calm'] *::before, :root[data-motion='calm'] *::after {
+  animation-duration: 90ms !important;
+  transition-duration: 90ms !important;
+  transition-timing-function: ease-out !important;
+}
+/* Background patterns: one fixed layer behind the app, drawn from the line colour so they follow the theme. */
+:root[data-pattern]:not([data-pattern='none']) body, :root[data-pattern]:not([data-pattern='none']) .theme-surface { background-color: var(--bg); background-attachment: fixed; }
+:root[data-pattern='grid'] body, :root[data-pattern='grid'] .theme-surface {
+  background-image: linear-gradient(color-mix(in oklab, var(--line) 55%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in oklab, var(--line) 55%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+:root[data-pattern='dots'] body, :root[data-pattern='dots'] .theme-surface {
+  background-image: radial-gradient(color-mix(in oklab, var(--fl-border-strong) 70%, transparent) 1px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+:root[data-pattern='waves'] body, :root[data-pattern='waves'] .theme-surface {
+  background-image: repeating-radial-gradient(circle at 50% 120%, transparent 0 38px, color-mix(in oklab, var(--line) 45%, transparent) 38px 39px);
+}
+:root[data-pattern='rope'] body, :root[data-pattern='rope'] .theme-surface {
+  background-image: repeating-linear-gradient(45deg, transparent 0 14px, color-mix(in oklab, var(--line) 40%, transparent) 14px 15px);
+}
+:root[data-pattern='stars'] body, :root[data-pattern='stars'] .theme-surface {
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, color-mix(in oklab, var(--ink) 40%, transparent) 50%, transparent 51%),
+    radial-gradient(1px 1px at 70% 60%, color-mix(in oklab, var(--ink) 30%, transparent) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 40% 80%, color-mix(in oklab, var(--accent) 60%, transparent) 50%, transparent 51%),
+    radial-gradient(1px 1px at 85% 15%, color-mix(in oklab, var(--ink) 35%, transparent) 50%, transparent 51%);
+  background-size: 260px 260px, 340px 340px, 420px 420px, 300px 300px;
+}
+/* Glow: a soft accent halo behind primary buttons and the brand mark. */
+:root[data-glow='true'] .bg-accent { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent), 0 8px 28px -8px color-mix(in oklab, var(--accent) 70%, transparent); }
+:root[data-glow='true'] .header-mark, :root[data-glow='true'] .brand-emblem { filter: drop-shadow(0 0 14px color-mix(in oklab, var(--accent) 55%, transparent)); }
+/* Density also tightens the base type a little, since --spacing already scales the layout. */
+:root[data-density='compact'] body { font-size: 13px; }
+:root[data-density='spacious'] body { font-size: 15px; line-height: 1.5; }
+/* High contrast: visible focus and borders everywhere, hints in full ink. */
+:root[data-contrast='high'] :focus-visible { outline-width: 3px; }
+:root[data-contrast='high'] { --ink-3: var(--ink-2); }
+
 /* A switch (Settings): a checkbox underneath, so it reads as one; drawn as a pill with a knob. */
 .switch { appearance: none; -webkit-appearance: none; width: 36px; height: 20px; margin: 0; border-radius: 999px; border: 1px solid var(--fl-control-border); background: var(--panel-2); position: relative; cursor: pointer; flex-shrink: 0; transition: background 150ms ease-out, border-color 150ms ease-out; }
 .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: transform 150ms ease-out, background 150ms ease-out; }

@@ -4,6 +4,7 @@ import { App } from './app.tsx';
 import { AppBoundary } from './components/ErrorBoundary.tsx';
 import { reportClientError } from './lib/api.ts';
 import { applyReduceMotionChoice } from './lib/motion.ts';
+import { applyToDocument, theme } from './lib/theme.ts';
 
 // Client errors leave one line in the server's log (lib/api.ts reportClientError: no data values).
 const view = () => new URL(location.href).searchParams.get('view') ?? 'builder';
@@ -11,6 +12,8 @@ const report = (level: 'error' | 'warn', e: unknown) => {
   const err = e instanceof Error ? e : new Error(typeof e === 'string' ? e : 'Unknown error');
   reportClientError({ level, message: `${err.name}: ${err.message}`, ...(err.stack ? { stack: err.stack } : {}), view: view() });
 };
+// The theme before the first paint, so a dark or tinted theme never flashes light.
+applyToDocument(theme.get());
 applyReduceMotionChoice();
 window.addEventListener('error', (e) => report('error', e.error ?? e.message));
 window.addEventListener('unhandledrejection', (e) => report('warn', e.reason));

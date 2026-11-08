@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 export function reducedMotion(): boolean {
   try {
     if (readChoice()) return true;
+    if (typeof document !== 'undefined' && document.documentElement.dataset.motion === 'off') return true;
     return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   } catch {
     return false;
@@ -50,7 +51,8 @@ export function reduceMotionChoice(): boolean {
 /** Puts the choice on the document, so CSS can read it. Safe to call before the page has a body. */
 export function applyReduceMotionChoice(): void {
   if (typeof document === 'undefined') return;
-  if (readChoice()) document.documentElement.dataset.reduceMotion = 'true';
+  // The theme's Motion: Off (lib/theme.ts writes data-motion) counts the same as the switch.
+  if (readChoice() || document.documentElement.dataset.motion === 'off') document.documentElement.dataset.reduceMotion = 'true';
   else delete document.documentElement.dataset.reduceMotion;
 }
 

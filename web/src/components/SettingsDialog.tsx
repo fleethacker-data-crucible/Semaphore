@@ -5,14 +5,14 @@
 // in the request body, cleared at once and never shown, logged or kept here.
 
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle2, CircleAlert, Link2, Moon, Power, RefreshCw, Sun, Unlink, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, CircleAlert, Link2, Power, RefreshCw, Unlink, X } from 'lucide-react';
 import { api, describeError } from '../lib/api.ts';
 import type { AiStatus } from '../lib/ai.ts';
 import { confirm } from '../lib/confirm.ts';
 import { FEATURE_LIST, type FeatureKey, featureState, setPersonalFeature, usePersonalFeatures } from '../lib/features.ts';
 import { useModal } from '../lib/modal.ts';
-import { setReduceMotionChoice, useReduceMotionChoice } from '../lib/motion.ts';
 import type { SocialSettings } from '../lib/playbook.ts';
+import { ThemeCards } from './ThemeCards.tsx';
 
 export interface VaultStatus {
   paired: boolean;
@@ -202,7 +202,6 @@ export function SettingsDialog(p: SettingsDialogProps) {
   const ref = useRef<HTMLElement>(null);
   useModal(ref, p.onClose);
   const personal = usePersonalFeatures();
-  const reduce = useReduceMotionChoice();
   const [tab, setTab] = useState<TabId>('appearance');
   const tabs: Array<{ id: TabId; label: string }> = [
     { id: 'appearance', label: 'Appearance' },
@@ -210,10 +209,9 @@ export function SettingsDialog(p: SettingsDialogProps) {
     { id: 'features', label: 'Features' },
     ...(p.hasServer ? [{ id: 'session' as const, label: 'Session' }] : []),
   ];
-  const modeTile = (on: boolean) => `flex min-h-10 flex-1 items-center justify-center gap-2 rounded-md border px-3 text-sm ${on ? 'border-accent bg-accent-soft font-medium text-accent' : 'border-[var(--fl-control-border)] text-ink-2 hover:border-accent'}`;
 
   return (
-    <div className="fixed inset-0 z-[65] overflow-y-auto bg-bg" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
+    <div className="theme-surface fixed inset-0 z-[65] overflow-y-auto bg-bg" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
       <section ref={ref} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="mx-auto w-full max-w-[880px] px-8 py-6 outline-none" data-testid="settings-view">
         <div className="mb-4 flex items-center justify-between">
           <button type="button" onClick={p.onClose} data-autofocus="" className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-sm text-ink-2 hover:bg-panel-2 hover:text-ink">
@@ -259,17 +257,8 @@ export function SettingsDialog(p: SettingsDialogProps) {
         <div id={`settings-panel-${tab}`} role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className="pt-5">
           {tab === 'appearance' && (
             <div className="grid gap-5">
-              <Card title="Theme" description="Chart room is the light theme and Night watch the dark one. Charts follow it.">
-                <Row label="Mode">
-                  <div role="radiogroup" aria-label="Theme" className="flex w-[280px] gap-2">
-                    <button type="button" role="radio" aria-checked={p.theme === 'light'} onClick={() => p.theme !== 'light' && p.onTheme()} className={modeTile(p.theme === 'light')}>
-                      <Sun size={15} aria-hidden="true" /> Chart room
-                    </button>
-                    <button type="button" role="radio" aria-checked={p.theme === 'dark'} onClick={() => p.theme !== 'dark' && p.onTheme()} className={modeTile(p.theme === 'dark')}>
-                      <Moon size={15} aria-hidden="true" /> Night watch
-                    </button>
-                  </div>
-                </Row>
+              <ThemeCards />
+              <Card title="Skin" description="The base palette under the theme. Themes colour the Fleet skin; Classic and Colour-blind safe keep their own colours and take the rest of the theme.">
                 <Row label="Skin" htmlFor={p.onSkin ? 'settings-skin' : undefined} hint={p.onSkin ? 'The colours and type of the whole page. A page design sits on top of it.' : 'Set for this deployment in settings.json.'}>
                   {p.onSkin ? (
                     <select id="settings-skin" value={p.skin} onChange={(e) => p.onSkin?.(e.target.value)} className="min-h-8 min-w-[160px] rounded-md border border-[var(--fl-control-border)] bg-panel px-2 text-sm">
@@ -283,7 +272,6 @@ export function SettingsDialog(p: SettingsDialogProps) {
                     <span className="text-sm text-ink-2">{p.skins.find((s) => s.id === p.skin)?.label ?? p.skin}</span>
                   )}
                 </Row>
-                <Switch label="Reduce motion" hint="Turns off animations even if Windows allows them. Charts and page designs then arrive still." checked={reduce} onChange={setReduceMotionChoice} />
               </Card>
               <p className="text-[12px] text-ink-3">How a page's charts and cards look is set per page: the paintbrush in the header opens Page design.</p>
             </div>

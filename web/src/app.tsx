@@ -42,13 +42,12 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, DataPanel, DesignDialog, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
 import { BrowserOnlyNote, SessionScreen } from './components/SessionScreen.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
-import { HelpDialog } from './components/HelpDialog.tsx';
 import { Header } from './components/Header.tsx';
 import { ConflictBar, TabChangeBar } from './components/ConflictBar.tsx';
 import { DraftMiss, type DraftMissInfo } from './components/DraftMiss.tsx';
@@ -66,6 +65,8 @@ import { Canvas } from './components/Canvas.tsx';
 import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
+import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
+import { applyReduceMotionChoice } from './lib/motion.ts';
 import { chartLookOf, designAttrs, designVars, withoutChartLook } from '../../src/core/design.ts';
 import { cachedSliceKey, flagKeys as pageKeysFor, planSlice, relevantSelections } from './lib/relevance.ts';
 import { Inspector } from './components/Inspector.tsx';
@@ -164,7 +165,11 @@ export function App() {
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
   const [autoKinds, setAutoKinds] = useState<Record<string, boolean>>({});
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => readLocal<'light' | 'dark'>(K.theme) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  // The theme (lib/theme.ts, as in Lazarette): its mode decides light or dark, 'system' following Windows.
+  const themeSpec = useTheme();
+  const systemDark = useSystemDark();
+  const theme = resolveMode(themeSpec.mode, systemDark);
+  const setTheme = useCallback((mode: 'light' | 'dark') => themeStore.set({ mode }), []);
   const askRef = useRef<HTMLInputElement>(null);
   // The local calendar day (the core reads dates in UTC), moved on at local midnight so a tab left
   // open overnight does not keep yesterday's windows.
@@ -187,8 +192,9 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    writeLocal(K.theme, theme);
-  }, [theme]);
+    applyThemeSpec(themeSpec, theme === 'dark');
+    applyReduceMotionChoice();
+  }, [theme, themeSpec]);
 
   // Skin (docs/SKINS.md): settings.json "skin" is the deployment's choice and wins; otherwise the
   // analyst's choice in this browser; otherwise Fleet UI.
@@ -959,7 +965,8 @@ export function App() {
     return values.map((v) => ({ key, value: v, text: `${label}: ${formatDim(v, grain as never)}` }));
   });
   const examples = useMemo(() => exampleBriefs(catalog), [catalog]);
-  const themeKey = `${theme}:${server?.skin || skin}`;
+  // Charts re-read their colours whenever anything that changes a colour changes.
+  const themeKey = `${theme}:${server?.skin || skin}:${themeSpec.accent}:${themeSpec.tint}:${themeSpec.tintStrength}:${themeSpec.contrast}`;
   const waiting = playbook.questions.filter((q) => q.status === 'open').length + playbook.entries.filter((e) => e.status === 'needs-review').length;
 
   if (currentView === 'refresh') {
@@ -1509,7 +1516,11 @@ export function App() {
 
       {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
       {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
-      {helpOpen && <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />}
+      {helpOpen && (
+        <Panel name="help" onClose={() => setHelpOpen(false)}>
+          <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />
+        </Panel>
+      )}
       {overlays}
     </div>
   );
