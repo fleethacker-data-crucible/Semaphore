@@ -561,10 +561,16 @@ function Get-SemVoiceSettings {
 }
 
 function Get-SemVoiceStatus {
-    # What the browser may know for Settings: the address and where the token comes from, never the token.
+    # What the browser may know for Settings: the address, where the token comes from (never the token),
+    # whether TalkForge is started when needed, the TalkForge folder, and the voice input switch.
     param([string]$Root = (Get-SemRoot))
     $s = Get-SemVoiceSettings -Root $Root
-    return [ordered]@{ url = $s.Url; problem = $s.Problem; tokenSource = $s.TokenSource; tokenShare = $s.TokenShare }
+    $tf = Get-SemTalkForgeSettings -Root $Root
+    return [ordered]@{
+        url = $s.Url; problem = $s.Problem; tokenSource = $s.TokenSource; tokenShare = $s.TokenShare
+        autoStart = [bool]$tf.AutoStart; folder = [string]$tf.Folder; folderSetting = [string]$tf.FolderSetting; folderSource = [string]$tf.FolderSource; folderProblem = [string]$tf.FolderProblem
+        input = [bool]$tf.Input
+    }
 }
 
 function Read-SemVoiceToken {
@@ -582,6 +588,207 @@ function Read-SemVoiceToken {
         }
         return [string]$v
     } finally { $got = $null }
+}
+
+# ---- Starting TalkForge when speech is needed ----------------------------------------------------
+# As in Lazarette (lib/server/Stark.ps1, PR 141). When the page needs speech and nothing answers on the
+# configured address, the server can start TalkForge itself: node <TalkForge>\tools\talkforge.mjs serve
+# --port <port> --idle-timeout 30, with the token in the child's TALKFORGE_TOKEN environment variable
+# only. Never on the command line: process creation auditing and PowerShell transcription record command
+# lines on the workstations. A TalkForge already answering on the address (one Lazarette started, or
+# talkforge serve in a terminal) is used as it is, and a second copy is never started. The child is
+# tracked and stopped when this Semaphore stops, only when this Semaphore started it; otherwise its idle
+# timeout ends it. The state is shared by the main loop and the workers (a synchronized table that the
+# worker context carries), so a start on a worker and a status check in the main loop see the same child.
+if ($null -eq $script:SemTalkForge) { $script:SemTalkForge = [hashtable]::Synchronized(@{ Process = $null; Port = 0; StartedAt = [datetime]::MinValue; Message = '' }) }
+$script:SemTalkForgeIdleMinutes = 30
+$script:SemTalkForgeStartSeconds = 45
+$script:SemTalkForgeReady = 'TalkForge is running.'
+$script:SemTalkForgeGettingReady = 'Getting the voice ready...'
+
+function Get-SemVoicePort {
+    # The port when the address is http://127.0.0.1:<port>, the only address TalkForge listens on; else 0.
+    param([string]$Url)
+    if ([string]$Url -match '\Ahttp://127\.0\.0\.1:(\d{1,5})/?\z' -and [int]$Matches[1] -ge 1 -and [int]$Matches[1] -le 65535) { return [int]$Matches[1] }
+    return 0
+}
+
+function Test-SemTalkForgeHeartbeat {
+    # What answers on the port: 'talkforge' (its lifecycle probe, which needs no token and says nothing
+    # sensitive), 'other' (something else holds the port) or 'none'. No proxy, no redirect.
+    param([int]$Port, [int]$TimeoutMs = 800)
+    if ($Port -le 0) { return 'none' }
+    $r = $null
+    try {
+        $q = [Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}/__fleethacker/heartbeat' -f $Port))
+        $q.Method = 'GET'; $q.Timeout = $TimeoutMs; $q.ReadWriteTimeout = $TimeoutMs; $q.KeepAlive = $false; $q.Proxy = $null; $q.AllowAutoRedirect = $false
+        $r = $q.GetResponse()
+        $sr = New-Object IO.StreamReader($r.GetResponseStream())
+        try { $text = $sr.ReadToEnd() } finally { $sr.Dispose() }
+        if ($text -match '"tool"\s*:\s*"talkforge"') { return 'talkforge' }
+        return 'other'
+    } catch {
+        $ex = $_.Exception
+        while ($null -ne $ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+        # Only an answer that is not TalkForge's means another program holds the port. A refused or slow
+        # connection is "none" (Windows takes about 2 s to give up on a closed loopback port).
+        if ($null -ne $ex -and ($null -ne $ex.Response -or $ex.Status -eq [Net.WebExceptionStatus]::ServerProtocolViolation)) {
+            if ($null -ne $ex.Response) { try { $ex.Response.Close() } catch { } }
+            return 'other'
+        }
+        return 'none'
+    } finally { if ($r) { try { $r.Close() } catch { } } }
+}
+
+function Get-SemTalkForgeState {
+    # { state, message, startedHere }: ready | starting | offline | unavailable. Safe to ask often.
+    param([string]$Root = (Get-SemRoot))
+    $t = $script:SemTalkForge
+    $port = Get-SemVoicePort ((Get-SemVoiceSettings -Root $Root).Url)
+    $probe = Test-SemTalkForgeHeartbeat -Port $port
+    $mine = $false
+    if ($null -ne $t.Process) { try { $mine = (-not $t.Process.HasExited) -and $t.Port -eq $port } catch { $mine = $false } }
+    if ($probe -eq 'talkforge') { $t.Message = ''; return [ordered]@{ state = 'ready'; message = $script:SemTalkForgeReady; startedHere = $mine } }
+    if ($null -ne $t.Process -and $t.Port -ne $port) { $t.Process = $null; $t.Message = '' }   # started for another address
+    if ($null -ne $t.Process) {
+        $alive = $false; try { $alive = -not $t.Process.HasExited } catch { }
+        if ($alive -and ((Get-Date) - $t.StartedAt).TotalSeconds -lt $script:SemTalkForgeStartSeconds) { return [ordered]@{ state = 'starting'; message = $script:SemTalkForgeGettingReady; startedHere = $true } }
+        if (-not $alive) { $t.Process = $null; if (-not $t.Message) { $t.Message = 'TalkForge stopped while starting. Run talkforge serve in a terminal to see why.' } }
+        elseif (-not $t.Message) { $t.Message = 'TalkForge did not start in time. Run talkforge serve in a terminal to see why.' }
+    }
+    if ($probe -eq 'other') { return [ordered]@{ state = 'unavailable'; message = ('Another program, not TalkForge, answers on port {0}. Set SEMAPHORE_VOICE_URL to the address talkforge serve prints.' -f $port); startedHere = $false; portTaken = $true } }
+    if ($t.Message) { return [ordered]@{ state = 'unavailable'; message = $t.Message; startedHere = $false } }
+    return [ordered]@{ state = 'offline'; message = 'TalkForge is not running.'; startedHere = $false }
+}
+
+function Find-SemNode {
+    # node.exe as Lazarette finds it: the first one on PATH; '' when there is none.
+    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if ($node) { return [string]$node.Source }
+    return ''
+}
+
+function New-SemTalkForgeStartInfo {
+    # The child's start info: node, the script and its options on the command line, the token in the
+    # child's environment only. Separate so the tests can check exactly what would be recorded.
+    param([string]$Node, [string]$Folder, [int]$Port, [string]$Token)
+    $si = New-Object Diagnostics.ProcessStartInfo
+    $si.FileName = $Node
+    $si.Arguments = ('"{0}" serve --port {1} --idle-timeout {2}' -f (Join-Path $Folder 'tools\talkforge.mjs'), $Port, $script:SemTalkForgeIdleMinutes)
+    $si.WorkingDirectory = $Folder
+    $si.UseShellExecute = $false; $si.CreateNoWindow = $true; $si.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    # Its output is read and dropped (Start-SemTalkForge), never inherited: an inherited handle would keep
+    # Semaphore's own console or pipe open for as long as TalkForge runs. TalkForge never prints the token.
+    $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true
+    # Only this token reaches TalkForge: no token file or Lazarette item of its own, and none of Semaphore's.
+    foreach ($name in 'TALKFORGE_TOKEN_FILE', 'TALKFORGE_LAZARETTE_ITEM', 'SEMAPHORE_VOICE_TOKEN', 'SEMAPHORE_AI_KEY') { if ($si.EnvironmentVariables.ContainsKey($name)) { $si.EnvironmentVariables.Remove($name) } }
+    $si.EnvironmentVariables['TALKFORGE_TOKEN'] = $Token
+    return $si
+}
+
+function Start-SemTalkForge {
+    # POST /api/voice/start (on a worker: the token may come from Lazarette). Starts TalkForge unless one
+    # is running or starting; returns the state as Get-SemTalkForgeState does.
+    param([string]$Root = (Get-SemRoot))
+    $t = $script:SemTalkForge
+    [Threading.Monitor]::Enter($t.SyncRoot)
+    try {
+        $now = Get-SemTalkForgeState -Root $Root
+        if ($now.state -eq 'ready' -or $now.state -eq 'starting') { return $now }
+        $t.Message = ''
+        $no = { param($m) $t.Message = $m; return [ordered]@{ state = 'unavailable'; message = $m; startedHere = $false } }
+        if ($now.Contains('portTaken')) { return [ordered]@{ state = 'unavailable'; message = $now.message; startedHere = $false } }   # never start on a port another program holds
+        $tf = Get-SemTalkForgeSettings -Root $Root
+        if (-not $tf.AutoStart) { return (& $no 'TalkForge is not running, and starting it automatically is off (voice.autoStart in config\settings.json). Run talkforge serve.') }
+        $vs = Get-SemVoiceSettings -Root $Root
+        if ($vs.Problem) { return (& $no $vs.Problem) }
+        $port = Get-SemVoicePort $vs.Url
+        if ($port -le 0) { return (& $no 'Semaphore can only start TalkForge for an address of the form http://127.0.0.1:<port> (SEMAPHORE_VOICE_URL).') }
+        if ($tf.FolderProblem) { return (& $no $tf.FolderProblem) }
+        if (-not $tf.Folder) {
+            if ($tf.FolderSetting) { return (& $no ('TalkForge was not found in {0} (no tools\talkforge.mjs there). Fix voice.folder in config\settings.json or SEMAPHORE_VOICE_FOLDER, or run talkforge serve yourself.' -f $tf.FolderSetting)) }
+            return (& $no 'TalkForge was not found next to the Semaphore folder or in your Projects folder. Set voice.folder in config\settings.json (or SEMAPHORE_VOICE_FOLDER), or run talkforge serve yourself.')
+        }
+        $node = Find-SemNode
+        if (-not $node) { return (& $no 'TalkForge needs Node.js 18 or newer, and node was not found on this computer. Ask IT for Node.js, or run talkforge serve where it is installed.') }
+        $token = $null; $si = $null
+        try {
+            try { $token = Read-SemVoiceToken -Root $Root } catch { return (& $no ([string]$_.Exception.Message)) }
+            if ($token.Length -lt 16) { return (& $no 'The TalkForge token must be 16 or more characters. Share a longer one.') }
+            $si = New-SemTalkForgeStartInfo -Node $node -Folder $tf.Folder -Port $port -Token $token
+            $t.Process = [Diagnostics.Process]::Start($si)
+            $t.Process.BeginOutputReadLine(); $t.Process.BeginErrorReadLine()   # drained with no handler: the lines are dropped
+            $t.StartedAt = Get-Date; $t.Port = $port
+            Write-SemLog 'INFO' ('Starting TalkForge on port {0} (PID {1})' -f $port, $t.Process.Id)
+        } catch {
+            $t.Process = $null
+            Write-SemLog 'WARN' ('TalkForge could not be started: ' + $_.Exception.GetType().Name)
+            return (& $no ('TalkForge could not be started (' + $_.Exception.GetType().Name + '). Run talkforge serve in a terminal to see why.'))
+        } finally {
+            $token = $null
+            if ($si) { try { [void]$si.EnvironmentVariables.Remove('TALKFORGE_TOKEN') } catch { } }
+        }
+        return [ordered]@{ state = 'starting'; message = $script:SemTalkForgeGettingReady; startedHere = $true }
+    } finally { [Threading.Monitor]::Exit($t.SyncRoot) }
+}
+
+function Stop-SemTalkForgeChild {
+    # When this Semaphore stops: ends the TalkForge it started, if it is still running. A TalkForge it
+    # did not start (Lazarette's, or a terminal's) is never touched. The handle is this process's own, so
+    # a reused PID cannot be hit.
+    $t = $script:SemTalkForge
+    if ($null -eq $t -or $null -eq $t.Process) { return $false }
+    $p = $t.Process
+    $t.Process = $null
+    try {
+        if ($p.HasExited) { return $false }
+        Write-SemLog 'INFO' ('Stopping the TalkForge this Semaphore started (PID {0})' -f $p.Id)
+        $p.Kill()
+        [void]$p.WaitForExit(5000)
+        return $true
+    } catch { return $false } finally { try { $p.Dispose() } catch { } }
+}
+
+# ---- The installed voices ---------------------------------------------------------------------------
+# As in Lazarette (PR 144): each <TalkForge>\assets\models\<id>.onnx with its <id>.onnx.json, read from
+# disk (TalkForge need not run), TalkForge's default first. Piper configs hold phoneme maps whose keys
+# differ only by case, which Windows PowerShell 5.1's ConvertFrom-Json refuses, so only the few fields
+# shown are read out of the text, each with a narrow pattern.
+function Get-SemTalkForgeVoices {
+    param([string]$Root = (Get-SemRoot))
+    $tf = Get-SemTalkForgeSettings -Root $Root
+    if (-not $tf.Folder) { return [ordered]@{ found = $false; default = ''; voices = @(); message = 'TalkForge was not found, so its voices cannot be listed. Set voice.folder in config\settings.json (or SEMAPHORE_VOICE_FOLDER).' } }
+    $default = ''
+    $engine = Join-Path $tf.Folder 'tools\node-engine.mjs'
+    if (Test-Path -LiteralPath $engine -PathType Leaf) {
+        $m = [regex]::Match([IO.File]::ReadAllText($engine), "DEFAULT_VOICE\s*=\s*'([A-Za-z0-9._\-]{1,80})'")
+        if ($m.Success) { $default = $m.Groups[1].Value }
+    }
+    $models = Join-Path $tf.Folder 'assets\models'
+    $voices = New-Object System.Collections.Generic.List[object]
+    if (Test-Path -LiteralPath $models -PathType Container) {
+        foreach ($f in (Get-ChildItem -LiteralPath $models -Filter '*.onnx' -File | Sort-Object Name)) {
+            if (-not $f.Name.EndsWith('.onnx', [StringComparison]::OrdinalIgnoreCase)) { continue }   # -Filter also matches *.onnx.json on 8.3 names
+            $id = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+            if ($id -cnotmatch $script:SemVoiceNamePattern) { continue }
+            $cfgPath = $f.FullName + '.json'
+            if (-not (Test-Path -LiteralPath $cfgPath -PathType Leaf)) { continue }   # without its config TalkForge cannot speak with it
+            if ((New-Object IO.FileInfo $cfgPath).Length -gt 4MB) { continue }
+            try { $text = [IO.File]::ReadAllText($cfgPath, [Text.Encoding]::UTF8) } catch { continue }
+            $get = { param($pattern) $mm = [regex]::Match($text, $pattern); if ($mm.Success) { $mm.Groups[1].Value } else { '' } }
+            $quality = & $get '"quality"\s*:\s*"([A-Za-z_]{1,20})"'
+            $speakers = 1
+            $n = & $get '"num_speakers"\s*:\s*(\d{1,6})'; if ($n) { $speakers = [int]$n }
+            $dataset = & $get '"dataset"\s*:\s*"([A-Za-z0-9 ._()-]{1,60})"'
+            $language = (@((& $get '"name_english"\s*:\s*"([A-Za-z ()-]{1,40})"'), (& $get '"country_english"\s*:\s*"([A-Za-z ()-]{1,40})"')) | Where-Object { $_ }) -join ', '
+            $voices.Add([ordered]@{ id = $id; quality = $quality; speakers = $speakers; dataset = $dataset; language = $language; default = ($id -ceq $default) })
+        }
+    }
+    $msg = ''
+    if (-not $voices.Count) { $msg = "TalkForge has no voices installed. In the TalkForge folder run: populate-assets.ps1 -Only 'models/en_US-libritts_r-medium*'" }
+    $ordered = @(@($voices | Where-Object { $_.default }) + @($voices | Where-Object { -not $_.default }))
+    return [ordered]@{ found = $true; default = $default; voices = $ordered; message = $msg }
 }
 
 function New-SemVoicePayload {

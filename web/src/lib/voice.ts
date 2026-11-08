@@ -3,8 +3,13 @@
 // to POST /api/voice/speak on this origin, the server relays it to TalkForge on this computer with the
 // token, and the WAV that comes back plays from a blob: URL. One piece is fetched ahead while the
 // current one plays. The real audio level drives the orb.
+//
+// TalkForge need not be running first (Lazarette PR 141): when a piece comes back voice-offline, the
+// page asks the server to start it (POST /api/voice/start; the server reuses a TalkForge already
+// answering and never starts a second one), says "Getting the voice ready" while it starts, and tries
+// that piece once more. Turning the speaker on, or clicking the orb with the speaker on, warms it up.
 
-import { ApiError, describeError, sessionToken } from './api.ts';
+import { api, ApiError, describeError, sessionToken } from './api.ts';
 import { takeSpeakable } from './voice-text.ts';
 
 export interface VoicePrefs {
@@ -14,7 +19,34 @@ export interface VoicePrefs {
   voice: string;
   /** 0.5 to 2. */
   speed: number;
+  /** Talk with the microphone (voice input, Whisper in this page). */
+  input: boolean;
+  /** Send what was said when you stop talking. */
+  autoSend: boolean;
 }
+
+/** GET /api/voice/status and POST /api/voice/start. */
+export interface VoiceState {
+  state: 'ready' | 'starting' | 'offline' | 'unavailable';
+  message: string;
+  startedHere?: boolean;
+}
+
+export interface VoiceLifecycle {
+  status(): Promise<VoiceState>;
+  start(): Promise<VoiceState>;
+  /** Waits between status checks while TalkForge starts. */
+  wait(ms: number): Promise<void>;
+}
+
+const serverLifecycle: VoiceLifecycle = {
+  status: () => api<VoiceState>('/api/voice/status', { quiet: true }),
+  start: () => api<VoiceState>('/api/voice/start', { json: {}, quiet: true }),
+  wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/** How long the page waits for TalkForge to start (the server gives up at 45 s too). */
+export const READY_WAIT_MS = 45_000;
 
 const KEY = 'semaphore.voice';
 const NAME = /^[A-Za-z0-9._-]{1,80}$/;
@@ -22,7 +54,7 @@ const NAME = /^[A-Za-z0-9._-]{1,80}$/;
 export function parseVoicePrefs(raw: unknown): VoicePrefs {
   const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const speed = typeof o.speed === 'number' && Number.isFinite(o.speed) ? Math.min(2, Math.max(0.5, o.speed)) : 1;
-  return { speak: o.speak === true, voice: typeof o.voice === 'string' && NAME.test(o.voice) ? o.voice : '', speed: Math.round(speed * 100) / 100 };
+  return { speak: o.speak === true, voice: typeof o.voice === 'string' && NAME.test(o.voice) ? o.voice : '', speed: Math.round(speed * 100) / 100, input: o.input !== false, autoSend: o.autoSend !== false };
 }
 
 type Fetch = (text: string, prefs: VoicePrefs, signal: AbortSignal) => Promise<Blob>;
@@ -58,6 +90,8 @@ export class Voice {
   speaking = false;
   /** The last failure, cleared when speech starts again. */
   error = '';
+  /** True while TalkForge is being started: "Getting the voice ready". */
+  preparing = false;
   prefs: VoicePrefs;
 
   private buffer = '';
@@ -75,9 +109,12 @@ export class Voice {
   private readonly listeners = new Set<() => void>();
   private version = 0;
   private readonly fetchAudio: Fetch;
+  private readonly lifecycle: VoiceLifecycle;
+  private readying: Promise<boolean> | null = null;
 
-  constructor(fetchAudio: Fetch = relay) {
+  constructor(fetchAudio: Fetch = relay, lifecycle: VoiceLifecycle = serverLifecycle) {
     this.fetchAudio = fetchAudio;
+    this.lifecycle = lifecycle;
     let raw: unknown = null;
     try {
       raw = JSON.parse(localStorage.getItem(KEY) ?? 'null');
@@ -106,6 +143,52 @@ export class Voice {
     }
     if (!this.prefs.speak) this.stop();
     this.changed();
+  }
+
+  /**
+   * Makes sure TalkForge can speak: asks the server, has it start TalkForge when nothing answers (it
+   * reuses one that is running), and waits for it. One check at a time, however often it is called.
+   */
+  ensureReady(): Promise<boolean> {
+    this.readying ??= this.ready().finally(() => {
+      this.readying = null;
+      if (this.preparing) {
+        this.preparing = false;
+        this.changed();
+      }
+    });
+    return this.readying;
+  }
+
+  private async ready(): Promise<boolean> {
+    try {
+      let s = await this.lifecycle.status();
+      if (s.state === 'ready') return true;
+      if (s.state !== 'starting') s = await this.lifecycle.start();
+      const until = Date.now() + READY_WAIT_MS;
+      while (s.state === 'starting' && Date.now() < until) {
+        if (!this.preparing) {
+          this.preparing = true;
+          this.changed();
+        }
+        await this.lifecycle.wait(600);
+        s = await this.lifecycle.status();
+      }
+      if (s.state === 'ready') {
+        this.error = '';
+        return true;
+      }
+      this.error = s.state === 'starting' ? 'TalkForge did not start in time. Run talkforge serve in a terminal to see why.' : s.message || 'TalkForge is not running.';
+      return false;
+    } catch (e) {
+      this.error = describeError(e);
+      return false;
+    }
+  }
+
+  /** Starts TalkForge in the background when it is not running, so the first answer speaks sooner. */
+  warmUp(): void {
+    void this.ensureReady().then(() => this.changed());
   }
 
   /** Adds answer text; complete sentences start speaking. */
@@ -161,9 +244,17 @@ export class Voice {
   private fetchPiece(text: string, gen: number): Promise<Blob | null> {
     if (!this.controller) this.controller = new AbortController();
     const signal = this.controller.signal;
-    return this.fetchAudio(text, this.prefs, signal).catch((e: unknown) => {
+    return this.fetchAudio(text, this.prefs, signal).catch(async (e: unknown) => {
+      // TalkForge not running: get it ready ("Getting the voice ready"), then try this piece once more.
+      if (e instanceof ApiError && e.code === 'voice-offline' && gen === this.gen && !signal.aborted && (await this.ensureReady()) && gen === this.gen && !signal.aborted) {
+        try {
+          return await this.fetchAudio(text, this.prefs, signal);
+        } catch (e2) {
+          e = e2;
+        }
+      }
       if (gen === this.gen && !signal.aborted) {
-        this.error = describeError(e);
+        if (!this.error) this.error = describeError(e);
         this.changed();
       }
       return null;
