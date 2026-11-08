@@ -47,6 +47,10 @@
 #   POST   /api/local/import-cancel { job }          stops a running import (nothing is published)
 #   DELETE /api/local/tables/<name>                  drops the table
 #   POST   /api/local/tables/<name>/rename { name }  renames it
+#   SQL scripts and exports (LocalScript.ps1): GET /api/local/scripts, GET|PUT|DELETE /api/local/scripts/<id>,
+#   POST /api/local/script-run { plan | id, params }, POST /api/local/export { table, format }, GET /api/local/sources
+#   Pipelines (Pipeline.ps1, docs/PIPELINES.md): GET /api/pipelines, GET|PUT|DELETE /api/pipelines/<id>,
+#   POST /api/pipelines/<id>/run { from?, force? }, GET /api/pipelines/<id>/runs[/<run>]
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
@@ -769,6 +773,16 @@ function Invoke-SemRoute {
         # Intelligence.ps1, on the worker pool: a model can take a minute and must not block heartbeats.
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Start-SemWorkerRequest -Req $Req
+        return
+    }
+    if ($p -eq '/api/local/scripts' -or $p -eq '/api/local/script-run' -or $p -eq '/api/local/export' -or $p -eq '/api/local/sources' -or $p.StartsWith('/api/local/scripts/')) {
+        # SQL scripts, saved scripts and dataset exports (LocalScript.ps1): runs and exports go to the local job pool.
+        Invoke-SemLocalScriptRoute -Req $Req
+        return
+    }
+    if ($p -eq '/api/pipelines' -or $p.StartsWith('/api/pipelines/')) {
+        # Data-prep pipelines (Pipeline.ps1): runs go to the local job pool, one at a time.
+        Invoke-SemPipelineRoute -Req $Req
         return
     }
     if ($p -eq '/api/local/tables' -or $p -eq '/api/local/import' -or $p -eq '/api/local/import-path' -or $p -eq '/api/local/sheets' -or $p -eq '/api/local/import-cancel' -or $p.StartsWith('/api/local/')) {

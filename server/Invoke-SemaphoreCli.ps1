@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
 $cliArgs = @($args | ForEach-Object { [string]$_ })
-foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'LocalDb.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
+foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
 $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $words = New-Object System.Collections.Generic.List[string]
@@ -76,6 +76,11 @@ if ($words.Count -eq 1 -and $words[0] -eq 'commands') {
 }
 
 $command = Find-SemCommand ($words -join ' ')
+if (-not $command -and $words.Count -ge 3 -and -not $options.ContainsKey('id')) {
+    # "pipeline run nightly": a last word that is not part of the command is its --id.
+    $c2 = Find-SemCommand (($words | Select-Object -First ($words.Count - 1)) -join ' ')
+    if ($c2 -and @($c2.inputs | Where-Object { $_.flag -eq 'id' }).Count -gt 0) { $command = $c2; $options['id'] = $cliArgs[$words.Count - 1] }
+}
 if (-not $command) { Exit-SemUsage "Unknown command '$($words -join ' ')'." }
 $settings = Read-SemSettings -Root $root
 $homeDir = Resolve-SemHome -Settings $settings -Create

@@ -25,6 +25,7 @@
 # =============================================================================
 
 $script:SemLocalCsPath = Join-Path $PSScriptRoot 'LocalDb.cs'
+$script:SemLocalScriptCsPath = Join-Path $PSScriptRoot 'LocalScript.cs'   # the script runner and exports, same assembly
 $script:SemLocalColumnarPath = Join-Path $PSScriptRoot 'Columnar.cs'
 $script:SemLocalExtensions = @('.csv', '.tsv', '.txt', '.tab', '.xlsx', '.xlsm', '.sqlite', '.sqlite3', '.db', '.parquet', '.pq', '.arrow', '.feather', '.ipc')
 $script:SemLocalJobIdRx = '\A[a-f0-9]{32}\z'
@@ -35,7 +36,9 @@ function Initialize-SemLocalTypes {
     # Columnar.cs beside it when that file exists: two separate assemblies, found at run time.
     if (-not ('SemLocal.LocalConnection' -as [type])) {
         $refs = @('System.Data', 'System.Xml', 'System.IO.Compression', 'System.IO.Compression.FileSystem')
-        Add-Type -Path $script:SemLocalCsPath -ReferencedAssemblies $refs -ErrorAction Stop
+        $paths = @($script:SemLocalCsPath)
+        if ([IO.File]::Exists($script:SemLocalScriptCsPath)) { $paths += $script:SemLocalScriptCsPath }
+        Add-Type -Path $paths -ReferencedAssemblies $refs -ErrorAction Stop
     }
     if ([IO.File]::Exists($script:SemLocalColumnarPath) -and -not ('SemColumnar.ColumnarFiles' -as [type])) {
         try {
@@ -522,6 +525,15 @@ function Invoke-SemLocalJobBody {
         Write-SemLocalJobStatus -HomeDir $homeDir -Job $job -Status $status
         if ($null -ne $Client) { try { $Client.Close() } catch { } }
         $script:Sem.Stream = $null
+        if ($cleanup -and $Spec.Keep -and $status.state -eq 'done' -and [IO.File]::Exists($cleanup)) {
+            # X-Keep: 1 (the page's "Keep for pipelines"): the upload stays in <home>\local\sources for a pipeline's import step.
+            try {
+                $keepTo = Join-Path (Get-SemLocalDir -HomeDir $homeDir -Child 'sources') ([IO.Path]::GetFileName($Spec.FileName) -replace '[^A-Za-z0-9 ._-]', '_')
+                if ([IO.File]::Exists($keepTo)) { [IO.File]::Delete($keepTo) }
+                [IO.File]::Move($cleanup, $keepTo)
+                $cleanup = $null
+            } catch { Write-SemLog 'WARN' ('Could not keep the upload for pipelines: ' + $_.Exception.Message) }
+        }
         if ($cleanup) { try { [IO.File]::Delete($cleanup) } catch { } }
     }
 }
@@ -624,6 +636,7 @@ function Invoke-SemLocalUpload {
     if ($Req.Headers.ContainsKey('X-Sheet')) { try { $sheet = [Uri]::UnescapeDataString([string]$Req.Headers['X-Sheet']) } catch { $sheet = $null } }
     $replace = ($Req.Headers.ContainsKey('X-Replace') -and [string]$Req.Headers['X-Replace'] -eq '1')
     $append = ($Req.Headers.ContainsKey('X-Append') -and [string]$Req.Headers['X-Append'] -eq '1')
+    $keep = ($Req.Headers.ContainsKey('X-Keep') -and [string]$Req.Headers['X-Keep'] -eq '1')
     if ($replace -and $append) { Send-SemError 400 'bad-mode' 'Choose replace or append, not both.'; return }
     $incoming = Get-SemLocalDir -HomeDir $homeDir -Child 'incoming'
     try {
@@ -632,7 +645,7 @@ function Invoke-SemLocalUpload {
     } catch { }
     $job = [guid]::NewGuid().ToString('N')
     $safe = ($name -replace '[^A-Za-z0-9._-]', '_')
-    $spec = @{ Home = $homeDir; Job = $job; Path = (Join-Path $incoming ($job + '-' + $safe)); FileName = $name; TotalBytes = $len; Table = $table; Sheet = $sheet; Replace = $replace; Append = $append; SourceLabel = ($name + ' (uploaded)') }
+    $spec = @{ Home = $homeDir; Job = $job; Path = (Join-Path $incoming ($job + '-' + $safe)); FileName = $name; TotalBytes = $len; Table = $table; Sheet = $sheet; Replace = $replace; Append = $append; Keep = $keep; SourceLabel = ($name + ' (uploaded)') }
     Write-SemLog 'INFO' ("Local import {0}: receiving {1} ({2} bytes)" -f $job, $name, $len)
     Start-SemLocalJob -Spec $spec -Client $Req.Client
 }
