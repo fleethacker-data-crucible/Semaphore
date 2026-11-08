@@ -434,6 +434,78 @@ function docRoute(req, res, kind, id, query, body) {
   }
 }
 
+// Page snapshots (Invoke-SemSnapRoute, server/Routes.ps1): <home>/snapshots/<hoistId>/<snapId>.json (what
+// it is) and <snapId>.hoist.json (the page, verbatim). One automatic snapshot per 10 minutes, the last 30
+// automatic ones kept with every named one (200 at most).
+const SNAP_ID = /^\d{17}-[0-9a-f]{6}$/;
+const snapText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max).trim() : '');
+function snapList(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && SNAP_ID.test(e.name.replace(/\.json$/, '')) && e.name.endsWith('.json'))
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+    .flatMap((name) => {
+      try {
+        return [JSON.parse(readFileSync(path.join(dir, name), 'utf8'))];
+      } catch {
+        return [];
+      }
+    });
+}
+function pageSnapRoute(req, res, hoistId, snapId, json, body) {
+  if (!validId(hoistId)) return sendError(res, 400, 'bad-id', 'Invalid hoist id: use 1 to 64 letters, digits, _ or -.');
+  if (snapId !== null && !SNAP_ID.test(snapId)) return sendError(res, 400, 'bad-id', 'Invalid snapshot id.');
+  const dir = path.join(homeDir, 'snapshots', hoistId);
+  if (snapId !== null) {
+    const meta = path.join(dir, `${snapId}.json`);
+    const page = path.join(dir, `${snapId}.hoist.json`);
+    if (req.method === 'GET') {
+      if (!existsSync(meta) || !existsSync(page)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      return sendJsonText(res, 200, `{"snapshot":${stripBom(readFileSync(meta, 'utf8')).trim()},"hoist":${stripBom(readFileSync(page, 'utf8')).trim()}}`);
+    }
+    if (req.method === 'DELETE') {
+      if (!existsSync(meta)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      removeDoc(dir, `${snapId}.hoist`);
+      removeDoc(dir, snapId);
+      log('INFO', `Moved snapshot ${snapId} of hoist ${hoistId} to .trash`);
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (req.method === 'GET') return sendJson(res, 200, snapList(dir));
+  if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+  if (body.length > 3145728) return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+  if (!['named', 'auto', 'restore'].includes(json.kind)) return sendError(res, 400, 'invalid', 'kind must be "named", "auto" or "restore".');
+  const name = snapText(json.name, 80);
+  if (json.kind === 'named' && !name) return sendError(res, 400, 'invalid', 'A named snapshot needs a name.');
+  if (typeof json.hoist !== 'string') return sendError(res, 400, 'invalid', 'hoist must be the page as JSON text.');
+  const bytes = Buffer.from(json.hoist, 'utf8');
+  const problem = checkDocBody(bytes);
+  if (problem === 'too-large') return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (problem) return sendError(res, 400, 'invalid', problem);
+  const hoist = JSON.parse(json.hoist);
+  if (hoist.id !== hoistId) return sendError(res, 400, 'invalid', 'The page in the snapshot is another hoist.');
+  const all = snapList(dir);
+  const autos = all.filter((s) => s.kind !== 'named');
+  const now = new Date();
+  const lastAuto = autos.find((s) => s.kind === 'auto');
+  if (json.kind === 'auto' && lastAuto && now.getTime() - Date.parse(lastAuto.created) < 600_000) return sendJson(res, 200, { ok: true, skipped: 'recent' });
+  if (json.kind === 'named' && all.filter((s) => s.kind === 'named').length >= 200) return sendError(res, 409, 'too-many', 'A page keeps at most 200 named snapshots. Delete one first.');
+  const iso = now.toISOString();
+  const id = `${iso.replace(/[-:T.Z]/g, '')}-${randomBytes(3).toString('hex')}`;
+  const catalogVersion = typeof json.catalogVersion === 'string' && /^[0-9a-f]{8,64}$/.test(json.catalogVersion) ? json.catalogVersion : '';
+  const meta = { version: 1, id, hoistId, kind: json.kind, name, note: snapText(json.note, 500), reason: snapText(json.reason, 120), author: info().user, created: iso, catalogVersion, title: snapText(hoist.title, 120), flags: Array.isArray(hoist.flags) ? hoist.flags.length : 0, bytes: bytes.length };
+  mkdirSync(dir, { recursive: true });
+  saveDoc(dir, `${id}.hoist`, bytes);
+  saveDoc(dir, id, Buffer.from(JSON.stringify(meta)));
+  if (json.kind !== 'named') for (const old of autos.slice(29)) for (const f of [`${old.id}.json`, `${old.id}.hoist.json`]) rmSync(path.join(dir, f), { force: true });
+  log('INFO', `Snapshot ${id} (${json.kind}) of hoist ${hoistId}, ${bytes.length} bytes`);
+  return sendJson(res, 200, { ok: true, snapshot: meta });
+}
+
 // ---------------------------------------------------------------------------------------------
 // API (Invoke-SemRequest, Invoke-SemRoute)
 // ---------------------------------------------------------------------------------------------
@@ -523,6 +595,8 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
+  const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
+  if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }

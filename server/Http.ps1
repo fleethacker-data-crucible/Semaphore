@@ -283,11 +283,13 @@ function Get-SemBodyLimit {
       The body cap and the time the whole body may take, by route, decided before a byte of it is read:
         /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
         a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
+        a page snapshot       3 MB, 10 s   (a 2 MB page sent as an escaped JSON string)
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
     if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
+    if ($Path -cmatch '^/api/page-snapshots/') { return @{ MaxBytes = 3145728; DeadlineMs = 10000; TooLarge = 'A snapshot may be at most 2 MB.' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
 }
 

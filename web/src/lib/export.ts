@@ -21,6 +21,8 @@ import { chartToSvg, loadExtras, paperColors } from '../components/Chart.tsx';
 import { CHART_KINDS, isRichKind } from '../../../src/core/kinds.ts';
 import { chartCategories, flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
 import type { FlagResult } from './data.ts';
+import { buildPivot, pivotTable } from '../../../src/core/pivot.ts';
+import { pivotFields, pivotInput, pivotView } from './pivot-view.ts';
 
 export type FileFormat = 'pdf' | 'xlsx' | 'pptx' | 'docx' | 'csv' | 'json';
 
@@ -185,6 +187,32 @@ function headlines(flag: Flag, result: FlagResult, index: CatalogIndex): ExportH
   });
 }
 
+/**
+ * A pivot flag as its pivoted grid: rows in the order the page shows them (a header click there
+ * counts), every group open with its subtotal, the total column and the grand total row.
+ */
+export function pivotExport(flag: Flag, result: FlagResult, index: CatalogIndex): ExportTable {
+  const input = { ...pivotInput(flag, result, index, pivotView(flag.id)), collapsed: new Set<string>(), maxRows: 100_000 };
+  const f = pivotFields(result);
+  const dims = new Map([...f.rows, ...(f.column ? [f.column] : [])].map((d) => [d.key, d]));
+  const t = pivotTable(buildPivot(input), input, {
+    dim: (key, v) => formatDim(v, dims.get(key)?.grain as Parameters<typeof formatDim>[1]),
+    num: (m, v, share) => formatNumber(v, share ? 'percent' : index.metric(m)?.format),
+    fieldLabel: (key) => {
+      const d = dims.get(key);
+      return d ? `${index.field(d.field)?.label ?? d.field}${d.grain ? ` (${d.grain})` : ''}` : key;
+    },
+    measureLabel: (m) => index.metric(m)?.label ?? m,
+  });
+  return {
+    columns: t.columns.map((c) => {
+      const format = c.share ? 'percent' : c.measure ? index.metric(c.measure)?.format : undefined;
+      return { label: c.label, numeric: c.numeric, ...(format ? { format } : {}) };
+    }),
+    rows: t.rows,
+  };
+}
+
 /** One flag's answer, ready for any format. */
 export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & { result: unknown; insights: ReadonlyArray<{ text: string }> }, index: CatalogIndex, design: HoistDesign | undefined): Promise<ExportFlag> {
   const { flag } = frozen;
@@ -198,6 +226,10 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
   if (flag.kind === 'model') return exportModel(out, flag, result, index, design);
   if (!result) {
     out.error ??= 'This flag has no answer.';
+    return out;
+  }
+  if (flag.kind === 'pivot' && result.plan.own.length && flag.binding?.metrics.length) {
+    out.table = pivotExport(flag, result, index);
     return out;
   }
   const style = resolveStyle(design, flag.style);

@@ -10,7 +10,6 @@ import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, 
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { impactFor, impactLine } from '../../src/core/impact.ts';
 import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/csv.ts';
-import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { fileStem } from '../../src/core/export/model.ts';
@@ -21,7 +20,6 @@ import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts'
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
 import type { QlikImported } from '../../src/core/qlik.ts';
-import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
@@ -41,7 +39,7 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
@@ -60,7 +58,6 @@ import { AskAnswer, AskBox } from './components/Ask.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { LayoutBar } from './components/LayoutBar.tsx';
-import { buildReportHtml, download, reportPayload } from './lib/share.ts';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
 import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
@@ -135,6 +132,7 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [kitsOpen, setKitsOpen] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [signalOpen, setSignalOpen] = useState(false);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
@@ -362,6 +360,9 @@ export function App() {
     [change],
   );
 
+  // A copy of the page before a risky change, at most every 10 minutes (lib/page-snapshots.ts).
+  const autoSnap = (reason: string) => void (server && import('./lib/page-snapshots.ts').then((m) => m.autoSnapshot(hoist, catalog, reason)));
+
   // How flags move on this hoist: switching snaps free positions to cells (or tidies, for auto).
   const setLayoutMode = useCallback(
     (mode: LayoutMode) =>
@@ -466,6 +467,7 @@ export function App() {
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
       const provider = draftingProvider(index, ai, useAi);
+      if (mode !== 'add') autoSnap('Redrafting the whole page');
       await runBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`, async () => {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
         const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
@@ -557,6 +559,8 @@ export function App() {
           // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first
           // (src/core/fleet-exports.ts). A plain CSV is never read on the page: its first line tells.
           const json = /\.json$/i.test(file.name);
+          // The readers load with the first file, not with the page (web/size-budget.json).
+          const { fleetExportToCsv } = await import('../../src/core/fleet-exports.ts');
           const fleet = json || fleetExportToCsv(file.name, await file.slice(0, 65536).text()) !== null;
           const fx = fleet ? fleetExportToCsv(file.name, await file.text()) : null;
           const blob: Blob = fx ? new Blob([fx.csv], { type: 'text/csv' }) : file;
@@ -661,6 +665,7 @@ export function App() {
           }
           out.push(...cleaning.notes);
           const candidates = qlikRelationshipCandidates(plan.script, cat, imported);
+          const { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } = await import('../../src/core/quality.ts');
           const checkCtx: DataContext = { ...ctx, index: indexCatalog(cat) };
           for (const c of candidates) {
             sayBusy(`Checking the ${c.from.label} link…`);
@@ -1039,6 +1044,7 @@ export function App() {
           open: showOpenList,
           import: () => importInput.current?.click(),
           download: exportHoist,
+          snapshots: () => setSnapshotsOpen(true),
           share: () => setShareOpen(true),
           assistant: toggleAssistant,
           design: () => setDesignOpen(true),
@@ -1342,8 +1348,14 @@ export function App() {
               <LayoutBar
                 mode={hoist.grid.mode ?? 'snap'}
                 hasSelection={!!selected}
-                onMode={setLayoutMode}
-                onTidy={tidyUp}
+                onMode={(m) => {
+                  if (m !== (hoist.grid.mode ?? 'snap')) autoSnap('Changing the layout');
+                  setLayoutMode(m);
+                }}
+                onTidy={() => {
+                  autoSnap('Tidy up');
+                  tidyUp();
+                }}
                 onFront={() => selected && restack(selected.id, 'front')}
                 onBack={() => selected && restack(selected.id, 'back')}
               />
@@ -1462,6 +1474,7 @@ export function App() {
             index={index}
             onClose={() => setKitsOpen(false)}
             onApply={(h, summary) => {
+              autoSnap('Flying a kit');
               change(h);
               notify(summary, { tone: 'success' });
             }}
@@ -1517,6 +1530,7 @@ export function App() {
             onExport={async (format, { passphrase, selectedOnly }) => {
               if (format === 'html') {
                 const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
+                const { buildReportHtml, download, reportPayload } = await import('./lib/share.ts');
                 const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
                 const name = `${fileStem(hoist.title)}-${new Date().toISOString().slice(0, 10)}.html`;
                 download(name, html);
@@ -1563,6 +1577,21 @@ export function App() {
         </Panel>
       )}
 
+      {snapshotsOpen && (
+        <Panel name="snapshots" onClose={() => setSnapshotsOpen(false)}>
+          <SnapshotsDialog
+            hoist={hoist}
+            catalog={catalog}
+            index={index}
+            onClose={() => setSnapshotsOpen(false)}
+            onRestore={(h) => {
+              change(h);
+              setSelections({});
+              setSelectedId(null);
+            }}
+          />
+        </Panel>
+      )}
       {openList && (
         <Panel name="open hoist" onClose={() => setOpenList(null)}>
           <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />

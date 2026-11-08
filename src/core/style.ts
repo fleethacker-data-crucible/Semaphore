@@ -30,7 +30,7 @@ const KINDS_FOR: Record<Shape, FlagKind[]> = {
   number: ['kpi', 'table'],
   trend: ['line', 'area', 'bar', 'calendar', 'table'],
   category: ['bar', 'pie', 'radar', 'waterfall', 'pareto', 'table'],
-  'two-categories': ['bar', 'heatmap', 'sankey', 'sunburst', 'radar', 'stream', 'table'],
+  'two-categories': ['bar', 'heatmap', 'sankey', 'sunburst', 'radar', 'stream', 'pivot', 'table'],
 };
 
 export const MIN_EVIDENCE = 2;

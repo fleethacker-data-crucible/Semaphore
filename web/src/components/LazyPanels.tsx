@@ -20,4 +20,5 @@ export const CommandPalette = lazy(() => import('./CommandPalette.tsx').then((m)
 export const OpenHoistDialog = lazy(() => import('./OpenHoistDialog.tsx').then((m) => ({ default: m.OpenHoistDialog })));
 export const PlaybookPanel = lazy(() => import('./PlaybookPanel.tsx').then((m) => ({ default: m.PlaybookPanel })));
 export const SettingsDialog = lazy(() => import('./SettingsDialog.tsx').then((m) => ({ default: m.SettingsDialog })));
+export const SnapshotsDialog = lazy(() => import('./SnapshotsDialog.tsx').then((m) => ({ default: m.SnapshotsDialog })));
 export const AskView = lazy(() => import('./AskView.tsx').then((m) => ({ default: m.AskView })));
