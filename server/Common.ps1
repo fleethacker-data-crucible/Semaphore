@@ -139,7 +139,7 @@ function Read-SemSettings {
 function Test-SemTalkForgeFolderText {
     # '' when a configured TalkForge folder is a full local path, else the reason.
     param([string]$Path)
-    if ($Path -notmatch '\A[A-Za-z]:\' -or $Path -match '[\r\n"<>|?*]' -or $Path -match '(\A|\)\.\.(\|\z)') { return 'The TalkForge folder must be a full path such as C:\Users\you\Projects\TalkForge.' }
+    if ($Path -notmatch '\A[A-Za-z]:\\' -or $Path -match '[\r\n"<>|?*]' -or $Path -match '(\A|\\)\.\.(\\|\z)') { return 'The TalkForge folder must be a full path such as C:\Users\you\Projects\TalkForge.' }
     return ''
 }
 

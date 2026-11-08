@@ -109,14 +109,62 @@ test('orb choices read from storage keep only known values, and a moved press is
 
 test('voice choices keep only known values, and a failed piece shows the server sentence and stops', async () => {
   const { parseVoicePrefs, Voice } = await import('../web/src/lib/voice.ts');
-  assert.deepEqual(parseVoicePrefs({ speak: true, voice: 'en_US-libritts-high', speed: 1.234 }), { speak: true, voice: 'en_US-libritts-high', speed: 1.23 });
-  assert.deepEqual(parseVoicePrefs({ speak: 'yes', voice: '../x', speed: 9 }), { speak: false, voice: '', speed: 2 });
+  assert.deepEqual(parseVoicePrefs({ speak: true, voice: 'en_US-libritts-high', speed: 1.234 }), { speak: true, voice: 'en_US-libritts-high', speed: 1.23, input: true, autoSend: true });
+  assert.deepEqual(parseVoicePrefs({ speak: 'yes', voice: '../x', speed: 9, input: false, autoSend: false }), { speak: false, voice: '', speed: 2, input: false, autoSend: false });
+  const unavailable = { status: async () => ({ state: 'offline' as const, message: 'TalkForge is not running.' }), start: async () => ({ state: 'unavailable' as const, message: 'TalkForge was not found next to the Semaphore folder.' }), wait: async () => {} };
   const v = new Voice(async () => {
     throw new ApiError(503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009.');
-  });
+  }, unavailable);
   v.say('First sentence. Second sentence.');
   assert.equal(v.speaking, true);
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(v.speaking, false);
-  assert.match(v.error, /TalkForge is not running/);
+  assert.match(v.error, /TalkForge was not found/, 'why it could not be started, not just that it is not running');
+  const refused = new Voice(async () => {
+    throw new ApiError(502, 'voice-token', 'TalkForge refused the token.');
+  }, unavailable);
+  refused.say('Hello.');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.match(refused.error, /refused the token/, 'only voice-offline starts TalkForge');
+});
+
+test('getting the voice ready: TalkForge is started, the page waits while it starts, and the piece is tried again', async () => {
+  const { Voice } = await import('../web/src/lib/voice.ts');
+  const calls: string[] = [];
+  let state: 'offline' | 'starting' | 'ready' = 'offline';
+  let polls = 0;
+  const lifecycle = {
+    status: async () => {
+      calls.push('status');
+      if (state === 'starting' && ++polls >= 2) state = 'ready';
+      return { state, message: '' };
+    },
+    start: async () => {
+      calls.push('start');
+      state = 'starting';
+      return { state, message: 'Getting the voice ready...' };
+    },
+    wait: async () => {},
+  };
+  let fetched = 0;
+  const seen: boolean[] = [];
+  const v = new Voice(async () => {
+    fetched++;
+    if (state !== 'ready') throw new ApiError(503, 'voice-offline', 'TalkForge is not running.');
+    return new Blob([new Uint8Array([82, 73, 70, 70])], { type: 'audio/wav' });
+  }, lifecycle);
+  v.subscribe(() => seen.push(v.preparing));
+  assert.equal(await v.ensureReady(), true);
+  assert.deepEqual(calls, ['status', 'start', 'status', 'status']);
+  assert.ok(seen.includes(true), '"Getting the voice ready" was shown while it started');
+  assert.equal(v.preparing, false);
+  // Already ready: one status check, no start.
+  calls.length = 0;
+  assert.equal(await v.ensureReady(), true);
+  assert.deepEqual(calls, ['status']);
+  // Many callers at once share one check.
+  calls.length = 0;
+  await Promise.all([v.ensureReady(), v.ensureReady(), v.ensureReady()]);
+  assert.deepEqual(calls, ['status']);
+  assert.equal(fetched, 0);
 });

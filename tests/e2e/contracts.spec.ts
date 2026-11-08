@@ -14,7 +14,9 @@ const SECURITY_HEADERS: Record<string, string> = {
   'x-frame-options': 'DENY',
   'cross-origin-resource-policy': 'same-origin',
   'cross-origin-opener-policy': 'same-origin',
-  'permissions-policy': 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()',
+  // Voice input is on by default (settings voice.input), so the page may use the microphone; with it off
+  // the server sends microphone=() (Get-SemPermissionsPolicy; tests/e2e/voice.spec.ts and TalkForge.Tests.ps1).
+  'permissions-policy': 'camera=(), microphone=(self), geolocation=(), usb=(), serial=(), hid=()',
 };
 
 let mock: OwnMock;

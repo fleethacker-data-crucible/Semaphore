@@ -656,8 +656,8 @@ function Get-SemTalkForgeState {
         if (-not $alive) { $t.Process = $null; if (-not $t.Message) { $t.Message = 'TalkForge stopped while starting. Run talkforge serve in a terminal to see why.' } }
         elseif (-not $t.Message) { $t.Message = 'TalkForge did not start in time. Run talkforge serve in a terminal to see why.' }
     }
+    if ($probe -eq 'other') { return [ordered]@{ state = 'unavailable'; message = ('Another program, not TalkForge, answers on port {0}. Set SEMAPHORE_VOICE_URL to the address talkforge serve prints.' -f $port); startedHere = $false; portTaken = $true } }
     if ($t.Message) { return [ordered]@{ state = 'unavailable'; message = $t.Message; startedHere = $false } }
-    if ($probe -eq 'other') { return [ordered]@{ state = 'unavailable'; message = ('Another program, not TalkForge, answers on port {0}. Set SEMAPHORE_VOICE_URL to the address talkforge serve prints.' -f $port); startedHere = $false } }
     return [ordered]@{ state = 'offline'; message = 'TalkForge is not running.'; startedHere = $false }
 }
 
@@ -678,6 +678,9 @@ function New-SemTalkForgeStartInfo {
     $si.Arguments = ('"{0}" serve --port {1} --idle-timeout {2}' -f (Join-Path $Folder 'tools\talkforge.mjs'), $Port, $script:SemTalkForgeIdleMinutes)
     $si.WorkingDirectory = $Folder
     $si.UseShellExecute = $false; $si.CreateNoWindow = $true; $si.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    # Its output is read and dropped (Start-SemTalkForge), never inherited: an inherited handle would keep
+    # Semaphore's own console or pipe open for as long as TalkForge runs. TalkForge never prints the token.
+    $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true
     # Only this token reaches TalkForge: no token file or Lazarette item of its own, and none of Semaphore's.
     foreach ($name in 'TALKFORGE_TOKEN_FILE', 'TALKFORGE_LAZARETTE_ITEM', 'SEMAPHORE_VOICE_TOKEN', 'SEMAPHORE_AI_KEY') { if ($si.EnvironmentVariables.ContainsKey($name)) { $si.EnvironmentVariables.Remove($name) } }
     $si.EnvironmentVariables['TALKFORGE_TOKEN'] = $Token
@@ -695,7 +698,7 @@ function Start-SemTalkForge {
         if ($now.state -eq 'ready' -or $now.state -eq 'starting') { return $now }
         $t.Message = ''
         $no = { param($m) $t.Message = $m; return [ordered]@{ state = 'unavailable'; message = $m; startedHere = $false } }
-        if ($now.state -eq 'unavailable' -and $now.message -like 'Another program*') { return (& $no $now.message) }
+        if ($now.Contains('portTaken')) { return [ordered]@{ state = 'unavailable'; message = $now.message; startedHere = $false } }   # never start on a port another program holds
         $tf = Get-SemTalkForgeSettings -Root $Root
         if (-not $tf.AutoStart) { return (& $no 'TalkForge is not running, and starting it automatically is off (voice.autoStart in config\settings.json). Run talkforge serve.') }
         $vs = Get-SemVoiceSettings -Root $Root
@@ -715,6 +718,7 @@ function Start-SemTalkForge {
             if ($token.Length -lt 16) { return (& $no 'The TalkForge token must be 16 or more characters. Share a longer one.') }
             $si = New-SemTalkForgeStartInfo -Node $node -Folder $tf.Folder -Port $port -Token $token
             $t.Process = [Diagnostics.Process]::Start($si)
+            $t.Process.BeginOutputReadLine(); $t.Process.BeginErrorReadLine()   # drained with no handler: the lines are dropped
             $t.StartedAt = Get-Date; $t.Port = $port
             Write-SemLog 'INFO' ('Starting TalkForge on port {0} (PID {1})' -f $port, $t.Process.Id)
         } catch {

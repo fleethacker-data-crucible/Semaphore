@@ -109,7 +109,8 @@ function Orb() {
       size: 130,
       zIndex: 40,
       picker: false, // no menu on hover; the choices are in Settings
-      x: Math.max(120, window.innerWidth - 140),
+      // Left of the assistant panel (380 px), so the orb can be clicked again to stop listening while it is open.
+      x: Math.max(120, window.innerWidth - 380 - 110),
       y: window.innerHeight - 110,
       onActivate: () => {
         // A click (or Enter). With "press and hold" a quick click does nothing but say how.
@@ -189,13 +190,13 @@ function Orb() {
   useEffect(() => {
     const orbVoice = window.Binnacle?.voice;
     if (!orbVoice) return;
-    if (d.state === 'listening') return orbVoice.set('listening', d.level, 'Listening'); // lib/dictation.ts follows the microphone
-    if (d.state === 'preparing') return orbVoice.set('thinking', 0, 'Getting the microphone ready');
-    if (d.state === 'transcribing') return orbVoice.set('thinking', 0, 'Writing it down');
-    if (holding) return orbVoice.set('listening', 0);
-    if (v.preparing) return orbVoice.set('thinking', 0, 'Getting the voice ready');
-    if (v.speaking) return; // lib/voice.ts sets 'speaking' with the real audio level
-    orbVoice.set(assistantOrbState(a.busy, a.open), 0);
+    // (Binnacle's set() returns the voice object for chaining: never return it from the effect.)
+    if (d.state === 'listening') orbVoice.set('listening', d.level, 'Listening'); // lib/dictation.ts follows the microphone
+    else if (d.state === 'preparing') orbVoice.set('thinking', 0, 'Getting the microphone ready');
+    else if (d.state === 'transcribing') orbVoice.set('thinking', 0, 'Writing it down');
+    else if (holding) orbVoice.set('listening', 0);
+    else if (v.preparing) orbVoice.set('thinking', 0, 'Getting the voice ready');
+    else if (!v.speaking) orbVoice.set(assistantOrbState(a.busy, a.open), 0); // while speaking, lib/voice.ts sets 'speaking' with the real audio level
   }, [a.busy, a.open, holding, v.speaking, v.preparing, d.state]);
   return null;
 }
