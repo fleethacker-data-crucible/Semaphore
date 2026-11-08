@@ -1,7 +1,7 @@
 // The flag palette: drag a flag onto the hoist, or click to drop it in the first free slot.
 // "Smart flag" leaves the chart to Semaphore: say what you want and it picks the shape.
 
-import { AreaChart, BarChart3, CalendarDays, ChartBarDecreasing, ChartColumnStacked, ChartScatter, Filter, Gauge, Grid3x3, LineChart, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
+import { AreaChart, BarChart3, BrainCircuit, CalendarDays, ChartBarDecreasing, ChartColumnStacked, ChartScatter, Filter, Gauge, Grid3x3, LineChart, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FlagKind } from '../../../src/core/hoist.ts';
 import { KIND_MIME } from './Canvas.tsx';
@@ -25,6 +25,7 @@ export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint
   sankey: { label: 'Sankey', icon: Workflow, hint: 'Flows from one field to another' },
   sunburst: { label: 'Sunburst', icon: SunMedium, hint: 'Rings of a breakdown' },
   stream: { label: 'Stream', icon: Waves, hint: 'Shares over time' },
+  model: { label: 'Predict', icon: BrainCircuit, hint: 'Forecasts, simulations, models' },
 };
 
 const ORDER: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
@@ -66,6 +67,10 @@ export function Palette({ onAdd, onHome }: { onAdd: (kind: FlagKind | 'auto') =>
       <h2 className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-ink-3">More charts</h2>
       <ul className="flex flex-col gap-1.5" aria-label="More charts">
         {MORE.map((k) => item(k, KIND_META[k].label, KIND_META[k].hint, KIND_META[k].icon))}
+      </ul>
+      <h2 className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-ink-3">Predict</h2>
+      <ul className="flex flex-col gap-1.5" aria-label="Predict">
+        {item('model', KIND_META.model.label, 'Forecast, Monte Carlo, drivers and more', KIND_META.model.icon)}
       </ul>
     </nav>
   );

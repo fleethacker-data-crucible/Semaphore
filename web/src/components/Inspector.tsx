@@ -2,7 +2,7 @@
 // produced in plain English, why Semaphore is or is not sure, what is worth a look, and the
 // controls an analyst reaches for most. The binding and SQL are a click away, never in the way.
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Flag as FlagIcon, MessagesSquare, Sparkles, Trash2, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Selections } from '../../../src/core/crossfilter.ts';
@@ -46,6 +46,8 @@ export interface InspectorProps {
 }
 
 const KINDS = FLAG_KINDS;
+// Inspector > Model loads with the model list, only when a model flag is selected.
+const ModelPanel = lazy(() => import('./ModelPanel.tsx'));
 
 export function Inspector(p: InspectorProps) {
   const { flag, hoist, index } = p;
@@ -211,6 +213,12 @@ export function Inspector(p: InspectorProps) {
             </p>
           )}
         </section>
+
+        {flag.kind === 'model' && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading the models…</p>}>
+            <ModelPanel flag={flag} index={index} onChange={p.onChange} />
+          </Suspense>
+        )}
 
         <Suspense fallback={null}>
         <StylePanel

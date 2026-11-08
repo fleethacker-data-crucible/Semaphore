@@ -20,7 +20,7 @@ import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../sr
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
-import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } from '../../src/core/qlik.ts';
+import type { QlikImported } from '../../src/core/qlik.ts';
 import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
@@ -590,6 +590,8 @@ export function App() {
   // the chart expressions as measures. One catalog update at the end; returns what happened.
   const importQlik = useCallback(
     async (plan: QlikImportPlan): Promise<string[]> => {
+      // The Qlik readers load with the import, not with the page (web/size-budget.json).
+      const { applyQlikLabels, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } = await import('../../src/core/qlik.ts');
       const out: string[] = [];
       const imported: QlikImported[] = [];
       let cat = catalog;

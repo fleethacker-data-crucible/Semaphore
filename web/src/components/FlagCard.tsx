@@ -21,7 +21,7 @@ import { markStep } from '../lib/onboarding.ts';
 import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.ts';
 import { recordSkill } from '../lib/skills.ts';
 import { type HoistDesign, resolveStyle } from '../../../src/core/design.ts';
-import { FlagView } from './FlagView.tsx';
+import { FlagView, ModelView } from './FlagView.tsx';
 import { dialectName, shownSql, sqlLanguage } from '../lib/sql-language.ts';
 import { useSqlPref } from '../lib/sql-pref.ts';
 
@@ -268,6 +268,9 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
           <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} index={index} today={ctx.today} />
         ) : flag.kind === 'text' ? (
           <p className="scroll-thin h-full overflow-auto whitespace-pre-wrap text-sm text-ink-2">{flag.text || flag.brief || 'Write a note in the inspector.'}</p>
+        ) : flag.kind === 'model' && !flag.binding && flag.model?.inputs?.length ? (
+          // A model on hand-entered inputs (Monte Carlo, sensitivity) needs no rows.
+          <ModelView flag={flag} result={undefined} index={index} themeKey={themeKey} today={ctx.today} {...(design ? { design } : {})} />
         ) : !flag.binding ? (
           <div className="h-full" onClick={() => onSelectFlag(flag.id)}>
             <Empty flag={flag} />
@@ -304,7 +307,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
             )}
             <div className="min-h-0 flex-1">
               <FlagBoundary resetKey={`${shownFlag.kind}:${JSON.stringify(flag.binding)}`}>
-                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} {...(design ? { design } : {})} {...(described ? { describedBy: descId } : {})} />
+                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} today={ctx.today} {...(design ? { design } : {})} {...(described ? { describedBy: descId } : {})} />
               </FlagBoundary>
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}

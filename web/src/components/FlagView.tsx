@@ -1,7 +1,7 @@
 // The face of a flag: a KPI, a chart, a table, a picker or a note, drawn from its result.
 // Clicking a mark on a flag that filters the page selects that value for every other flag.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2, Search } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -27,10 +27,24 @@ export interface FlagViewProps {
   describedBy?: string;
   /** The page's design; the flag's own style goes over it. */
   design?: HoistDesign;
+  /** Today, for model forecasts' dates. */
+  today?: Date;
+}
+
+// Model flags load their view, the model list and the chart builder on first use (lib/predict.ts).
+const ModelFlag = lazy(() => import('./ModelFlag.tsx'));
+
+export function ModelView(props: { flag: Flag; result: FlagResult | undefined; index: CatalogIndex; themeKey: string; today: Date; design?: HoistDesign }) {
+  return (
+    <Suspense fallback={<p className="p-2 text-xs text-ink-3">Loading the model…</p>}>
+      <ModelFlag {...props} />
+    </Suspense>
+  );
 }
 
 export function FlagView(props: FlagViewProps) {
   const { flag } = props;
+  if (flag.kind === 'model') return <ModelView flag={flag} result={props.result} index={props.index} themeKey={props.themeKey} today={props.today ?? new Date()} {...(props.design ? { design: props.design } : {})} />;
   if (flag.kind === 'kpi') return <Kpi {...props} />;
   if (flag.kind === 'filter') return <Picker {...props} />;
   if (flag.kind === 'table' || (flag.binding?.metrics.length ?? 0) === 0) return <Table {...props} />;

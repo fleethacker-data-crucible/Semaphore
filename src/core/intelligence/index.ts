@@ -96,6 +96,7 @@ export function applyFlagDraft(flag: Flag, draft: FlagDraft): Flag {
     status: draft.binding ? 'drafted' : 'empty',
     confidence: draft.confidence,
     notes: draft.notes,
+    ...(draft.kind === 'model' && draft.model ? { model: draft.model } : {}),
   };
 }
 
@@ -116,6 +117,7 @@ export function applyHoistDraft(hoist: Hoist, draft: HoistDraft, newId: () => st
       status: d.binding ? 'drafted' : 'empty',
       confidence: d.confidence,
       notes: d.notes,
+      ...(d.kind === 'model' && d.model ? { model: d.model } : {}),
     });
   }
   const filters = [...hoist.filters];

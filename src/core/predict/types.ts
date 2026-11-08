@@ -140,10 +140,13 @@ export interface ModelContext {
   today: string;
 }
 
-/** A setting read with a fallback and, for numbers, clamped to a range. */
-export function param<T extends ParamValue>(spec: ModelSpec, key: string, fallback: T): T {
+/** A setting read with a fallback of the same type (widened: a choice comes back as string). */
+export function param(spec: ModelSpec, key: string, fallback: string): string;
+export function param(spec: ModelSpec, key: string, fallback: number): number;
+export function param(spec: ModelSpec, key: string, fallback: boolean): boolean;
+export function param(spec: ModelSpec, key: string, fallback: ParamValue): ParamValue {
   const v = spec.params?.[key];
-  return (v === undefined || typeof v !== typeof fallback ? fallback : v) as T;
+  return v === undefined || typeof v !== typeof fallback ? fallback : v;
 }
 
 export function numParam(spec: ModelSpec, key: string, fallback: number, min: number, max: number): number {

@@ -93,6 +93,24 @@ async function run() {
   const workerName = `worker.${createHash('sha256').update(workerJs).digest('hex').slice(0, 10)}.js`;
   await writeFile(path.join(outDir, 'assets', workerName), workerJs);
 
+  // The predict worker (predictive models) is its own bundle too, started the first time a model
+  // flag is drawn (web/src/lib/predict.ts), so a page without models never loads it.
+  const predictOut = await build({
+    entryPoints: [path.join(srcDir, 'predict-worker.ts')],
+    bundle: true,
+    minify: !watch,
+    sourcemap: watch ? 'inline' : false,
+    format: 'iife',
+    target: ['es2020', 'edge120', 'chrome120'],
+    write: false,
+    outfile: 'predict.js',
+    legalComments: 'none',
+    logLevel: 'warning',
+  });
+  const predictJs = predictOut.outputFiles[0].text;
+  const predictName = `predict.${createHash('sha256').update(predictJs).digest('hex').slice(0, 10)}.js`;
+  await writeFile(path.join(outDir, 'assets', predictName), predictJs);
+
   // The reader inside a shared HTML report (web/src/lib/share.ts inlines it into the file).
   const readerOut = await build({
     entryPoints: [path.join(srcDir, 'report.tsx')],
@@ -114,7 +132,7 @@ async function run() {
   // The app is an ES module entry with code splitting: a dynamic import() becomes its own chunk,
   // loaded on first use. Every output is named assets/<name>-<HASH>.js (contract: the server caches
   // hashed assets as immutable). Same origin, so script-src 'self' covers the chunks.
-  const result = await build(appBuildOptions({ outdir: path.join(outDir, 'assets'), dev: watch, define: { __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`), __SEMAPHORE_REPORT__: JSON.stringify(`assets/${readerName}`) } }));
+  const result = await build(appBuildOptions({ outdir: path.join(outDir, 'assets'), dev: watch, define: { __SEMAPHORE_WORKER__: JSON.stringify(`assets/${workerName}`), __SEMAPHORE_PREDICT__: JSON.stringify(`assets/${predictName}`), __SEMAPHORE_REPORT__: JSON.stringify(`assets/${readerName}`) } }));
   const css = await buildCss(files);
   const cssHash = createHash('sha256').update(css).digest('hex').slice(0, 10);
   const cssName = `app-${cssHash}.css`;
@@ -147,8 +165,8 @@ async function run() {
   await writeFile(path.join(outDir, 'index.html'), html);
   // Static files (favicon, emblem art) are copied as they are, at the same relative paths.
   await cp(publicDir, outDir, { recursive: true });
-  const hash = createHash('sha256').update(entry).update(cssName).update(chunks.join(',')).update(workerName).update(readerName).digest('hex').slice(0, 10);
-  const manifest = { hash, builtAt: new Date().toISOString(), watch, entry, css: `assets/${cssName}`, preload, chunks, worker: `assets/${workerName}`, report: `assets/${readerName}` };
+  const hash = createHash('sha256').update(entry).update(cssName).update(chunks.join(',')).update(workerName).update(predictName).update(readerName).digest('hex').slice(0, 10);
+  const manifest = { hash, builtAt: new Date().toISOString(), watch, entry, css: `assets/${cssName}`, preload, chunks, worker: `assets/${workerName}`, predict: `assets/${predictName}`, report: `assets/${readerName}` };
   await writeFile(path.join(outDir, 'build.json'), JSON.stringify(manifest, null, 2));
   const size = (await stat(path.join(outDir, entry))).size;
   console.log(`built dist/ (${entry} ${(size / 1024).toFixed(0)} KB, ${chunks.length} chunk(s), css ${(css.length / 1024).toFixed(0)} KB)`);

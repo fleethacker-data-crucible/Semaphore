@@ -5,6 +5,8 @@
 
 import type { Catalog, CatalogIndex } from '../catalog.ts';
 import { fitRichKind, isRichKind } from '../kinds.ts';
+import { parseModelSpec } from '../predict/spec.ts';
+import type { ModelSpec } from '../predict/types.ts';
 import {
   type Behavior,
   type Binding,
@@ -100,6 +102,8 @@ export interface FlagDraft {
   notes: string[];
   /** The model that actually answered, when Fairlead fell back from the one asked for. */
   answeredBy?: string;
+  /** For a `model` draft: which predictive model, and its settings. */
+  model?: ModelSpec;
 }
 
 export interface HoistDraft {
@@ -182,8 +186,10 @@ export function validateFlagDraft(raw: unknown, index: CatalogIndex, fallbackKin
   if (warnings.length) confidence = Math.min(confidence, 0.4);
   const shaped = fitShape(kind, binding, behavior, index);
   const by = answeredBy(raw);
+  const model = shaped.kind === 'model' ? parseModelSpec(raw.model, warnings, 'Draft') : null;
   return {
     ...shaped,
+    ...(model ? { model } : {}),
     title: typeof raw.title === 'string' ? raw.title.slice(0, 120) : '',
     confidence,
     notes: capWarnings([...notes, ...warnings, ...shaped.notes]),

@@ -195,6 +195,7 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
     return out;
   }
   const result = frozen.result as FlagResult | null;
+  if (flag.kind === 'model') return exportModel(out, flag, result, index, design);
   if (!result) {
     out.error ??= 'This flag has no answer.';
     return out;
@@ -279,4 +280,38 @@ export async function saveFlag(format: 'png' | 'svg' | 'csv', flag: ExportFlag):
   if (format === 'svg') saveBytes(`${stem}.svg`, flag.image.svg ?? '', 'image/svg+xml');
   else saveBytes(`${stem}.png`, flag.image.png, 'image/png');
   return `${stem}.${format}`;
+}
+
+/**
+ * A model flag: the model runs again (from the cache when the page already ran it) and travels as
+ * its chart, its table, and its answer in words.
+ */
+async function exportModel(out: ExportFlag, flag: Flag, result: FlagResult | null, index: CatalogIndex, design: HoistDesign | undefined): Promise<ExportFlag> {
+  if (!flag.model) {
+    out.error ??= 'No model is chosen for this flag.';
+    return out;
+  }
+  const [{ predict, modelData, modelContext }, { modelChartOption }, { fmt }] = await Promise.all([import('./predict.ts'), import('./model-chart.ts'), import('../../../src/core/predict/format.ts')]);
+  const answer = await predict(modelData(flag, result ?? undefined, index), flag.model, modelContext(flag, new Date()));
+  if (!answer.ok) {
+    out.error = answer.error;
+    return out;
+  }
+  const o = answer.output;
+  const metricFormat = flag.binding?.metrics[0] ? index.metric(flag.binding.metrics[0])?.format : undefined;
+  out.text = [o.headline, ...o.stats.map((s) => `${s.label}: ${typeof s.value === 'number' ? fmt(s.value, s.format ?? 'decimal', metricFormat) : (s.value ?? '–')}`), ...o.sentences, ...o.notes].join('\n');
+  out.table = {
+    columns: o.table.columns.map((label, j) => ({ label, numeric: o.table.rows.some((r) => typeof r[j] === 'number') })),
+    rows: o.table.rows.map((r) => r.map((v) => ({ text: typeof v === 'number' ? fmt(v, 'decimal') : (v ?? '–'), value: v }))),
+  };
+  if (o.chart) {
+    await loadExtras();
+    const style = resolveStyle(design, flag.style);
+    const c = paperColors();
+    const option = modelChartOption({ chart: o.chart, c, colors: paletteColors(style, 'light', c.series), ...(metricFormat ? { metricFormat } : {}), ...(design?.font ? { fontFamily: FONT_STACK[design.font] } : {}) });
+    const height = imageHeight(flag);
+    const svg = await chartToSvg({ ...option, animation: false }, IMAGE_WIDTH, height);
+    out.image = { png: await svgToPng(svg, IMAGE_WIDTH, height, c.panel), width: IMAGE_WIDTH * 2, height: height * 2, svg };
+  }
+  return out;
 }

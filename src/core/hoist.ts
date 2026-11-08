@@ -5,9 +5,11 @@ import type { CatalogIndex, FieldType } from './catalog.ts';
 import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
 import { compact, isValidLayout } from './layout.ts';
 import type { RichKind } from './kinds.ts';
+import { parseModelSpec } from './predict/spec.ts';
+import type { ModelSpec } from './predict/types.ts';
 
-export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | RichKind;
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream'];
+export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | RichKind;
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
@@ -98,6 +100,8 @@ export interface Flag {
   learn?: boolean;
   /** How this flag is drawn, over the page's design. Never changes what it means. */
   style?: FlagStyle;
+  /** For `model` flags: which predictive model runs on the rows, and its settings (src/core/predict). */
+  model?: ModelSpec;
 }
 
 export interface Hoist {
@@ -278,7 +282,8 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
     binding = parseBinding(raw.binding, index, warnings, where);
     if (!binding) status = 'error';
     else if (warnings.length > before && status === 'ready') status = 'drafted';
-  } else if (status === 'ready' && kind !== 'text') {
+  } else if (status === 'ready' && kind !== 'text' && !(kind === 'model' && isObject(raw.model) && Array.isArray(raw.model.inputs) && raw.model.inputs.length > 0)) {
+    // A model on hand-entered inputs (Monte Carlo, sensitivity) needs no rows.
     status = 'empty';
   }
   const confidence = typeof raw.confidence === 'number' && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : undefined;
@@ -298,6 +303,10 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (raw.learn === false) flag.learn = false;
   const style = parseFlagStyle(raw.style);
   if (style) flag.style = style;
+  if (kind === 'model') {
+    const model = parseModelSpec(raw.model, warnings, where);
+    if (model) flag.model = model;
+  }
   return flag;
 }
 
