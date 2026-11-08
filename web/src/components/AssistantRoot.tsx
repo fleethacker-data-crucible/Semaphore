@@ -237,7 +237,7 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
             <span>Include this page (its title, brief and flag titles and briefs; never data, sources or secrets). Off by default; it goes to Fairlead.</span>
           </label>
         )}
-        <div className="rounded-xl border border-[var(--fl-control-border)] bg-panel focus-within:border-accent">
+        <div className="focus-frame rounded-xl border border-[var(--fl-control-border)] bg-panel">
           <textarea
             ref={input}
             value={a.draft}

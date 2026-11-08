@@ -363,7 +363,7 @@ function Picker({ flag, result, selections, onSelect }: FlagViewProps) {
   return (
     <div className="flex h-full flex-col gap-1.5">
       {values.length > 10 && (
-        <label className="flex items-center gap-1 rounded-md border border-line px-2">
+        <label className="focus-frame flex items-center gap-1 rounded-md border border-line px-2">
           <Search size={12} className="text-ink-3" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Find ${flag.title.toLowerCase()}`} aria-label="Find a value" className="w-full bg-transparent py-1 text-xs outline-none" />
         </label>

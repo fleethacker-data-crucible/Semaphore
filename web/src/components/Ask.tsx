@@ -41,7 +41,7 @@ export function AskBox({ index, onAsk, inputRef }: { index: CatalogIndex; onAsk:
         e.preventDefault();
         submit();
       }}
-      className="flex min-w-0 max-w-[420px] flex-1 items-center gap-2 rounded-lg border border-line bg-panel px-2.5 focus-within:border-accent"
+      className="flex min-w-0 max-w-[420px] flex-1 items-center gap-2 focus-frame rounded-lg border border-line bg-panel px-2.5"
     >
       <MessageSquareText size={15} className="shrink-0 text-ink-3" />
       <input

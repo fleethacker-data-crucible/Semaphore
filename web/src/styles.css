@@ -1,5 +1,7 @@
 @import 'tailwindcss';
-@import '../vendor/fleet/fleet.css';
+/* Fleet's stylesheet sits in the base layer, so a utility such as outline-none beats its global
+   :focus-visible ring. Unlayered, it beat every utility and drew a square outline inside rounded frames. */
+@import '../vendor/fleet/fleet.css' layer(base);
 @import '../vendor/binnacle/binnacle.css';
 
 /* Skins (docs/SKINS.md). Every colour Semaphore draws comes from the tokens below (--bg, --ink,
@@ -230,10 +232,26 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+/* In the base layer for the same reason: an element that draws its own focus (outline-none inside a
+   .focus-frame) must be able to switch this off. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  :root[data-contrast='high'] :focus-visible { outline-width: 3px; }
 }
+
+/* A rounded box around a borderless field (the assistant's message box, the Ask boxes, a picker's
+   find box): the box shows focus, never the field, so no square ring sits inside the rounded frame. */
+.focus-frame:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
+:root[data-contrast='high'] .focus-frame:has(:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* A full-width row at the top of a dialog: an inset ring, since the dialog clips anything outside it. */
+.focus-row:focus-within { box-shadow: inset 0 -2px 0 var(--accent); }
+:root[data-contrast='high'] .focus-row:has(:focus-visible) { outline: 3px solid var(--focus); outline-offset: -3px; }
 
 /* The brief editor draws highlights in a layer behind a transparent textarea, so the text the
    analyst types is the text they see, with what Semaphore understood marked underneath. */
@@ -423,7 +441,6 @@ body {
 :root[data-density='compact'] body { font-size: 13px; }
 :root[data-density='spacious'] body { font-size: 15px; line-height: 1.5; }
 /* High contrast: visible focus and borders everywhere, hints in full ink. */
-:root[data-contrast='high'] :focus-visible { outline-width: 3px; }
 :root[data-contrast='high'] { --ink-3: var(--ink-2); }
 
 /* A switch (Settings): a checkbox underneath, so it reads as one; drawn as a pill with a knob. */

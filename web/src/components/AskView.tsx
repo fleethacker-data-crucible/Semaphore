@@ -262,7 +262,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               e.preventDefault();
               void ask(q);
             }}
-            className="flex items-center gap-2 rounded-2xl border border-line bg-panel px-4 py-2 shadow-sm focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
+            className="focus-frame flex items-center gap-2 rounded-2xl border border-line bg-panel px-4 py-2 shadow-sm"
           >
             <Sparkles size={18} className="shrink-0 text-brass" />
             <input
