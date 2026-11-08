@@ -32,6 +32,14 @@
 //                                               vault state back to the --vault default. Presence is
 //                                               kept (the calling page's tab is still open).
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
+//   POST /__mock/voice { talkforge, input, sttMissing, sttText }
+//                                               TalkForge as the next answers see it: "missing" (the
+//                                               default: not running and no folder to start it from),
+//                                               "offline" (not running; a start takes about 1.2 s),
+//                                               "ready"; input false acts out voice.input off (the
+//                                               microphone header too); sttMissing: no Whisper files;
+//                                               sttText: what the stand-in Whisper hears. Reset restores
+//                                               the defaults. GET /__mock/state reports "spoken" texts.
 //
 // Amazon S3 and RDS (server/S3.ps1, server/Aws.ps1) answer from a fixed fake bucket: s3://maint-exports/semaphore/
 // holds work_orders.csv, hulls.csv.gz, broken.csv and a partitioned folder parts/ (year=2025, year=2026); any other
@@ -87,7 +95,7 @@ const version = (() => {
 
 // The CSP and the fixed security headers are read from server/Http.ps1 (Get-SemSecurityHeaders), so
 // the mock never drifts from the real server. No fallback: a miss stops the mock with a message.
-const { CSP, FIXED_HEADERS } = (() => {
+const { CSP, STT_CSP, STT_WORKER, FIXED_HEADERS } = (() => {
   const file = path.join(repo, 'server', 'Http.ps1');
   let text;
   try {
@@ -104,14 +112,54 @@ const { CSP, FIXED_HEADERS } = (() => {
   if (!csp || !/^default-src 'self'; script-src 'self';/.test(csp)) fail('could not find $script:SemCsp = "default-src ..."');
   const permissions = /^\$script:SemPermissionsPolicy\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
   if (!permissions) fail("could not find $script:SemPermissionsPolicy = '...'");
+  if (!permissions.includes('microphone=()')) fail("$script:SemPermissionsPolicy has no microphone=() for Get-SemPermissionsPolicy to turn into microphone=(self)");
+  // The voice input worker's own policy (Send-SemStatic sends it for assets/stt.<hash>.js while voice input is on).
+  const sttCsp = /^\$script:SemSttCsp\s*=\s*"([^"\r\n]+)"\s*$/m.exec(text)?.[1];
+  if (!sttCsp || sttCsp !== csp.replace("script-src 'self';", "script-src 'self' 'wasm-unsafe-eval';")) fail('could not find $script:SemSttCsp = the page CSP with only \'wasm-unsafe-eval\' added');
+  const sttWorker = /^\$script:SemSttWorkerPath\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  if (!sttWorker) fail("could not find $script:SemSttWorkerPath = '...'");
   // The literal 'Name: value' lines of Get-SemSecurityHeaders, in the order the server sends them.
   const fnStart = text.indexOf('function Get-SemSecurityHeaders');
   const fnEnd = fnStart < 0 ? -1 : text.indexOf('\nfunction ', fnStart + 1);
   const fn = fnStart < 0 ? '' : text.slice(fnStart, fnEnd < 0 ? undefined : fnEnd);
   const fixed = [...fn.matchAll(/^\s*'([A-Za-z-]+): ([^'\r\n]+)',?\s*$/gm)].map((m) => [m[1], m[2]]);
   if (!fixed.some(([n]) => n === 'X-Content-Type-Options') || !fixed.some(([n]) => n === 'Cross-Origin-Opener-Policy')) fail('could not read the header list of Get-SemSecurityHeaders');
-  return { CSP: csp, FIXED_HEADERS: [...fixed, ['Permissions-Policy', permissions]] };
+  return { CSP: csp, STT_CSP: sttCsp, STT_WORKER: new RegExp(sttWorker.replace(/^\\A/, '^').replace(/\\z$/, '$')), FIXED_HEADERS: [...fixed, ['Permissions-Policy', permissions]] };
 })();
+
+// TalkForge as the mock acts it out (Intelligence.ps1 Get-SemTalkForgeState / Start-SemTalkForge, and
+// the /stt/ files of Http.ps1). See POST /__mock/voice above.
+const VOICE_DEFAULT = { talkforge: 'missing', input: true, sttMissing: false, sttText: 'How do I export to Excel?' };
+let voiceMock = { ...VOICE_DEFAULT, readyAt: 0 };
+const spoken = [];
+function talkforgeNow() {
+  if (voiceMock.talkforge === 'starting' && Date.now() >= voiceMock.readyAt) voiceMock.talkforge = 'ready';
+  return voiceMock.talkforge;
+}
+/** Get-SemPermissionsPolicy: the microphone for this page only while voice input is on. */
+const permissionsPolicy = () => (voiceMock.input ? FIXED_HEADERS.find(([n]) => n === 'Permissions-Policy')[1].replace('microphone=()', 'microphone=(self)') : FIXED_HEADERS.find(([n]) => n === 'Permissions-Policy')[1]);
+/** A short WAV tone, standing in for TalkForge's speech. */
+function mockWav(seconds) {
+  const rate = 16000;
+  const n = Math.round(rate * seconds);
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 6000), i * 2);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write('WAVE', 8);
+  h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
 
 const MAX_BODY = 8388608; // 8 MB, Http.ps1 $script:SemMaxBody
 const DOC_MAX = 2097152; // 2 MB, Routes.ps1 $script:SemDocMaxBytes
@@ -166,12 +214,12 @@ function log(level, text) {
 // ---------------------------------------------------------------------------------------------
 // Responses (Get-SemSecurityHeaders, Send-SemBytes)
 // ---------------------------------------------------------------------------------------------
-function securityHeaders(cache) {
-  return { 'Content-Security-Policy': CSP, ...Object.fromEntries(FIXED_HEADERS), 'Cache-Control': cache };
+function securityHeaders(cache, csp = CSP) {
+  return { 'Content-Security-Policy': csp, ...Object.fromEntries(FIXED_HEADERS), 'Permissions-Policy': permissionsPolicy(), 'Cache-Control': cache };
 }
-function send(res, status, type, body, { cache = 'no-store', headers = {}, head = false } = {}) {
+function send(res, status, type, body, { cache = 'no-store', headers = {}, head = false, csp = CSP } = {}) {
   const bytes = body === undefined || body === null ? Buffer.alloc(0) : Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
-  const h = { ...(type ? { 'Content-Type': type } : {}), 'Content-Length': String(bytes.length), Connection: 'close', ...securityHeaders(cache), ...headers };
+  const h = { ...(type ? { 'Content-Type': type } : {}), 'Content-Length': String(bytes.length), Connection: 'close', ...securityHeaders(cache, csp), ...headers };
   res.writeHead(status, h);
   res.end(head ? undefined : bytes);
 }
@@ -297,7 +345,23 @@ function serveStatic(req, res, urlPath) {
   const isHtml = r.file.toLowerCase().endsWith('.html');
   const rel = path.relative(webRoot, r.file).split(path.sep).join('/');
   const cache = isHtml ? 'no-store' : rel.startsWith('assets/') && HASHED_ASSET.test(rel) ? 'public, max-age=31536000, immutable' : 'no-cache';
-  send(res, 200, MIME[path.extname(r.file).toLowerCase()] ?? 'application/octet-stream', readFileSync(r.file), { cache, head });
+  const csp = voiceMock.input && STT_WORKER.test('/' + rel) ? STT_CSP : CSP;
+  send(res, 200, MIME[path.extname(r.file).toLowerCase()] ?? 'application/octet-stream', readFileSync(r.file), { cache, head, csp });
+}
+
+// /stt/ (Send-SemSttFile): the real server reads fixed files from TalkForge's assets folder. The mock
+// serves one stand-in, transformers.min.js: a module with the same env and pipeline() shape whose
+// recognizer "hears" voiceMock.sttText for any audio. Anything else under /stt/ is not found.
+function serveStt(req, res, urlPath) {
+  const head = req.method === 'HEAD';
+  if (!voiceMock.input) return sendError(res, 404, 'not-found', 'Not found.');
+  if (urlPath !== '/stt/transformers.min.js') return sendError(res, 404, 'not-found', 'Not found.');
+  if (voiceMock.sttMissing) return sendError(res, 404, 'stt-missing', "Voice input needs TalkForge's speech-to-text files. In the TalkForge folder run: populate-assets.ps1 -Only 'stt/*'");
+  const heard = JSON.stringify(' ' + voiceMock.sttText + ' ');
+  const js = `export const env = { allowRemoteModels: true, allowLocalModels: false, localModelPath: '', useBrowserCache: true, backends: { onnx: { wasm: { wasmPaths: '', numThreads: 4 } } } };
+export async function pipeline() { return async (audio) => ({ text: audio && audio.length ? ${heard} : '' }); }
+`;
+  send(res, 200, 'text/javascript; charset=utf-8', js, { cache: 'no-cache', head });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -690,8 +754,45 @@ function apiRoute(req, res, p, query, json, body) {
     return sendJson(res, 200, vaultStatus());
   }
   // Spoken answers (Intelligence.ps1): the mock has no TalkForge, so speech answers as the real server does when it is not running.
-  if (p === '/api/voice') return m === 'GET' ? sendJson(res, 200, { url: 'http://127.0.0.1:25009', problem: '', tokenSource: 'lazarette', tokenShare: 'TALKFORGE_TOKEN' }) : sendError(res, 405, 'method', 'Method not allowed.');
-  if (p === '/api/voice/speak') return m === 'POST' ? sendError(res, 503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009. Start it with talkforge serve, then try again.') : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/voice') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const folder = voiceMock.talkforge === 'missing' ? '' : 'C:\\Users\\analyst\\Projects\\TalkForge';
+    return sendJson(res, 200, { url: 'http://127.0.0.1:25009', problem: '', tokenSource: 'lazarette', tokenShare: 'TALKFORGE_TOKEN', autoStart: true, folder, folderSetting: '', folderSource: '', folderProblem: '', input: voiceMock.input });
+  }
+  if (p === '/api/voice/status' || p === '/api/voice/start') {
+    // Get-SemTalkForgeState / Start-SemTalkForge: a start takes about 1.2 s; with no TalkForge folder it cannot start.
+    if (m !== (p.endsWith('start') ? 'POST' : 'GET')) return sendError(res, 405, 'method', 'Method not allowed.');
+    const now = talkforgeNow();
+    if (now === 'ready') return sendJson(res, 200, { state: 'ready', message: 'TalkForge is running.', startedHere: false });
+    if (now === 'starting') return sendJson(res, 200, { state: 'starting', message: 'Getting the voice ready...', startedHere: true });
+    if (p.endsWith('status')) return sendJson(res, 200, { state: 'offline', message: 'TalkForge is not running.', startedHere: false });
+    if (now === 'missing') return sendJson(res, 200, { state: 'unavailable', message: 'TalkForge was not found next to the Semaphore folder or in your Projects folder. Set voice.folder in config\\settings.json (or SEMAPHORE_VOICE_FOLDER), or run talkforge serve yourself.', startedHere: false });
+    voiceMock.talkforge = 'starting';
+    voiceMock.readyAt = Date.now() + 1200;
+    return sendJson(res, 200, { state: 'starting', message: 'Getting the voice ready...', startedHere: true });
+  }
+  if (p === '/api/voice/voices') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (voiceMock.talkforge === 'missing') return sendJson(res, 200, { found: false, default: '', voices: [], message: 'TalkForge was not found, so its voices cannot be listed. Set voice.folder in config\\settings.json (or SEMAPHORE_VOICE_FOLDER).' });
+    return sendJson(res, 200, { found: true, default: 'en_US-libritts-high', message: '', voices: [
+      { id: 'en_US-libritts-high', quality: 'high', speakers: 904, dataset: 'libritts', language: 'English, United States', default: true },
+      { id: 'en_US-libritts_r-medium', quality: 'medium', speakers: 904, dataset: 'libritts_r', language: 'English, United States', default: false },
+    ] });
+  }
+  if (p === '/api/voice/dictation/status') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!voiceMock.input) return sendError(res, 403, 'voice-input-off', 'Voice input is turned off for this Semaphore (voice.input in config\\settings.json).');
+    if (voiceMock.sttMissing) return sendJson(res, 200, { ready: false, missing: ['transformers.min.js'], message: "Voice input needs TalkForge's speech-to-text files (1 missing). In the TalkForge folder run: populate-assets.ps1 -Only 'stt/*'" });
+    return sendJson(res, 200, { ready: true, missing: [], message: 'Voice input is ready.' });
+  }
+  if (p === '/api/voice/speak') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const text = typeof json?.text === 'string' ? json.text.trim() : '';
+    if (!text || text.length > 4000) return sendError(res, 400, 'input', 'Send 1-4000 characters of text.');
+    if (talkforgeNow() !== 'ready') return sendError(res, 503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009. Start it with talkforge serve, then try again.');
+    spoken.push(text);
+    return send(res, 200, 'audio/wav', mockWav(Math.min(0.6, 0.12 + text.length / 400)));
+  }
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
@@ -719,7 +820,7 @@ function handle(req, res, body) {
     }
     if (p === '/__mock/state' && req.method === 'GET') {
       const now = Date.now();
-      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState } });
+      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
       for (const k of KINDS) {
@@ -728,12 +829,30 @@ function handle(req, res, body) {
       }
       vaultPaired = false;
       vaultState = vaultDefault;
+      voiceMock = { ...VOICE_DEFAULT, readyAt: 0 };
+      spoken.length = 0;
       clientLog.length = 0;
       clientLogTimes.length = 0;
       saves = 0;
       s3Jobs.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/__mock/voice' && req.method === 'POST') {
+      let j = {};
+      try {
+        j = JSON.parse(body.toString('utf8') || '{}');
+      } catch {
+        return sendError(res, 400, 'bad-json', 'Not JSON.');
+      }
+      if (j.talkforge !== undefined) {
+        if (!['missing', 'offline', 'ready'].includes(j.talkforge)) return sendError(res, 400, 'invalid', 'talkforge must be missing, offline or ready.');
+        voiceMock.talkforge = j.talkforge;
+      }
+      if (j.input !== undefined) voiceMock.input = j.input !== false;
+      if (j.sttMissing !== undefined) voiceMock.sttMissing = !!j.sttMissing;
+      if (typeof j.sttText === 'string') voiceMock.sttText = j.sttText;
+      return sendJson(res, 200, { ok: true, voice: { ...voiceMock } });
     }
     if (p === '/__mock/vault' && req.method === 'POST') {
       let state = '';
@@ -794,6 +913,7 @@ function handle(req, res, body) {
     return apiRoute(req, res, p, query, json, body);
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'method', 'Method not allowed.');
+  if (p.startsWith('/stt/')) return serveStt(req, res, p);
   serveStatic(req, res, p);
 }
 

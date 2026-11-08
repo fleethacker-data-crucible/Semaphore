@@ -13,7 +13,7 @@ import { FEATURE_LIST, type FeatureKey, featureState, setPersonalFeature, usePer
 import { useModal } from '../lib/modal.ts';
 import type { SocialSettings } from '../lib/playbook.ts';
 import { ThemeCards } from './ThemeCards.tsx';
-import { VoiceCard } from './VoiceCard.tsx';
+import { VoiceCard, VoiceInputCard } from './VoiceCard.tsx';
 import { SqlLanguageCard } from './SqlLanguageCard.tsx';
 
 export interface VaultStatus {
@@ -294,6 +294,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
               {p.ai?.configured && p.aiOn && <Switch label="Send reviewed examples" hint="Sends reviewed briefs with a request so drafts match your team." checked={p.examplesOn} onChange={p.onExamples} />}
             </Card>
             <VoiceCard />
+            <VoiceInputCard />
             </div>
           )}
 

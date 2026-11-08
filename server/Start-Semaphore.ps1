@@ -334,6 +334,8 @@ $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
 $script:Sem.Social = Get-SemSocialSettings -Settings $settings
 $script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
+# Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
+$script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {
@@ -363,5 +365,6 @@ try {
     Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
 } finally {
     if ($Refresh) { Stop-SemHeadless }
+    [void](Stop-SemTalkForgeChild)   # only a TalkForge this Semaphore started
 }
 exit 0

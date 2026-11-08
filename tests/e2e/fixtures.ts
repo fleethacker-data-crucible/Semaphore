@@ -51,6 +51,17 @@ export interface MockState {
   clientLog: { level: string; message: string }[];
   saves: number;
   vault: { paired: boolean; state: 'unlocked' | 'locked' | 'down' };
+  voice: { talkforge: string; input: boolean };
+  /** Texts sent to /api/voice/speak that the stand-in TalkForge spoke. */
+  spoken: string[];
+}
+
+/** POST /__mock/voice: TalkForge as the next answers see it (mock-server.mjs). */
+export interface VoiceMock {
+  talkforge?: 'missing' | 'offline' | 'ready';
+  input?: boolean;
+  sttMissing?: boolean;
+  sttText?: string;
 }
 
 export const test = base.extend<{ problems: Problems; semaphore: SemaphoreApp; freshMock: void }>({
@@ -124,6 +135,11 @@ export class SemaphoreApp {
     const r = await this.request.post('/__mock/launch');
     expect(r.ok()).toBeTruthy();
     return ((await r.json()) as { link: string }).link;
+  }
+
+  async voice(v: VoiceMock): Promise<void> {
+    const r = await this.request.post('/__mock/voice', { data: v });
+    expect(r.ok(), 'the mock took the voice state').toBeTruthy();
   }
 
   async state(): Promise<MockState> {

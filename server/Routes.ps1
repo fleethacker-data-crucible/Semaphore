@@ -596,11 +596,30 @@ function Invoke-SemRoute {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Send-SemJson 200 (Get-SemVoiceStatus); return
     }
-    if ($p -eq '/api/voice/speak') {
-        # Intelligence.ps1, on the worker pool: TalkForge can take seconds per sentence.
+    if ($p -eq '/api/voice/speak' -or $p -eq '/api/voice/start') {
+        # Intelligence.ps1, on the worker pool: TalkForge can take seconds per sentence, and starting it
+        # reads the token from Lazarette.
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Start-SemWorkerRequest -Req $Req
         return
+    }
+    if ($p -eq '/api/voice/status') {
+        # On the worker pool too: the loopback probe can take a second on a closed port, and the page asks
+        # often while TalkForge starts.
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Start-SemWorkerRequest -Req $Req
+        return
+    }
+    if ($p -eq '/api/voice/voices') {
+        # The voices in the TalkForge folder, read from disk; TalkForge need not run.
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Send-SemJson 200 (Get-SemTalkForgeVoices); return
+    }
+    if ($p -eq '/api/voice/dictation/status') {
+        # Http.ps1: whether TalkForge's Whisper files are there for voice input (speech-to-text runs in the page).
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        if ($script:Sem.VoiceInput -ne $true) { Send-SemError 403 'voice-input-off' 'Voice input is turned off for this Semaphore (voice.input in config\settings.json).'; return }
+        Send-SemJson 200 (Get-SemSttStatus); return
     }
     if ($p -eq '/api/ai') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }

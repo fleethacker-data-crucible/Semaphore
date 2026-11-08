@@ -816,6 +816,8 @@ $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
 $script:Sem.Port = $Ctx.Port
 $script:SemJsonMode = $Ctx.JsonMode
+$script:Sem.VoiceInput = $Ctx.VoiceInput
+if ($null -ne $Ctx.TalkForge) { $script:SemTalkForge = $Ctx.TalkForge }   # the one TalkForge child, shared with the main loop
 $script:Sem.Responded = $false
 try {
     $Client.SendTimeout = 30000
@@ -826,6 +828,8 @@ try {
     elseif ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
     elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
     elseif ($Req.Path -eq '/api/voice/speak') { $Client.SendTimeout = 90000; Invoke-SemVoiceSpeak -Req $Req -Root $Ctx.Root }
+    elseif ($Req.Path -eq '/api/voice/start') { Send-SemJson 200 (Start-SemTalkForge -Root $Ctx.Root) }
+    elseif ($Req.Path -eq '/api/voice/status') { Send-SemJson 200 (Get-SemTalkForgeState -Root $Ctx.Root) }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
 } catch {
     Write-SemLog 'ERROR' ('{0}: {1}' -f $Req.Path, $_.Exception.Message)
@@ -850,7 +854,7 @@ function Initialize-SemWorkers {
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
         IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
-        Port = 0; AwsSettings = $script:Sem.AwsSettings
+        Port = 0; AwsSettings = $script:Sem.AwsSettings; VoiceInput = $script:Sem.VoiceInput; TalkForge = $script:SemTalkForge
     }
 }
 
