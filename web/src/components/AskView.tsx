@@ -3,22 +3,31 @@
 // access; anything Semaphore had to draft is labelled, and anything it cannot answer goes to the
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Inbox, LayoutDashboard, Lightbulb, Settings2, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, Bell, BellRing, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Gauge, Inbox, LayoutDashboard, Lightbulb, Mail, Settings2, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
+import { type Alert, alertableMetrics, alertId, alertReading, alertTarget, newAlert, parseAlertRequest, primeAlert, redRule, ruleText, unseen } from '../../../src/core/alerts.ts';
+import { answerQuality, durationText } from '../../../src/core/answer-quality.ts';
+import { canAskForReview, dataAccessNote, draftOf, requestReview, reviewAsked, TRUST_LABELS } from '../../../src/core/review.ts';
+import type { Flag } from '../../../src/core/hoist.ts';
+import { loadAlerts, saveAlert, subscribeAlerts } from '../lib/alerts.ts';
+import { glance as glanceTiles, whatChanged } from '../lib/briefing-package.ts';
 import { ReportsShelf } from './Reports.tsx';
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { describeFlag, formatNumber } from '../../../src/core/describe.ts';
-import { type Hoist, toneFor } from '../../../src/core/hoist.ts';
-import { findInsights, type Insight } from '../../../src/core/insights.ts';
+import type { Hoist } from '../../../src/core/hoist.ts';
+import { findInsights } from '../../../src/core/insights.ts';
 import { hasBz } from '../../../src/core/impact.ts';
-import { addAsker, type Answer, answerQuestion, entryFlag, followUps, newQuestion, normalizeQuestion, type QuestionItem, withAskers } from '../../../src/core/playbook.ts';
+import { addAsker, type Answer, answerQuestion, followUps, newQuestion, normalizeQuestion, type PlaybookEntry, type QuestionItem, withAskers } from '../../../src/core/playbook.ts';
 import { answerFromSnapshots } from '../../../src/core/snapshot.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
 import { readLocal, writeLocal } from '../lib/storage.ts';
 import { EmptyState } from './EmptyState.tsx';
 import { FlagView } from './FlagView.tsx';
+
+const AlertsPanel = lazy(() => import('./AlertsPanel.tsx').then((m) => ({ default: m.AlertsPanel })));
+const BriefingMail = lazy(() => import('./BriefingMail.tsx').then((m) => ({ default: m.BriefingMail })));
 
 export interface AskViewProps {
   index: CatalogIndex;
@@ -33,6 +42,13 @@ export interface AskViewProps {
   onBuilder: () => void;
   /** The last full refresh (Launch-Semaphore.bat --refresh), when there has been one. */
   lastRefresh?: { at: string; computer: string; refreshed: number; failed: unknown[] } | null;
+  /** True with Semaphore's server: alerts and mail drafts go through it. */
+  server?: boolean;
+  /**
+   * Drafts a question no reviewed answer and no local rule could, with the drafting provider set up
+   * here (Fairlead when it is on). Null when nothing fits. The result is always shown as drafted.
+   */
+  drafter?: (question: string) => Promise<{ flag: Flag; by: string } | null>;
 }
 
 interface Shown {
@@ -44,6 +60,10 @@ interface Shown {
   from?: { kind: 'snapshot'; asOf: string } | { kind: 'live' };
   queued?: boolean;
   problem?: string;
+  /** Who drafted it, for a drafted answer. */
+  draftBy?: string;
+  /** "Ask for review" was pressed (or this person already asked). */
+  reviewAsked?: boolean;
 }
 
 function ago(iso: string): string {
@@ -66,7 +86,7 @@ function asOfText(iso: string): string {
   return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
-export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, onSettings, onBuilder, lastRefresh }: AskViewProps) {
+export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, onSettings, onBuilder, lastRefresh, server = false, drafter }: AskViewProps) {
   const [q, setQ] = useState('');
   const [answers, setAnswers] = useState<Shown[]>([]);
   const counter = useRef(0);
@@ -94,40 +114,45 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
     [live],
   );
 
-  // What changed: insights across every reviewed flag that has a snapshot, worst first.
-  const briefing = useMemo(() => {
-    const out: Array<{ insight: Insight; question: string; title: string }> = [];
-    for (const e of live) {
-      const snap = playbook.snapshots.find((s) => s.entryId === e.id);
-      if (!snap) continue;
-      const flag = entryFlag(e);
-      const a = answerFromSnapshots(flag, e.pageFilters, [snap]);
-      if (!a) continue;
-      for (const insight of findInsights({ flag, rows: a.display.rows, ...(a.previous ? { previous: a.previous } : {}), totals: a.display.totals, today: ctx.today }, index)) {
-        if (/still running/.test(insight.text)) continue;
-        out.push({ insight, question: e.question, title: e.title });
-      }
-    }
-    const rank = { bad: 0, warn: 1, good: 2, info: 3 } as const;
-    return out.sort((a, b) => rank[a.insight.tone] - rank[b.insight.tone]).slice(0, 6);
-  }, [live, playbook.snapshots, index, ctx.today]);
+  // What changed and the headline numbers: reviewed flags only, from their snapshots (lib/briefing-package.ts).
+  const briefing = useMemo(() => whatChanged(live, playbook.snapshots, index, ctx.today), [live, playbook.snapshots, index, ctx.today]);
+  const glance = useMemo(() => glanceTiles(live, playbook.snapshots, index), [live, playbook.snapshots, index]);
 
-  // At a glance: the reviewed headline numbers, from their snapshots.
-  const glance = useMemo(() => {
-    const out: Array<{ title: string; question: string; value: number | null; before: number | null; format?: 'number' | 'currency' | 'percent'; tone: string }> = [];
-    for (const e of live) {
-      if (e.kind !== 'kpi') continue;
-      const snap = playbook.snapshots.find((s) => s.entryId === e.id);
-      const key = e.binding.metrics[0];
-      if (!snap || !key) continue;
-      const a = answerFromSnapshots(entryFlag(e), e.pageFilters, [snap]);
-      const v = a?.display.rows[0]?.values[key] ?? null;
-      const before = a?.previous?.[0]?.[key] ?? null;
-      const tone = typeof v === 'number' ? (toneFor({ onClick: 'none', ignore: [], thresholds: e.thresholds }, key, v) ?? '') : '';
-      out.push({ title: e.title, question: e.question, value: v, before, format: index.metric(key)?.format, tone });
+  // Alerts (lib/alerts.ts): this person's, kept fresh by every check on the page.
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  useEffect(() => subscribeAlerts(setAlerts), []);
+  useEffect(() => {
+    void loadAlerts(server).catch(() => undefined);
+  }, [server]);
+  const [panel, setPanel] = useState<'alerts' | 'mail' | null>(null);
+  const [alertNote, setAlertNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const fresh = unseen(alerts, user).length;
+  const hasAlert = (entryId: string, metric: string) => alerts.some((a) => a.id === alertId(user, entryId, metric));
+  const createAlert = async (entry: PlaybookEntry, metric: string, notifyClear = false) => {
+    const id = alertId(user, entry.id, metric);
+    if (alerts.some((a) => a.id === id)) {
+      setAlertNote({ ok: true, text: `You already have an alert on ${index.metric(metric)?.label ?? metric}. See Alerts.` });
+      return;
     }
-    return out.slice(0, 8);
-  }, [live, playbook.snapshots, index]);
+    const made = newAlert(entry, metric, user, index, { notifyClear });
+    if (!made) return;
+    const a = primeAlert(made, alertReading(made, playbook.entries, playbook.snapshots));
+    try {
+      await saveAlert(server, a);
+      setAlertNote({
+        ok: true,
+        text: `Alert set: you will be told when ${a.metricLabel} goes red (${ruleText(a.rule, a.format)}). It is checked whenever its data refreshes.${a.state === 'red' ? ' It is red now, so you are told the next time it goes red after coming back within its rule.' : ''}`,
+      });
+    } catch {
+      setAlertNote({ ok: false, text: 'Could not save the alert. Try again.' });
+    }
+  };
+
+  // Answer quality: from the ask files and the question queue (src/core/answer-quality.ts).
+  const quality = useMemo(() => answerQuality({ asks: playbook.asks, questions: playbook.questions, counted: playbook.social.impact }), [playbook.asks, playbook.questions, playbook.social.impact]);
+
+  // Drafts an analyst looked at and did not accept, for the person who asked.
+  const rejectedForMe = playbook.questions.filter((x) => x.status === 'dismissed' && x.rejected && !seen.includes(x.id) && (x.askedBy === user || withAskers(x).askers.includes(user))).slice(0, 3);
 
   const oldest = playbook.snapshots.length ? playbook.snapshots.reduce((a, s) => (s.asOf < a ? s.asOf : a), playbook.snapshots[0]!.asOf) : null;
 
@@ -135,9 +160,26 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
     const text = question.trim();
     if (!text) return;
     setQ('');
+    // "Tell me when labor cost goes red": an alert, not a question.
+    const wants = parseAlertRequest(text);
+    if (wants) {
+      const target = alertTarget(wants.subject, playbook.entries, index);
+      if (target) await createAlert(target.entry, target.metric, wants.notifyClear);
+      else setAlertNote({ ok: false, text: `No reviewed flag about "${wants.subject}" has a red rule yet, so there is nothing to watch. Ask an analyst to add one.` });
+      return;
+    }
     const key = ++counter.current;
-    const answer = answerQuestion(text, playbook.entries, index);
-    const shown: Shown = { key, answer, state: 'working' };
+    let answer = answerQuestion(text, playbook.entries, index);
+    let draftBy = 'local rules';
+    // Nothing reviewed and nothing local rules can read: the drafting provider set up here may still draft it, live.
+    if (answer.trust === 'none' && drafter) {
+      const d = await drafter(text).catch(() => null);
+      if (d?.flag.binding) {
+        draftBy = d.by;
+        answer = { question: answer.question, trust: 'drafted', flag: d.flag, filters: [], reasons: [`Drafted by ${d.by} from the catalog. No analyst has reviewed this.`, ...d.flag.notes] };
+      }
+    }
+    const shown: Shown = { key, answer, state: 'working', draftBy, reviewAsked: reviewAsked(playbook.questions, text, user) };
     setAnswers((list) => [shown, ...list].slice(0, 20));
     const update = (patch: Partial<Shown>) => setAnswers((list) => list.map((x) => (x.key === key ? { ...x, ...patch } : x)));
 
@@ -174,9 +216,23 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
         patch = { state: 'unanswered', problem: 'None of the saved snapshots covers this yet, and this computer does not read the database itself.' };
       }
     }
-    if (answer.trust === 'drafted' || patch.state === 'unanswered') patch.queued = await queue(text, patch.state === 'unanswered' ? 'none' : 'drafted', answer.reasons);
+    // A drafted answer goes to the analysts only when the asker presses "Ask for review"; one with no answer goes now.
+    if (patch.state === 'unanswered') patch.queued = await queue(text, 'none', answer.reasons);
     update(patch);
     if (answer.entry && patch.state === 'ready') playbook.recordAsk(answer.entry.id);
+    else if (answer.trust === 'drafted' && patch.state === 'ready') playbook.recordDrafted();
+  };
+
+  const askForReview = async (a: Shown): Promise<boolean> => {
+    const draft = draftOf(a.answer, a.from?.kind === 'live' ? 'live' : 'snapshot', a.draftBy);
+    if (!draft) return false;
+    try {
+      await playbook.saveQuestion(requestReview(playbook.questions, a.answer, user, draft));
+      setAnswers((list) => list.map((x) => (x.key === a.key ? { ...x, reviewAsked: true, queued: true } : x)));
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const queue = async (text: string, shown: 'drafted' | 'none', notes: string[]): Promise<boolean> => {
@@ -214,6 +270,20 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               <Clock size={13} /> Data as of {asOfText(oldest)} ({ago(oldest)})
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => setPanel('alerts')}
+            aria-label={`Alerts${fresh ? `, ${fresh} new` : ''}`}
+            title="Alerts on reviewed numbers"
+            className="relative grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2"
+          >
+            {fresh ? <BellRing size={16} className="text-bad" /> : <Bell size={16} />}
+            {fresh > 0 && (
+              <span data-testid="alert-badge" className="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-bad px-1 text-[10px] font-semibold leading-4 text-panel">
+                {fresh}
+              </span>
+            )}
+          </button>
           <span className="flex items-center gap-1" title="Reviewed answers in the playbook">
             <BadgeCheck size={13} /> {live.length} reviewed answer{live.length === 1 ? '' : 's'}
           </span>
@@ -256,6 +326,26 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               ))}
             </section>
           )}
+          {rejectedForMe.map((x) => (
+            <p key={x.id} role="status" className="flex items-start gap-2 rounded-xl border border-line bg-panel-2 px-3 py-2 text-sm">
+              <Inbox size={16} className="mt-0.5 shrink-0 text-ink-3" />
+              <span className="flex-1">
+                <b>Not accepted:</b> "{x.title}". {x.rejected!.by} looked at the draft: {x.rejected!.reason}
+              </span>
+              <button type="button" onClick={() => markSeen(x.id)} aria-label={`Dismiss: ${x.title}`} className="grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-panel">
+                <X size={14} />
+              </button>
+            </p>
+          ))}
+          {alertNote && (
+            <p role="status" className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-sm ${alertNote.ok ? 'border-accent/40 bg-accent-soft' : 'border-line bg-panel-2'}`}>
+              <Bell size={16} className="mt-0.5 shrink-0 text-accent" />
+              <span className="flex-1">{alertNote.text}</span>
+              <button type="button" onClick={() => setAlertNote(null)} aria-label="Dismiss" className="grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-panel">
+                <X size={14} />
+              </button>
+            </p>
+          )}
           <ReportsShelf editions={playbook.editions} index={index} themeKey={themeKey} />
           <form
             onSubmit={(e) => {
@@ -290,20 +380,29 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
 
           {glance.length > 0 && answers.length === 0 && (
             <section aria-label="At a glance" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {glance.map((g) => (
-                <button key={g.title} type="button" onClick={() => void ask(g.question)} className="rounded-2xl border border-line bg-panel p-4 text-left shadow-sm hover:border-accent">
-                  <span className="block text-xs text-ink-3">{g.title}</span>
-                  <span className={`mt-1 block text-2xl font-semibold tabular-nums ${g.tone === 'bad' ? 'text-bad' : g.tone === 'warn' ? 'text-warn' : g.tone === 'good' ? 'text-good' : 'text-ink'}`}>{formatNumber(g.value, g.format)}</span>
-                  {g.tone && <ToneWord tone={g.tone} />}
-                  {typeof g.value === 'number' && typeof g.before === 'number' && g.before !== 0 && (
-                    <span className="text-xs text-ink-2">
-                      {g.value >= g.before ? '▲' : '▼'} {Math.abs(Math.round(((g.value - g.before) / Math.abs(g.before)) * 100))}% on before
-                    </span>
-                  )}
-                </button>
-              ))}
+              {glance.map((g) => {
+                const metric = g.entry.binding.metrics[0]!;
+                const can = !!redRule(g.entry.thresholds, metric);
+                return (
+                  <div key={g.title} data-testid="glance-tile" className="flex flex-col rounded-2xl border border-line bg-panel shadow-sm hover:border-accent">
+                    <button type="button" onClick={() => void ask(g.question)} className="flex-1 p-4 pb-2 text-left">
+                      <span className="block text-xs text-ink-3">{g.title}</span>
+                      <span className={`mt-1 block text-2xl font-semibold tabular-nums ${g.tone === 'bad' ? 'text-bad' : g.tone === 'warn' ? 'text-warn' : g.tone === 'good' ? 'text-good' : 'text-ink'}`}>{formatNumber(g.value, g.format)}</span>
+                      {g.tone && <ToneWord tone={g.tone} />}
+                      {typeof g.value === 'number' && typeof g.before === 'number' && g.before !== 0 && (
+                        <span className="text-xs text-ink-2">
+                          {g.value >= g.before ? '▲' : '▼'} {Math.abs(Math.round(((g.value - g.before) / Math.abs(g.before)) * 100))}% on before
+                        </span>
+                      )}
+                    </button>
+                    {can && <AlertMe on={hasAlert(g.entry.id, metric)} label={g.title} onSet={() => void createAlert(g.entry, metric)} onOpen={() => setPanel('alerts')} />}
+                  </div>
+                );
+              })}
             </section>
           )}
+
+          {answers.length === 0 && playbook.loaded && (live.length > 0 || playbook.questions.length > 0) && <QualityCard q={quality} counted={playbook.social.impact} />}
 
           {answers.map((a) => (
             <AnswerCard
@@ -315,10 +414,24 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                 void queue(a.answer.question, 'drafted', ['Flagged for review from the Leadership view: a reviewed answer someone wants looked at again.']).then((queued) => setAnswers((list) => list.map((x) => (x.key === a.key ? { ...x, queued } : x))))
               }
               themeKey={themeKey}
+              onReview={() => askForReview(a)}
+              alert={(() => {
+                const e = a.answer.entry;
+                if (!e || a.state !== 'ready' || (a.answer.trust !== 'reviewed' && a.answer.trust !== 'adjusted')) return null;
+                const metric = (a.answer.flag.binding?.metrics ?? []).find((k) => !!redRule(e.thresholds, k)) ?? alertableMetrics(e)[0];
+                return metric ? { on: hasAlert(e.id, metric), set: () => void createAlert(e, metric), open: () => setPanel('alerts') } : null;
+              })()}
               bz={playbook.social.bz && a.answer.entry ? { given: hasBz(playbook.bz, user, a.answer.entry.id), give: () => playbook.giveBz(a.answer.entry!.id) } : null}
             />
           ))}
 
+          {live.length > 0 && playbook.snapshots.length > 0 && (
+            <div className="flex justify-end">
+              <button type="button" onClick={() => setPanel('mail')} className="flex min-h-8 items-center gap-1.5 rounded-md border border-line px-3 text-sm text-ink-2 hover:border-accent hover:text-ink">
+                <Mail size={14} /> Email this briefing
+              </button>
+            </div>
+          )}
           {briefing.length > 0 && (
             <section aria-label="What changed" className="rounded-2xl border border-line bg-panel p-5">
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -353,22 +466,93 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               <EmptyState
                 icon={Wand2}
                 headline="No reviewed answers yet."
-                body="When analysts accept flags in the builder, their answers appear here. You can still ask: Semaphore drafts from the catalog, labels it as not reviewed, and sends the question to the analysts."
+                body="When analysts accept flags in the builder, their answers appear here. You can still ask: Semaphore drafts an answer, labels it as not reviewed, and you can ask the analysts to review it."
               />
             </section>
           )}
         </div>
       </main>
+      {panel && (
+        <Suspense fallback={null}>
+          {panel === 'alerts' ? (
+            <AlertsPanel alerts={alerts} user={user} server={server} onClose={() => setPanel(null)} />
+          ) : (
+            <BriefingMail entries={playbook.entries} snapshots={playbook.snapshots} index={index} user={user} alerts={alerts} theme={theme} server={server} onClose={() => setPanel(null)} />
+          )}
+        </Suspense>
+      )}
     </div>
   );
 }
 
-const TRUST: Record<Answer['trust'], { label: string; tone: string; icon: typeof BadgeCheck }> = {
-  reviewed: { label: 'Reviewed', tone: 'bg-good-soft text-good', icon: BadgeCheck },
-  adjusted: { label: 'Worked out from a reviewed flag', tone: 'bg-good-soft text-good', icon: BadgeCheck },
-  drafted: { label: 'Drafted by Semaphore, not reviewed', tone: 'bg-warn-soft text-warn', icon: CircleHelp },
-  none: { label: "Can't answer yet", tone: 'bg-panel-2 text-ink-2', icon: Inbox },
+// Labels and screen-reader text come from src/core/review.ts, so drafted and reviewed never read alike.
+const TRUST: Record<Answer['trust'], { label: string; sr: string; tone: string; icon: typeof BadgeCheck }> = {
+  reviewed: { ...TRUST_LABELS.reviewed, tone: 'bg-good-soft text-good', icon: BadgeCheck },
+  adjusted: { ...TRUST_LABELS.adjusted, tone: 'bg-good-soft text-good', icon: BadgeCheck },
+  drafted: { ...TRUST_LABELS.drafted, tone: 'border border-dashed border-warn bg-warn-soft text-warn', icon: CircleHelp },
+  none: { ...TRUST_LABELS.none, tone: 'bg-panel-2 text-ink-2', icon: Inbox },
 };
+
+/** "Alert me" on a reviewed number with a red rule; once set, opens the Alerts panel. */
+function AlertMe({ on, label, onSet, onOpen }: { on: boolean; label: string; onSet: () => void; onOpen: () => void }) {
+  return on ? (
+    <button type="button" onClick={onOpen} aria-label={`Alert set on ${label}: open Alerts`} className="flex min-h-8 items-center gap-1 self-start px-4 pb-3 text-xs text-accent hover:underline">
+      <BellRing size={12} /> Alert set
+    </button>
+  ) : (
+    <button type="button" onClick={onSet} aria-label={`Alert me when ${label} goes red`} className="flex min-h-8 items-center gap-1 self-start px-4 pb-3 text-xs text-ink-2 hover:text-ink hover:underline">
+      <Bell size={12} /> Alert me
+    </button>
+  );
+}
+
+/** Answer quality: reviewed share, time to a reviewed answer, and the queue. */
+function QualityCard({ q, counted }: { q: ReturnType<typeof answerQuality>; counted: boolean }) {
+  const pct = q.reviewedShare === null ? null : Math.round(q.reviewedShare * 100);
+  return (
+    <section aria-label="Answer quality" className="rounded-2xl border border-line bg-panel p-4">
+      <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+        <Gauge size={15} className="text-brass" /> Answer quality
+        <span className="font-normal text-ink-3">last {q.weeks} weeks</span>
+      </h2>
+      <dl className="grid gap-3 text-sm sm:grid-cols-3">
+        <div>
+          <dt className="text-xs text-ink-3">Answers that were reviewed</dt>
+          <dd data-testid="quality-share" className="text-lg font-semibold tabular-nums">
+            {!counted ? <span className="text-sm font-normal text-ink-2">Not counted (impact is off)</span> : pct === null ? <span className="text-sm font-normal text-ink-2">None shown yet</span> : `${pct}%`}
+          </dd>
+          {counted && q.reviewed !== null && q.drafted !== null && q.reviewed + q.drafted > 0 && (
+            <dd className="text-xs text-ink-2">
+              {q.reviewed} reviewed, {q.drafted} drafted
+            </dd>
+          )}
+        </div>
+        <div>
+          <dt className="text-xs text-ink-3">Question to reviewed answer</dt>
+          <dd data-testid="quality-time" className="text-lg font-semibold tabular-nums">
+            {q.answered ? `median ${durationText(q.medianHours)}` : <span className="text-sm font-normal text-ink-2">None answered yet</span>}
+          </dd>
+          {q.answered > 0 && (
+            <dd className="text-xs text-ink-2">
+              90th percentile {durationText(q.p90Hours)} · {q.answered} answered
+            </dd>
+          )}
+        </div>
+        <div>
+          <dt className="text-xs text-ink-3">Waiting for an analyst</dt>
+          <dd data-testid="quality-queue" className="text-lg font-semibold tabular-nums">
+            {q.open}
+          </dd>
+          {q.open > 0 && (
+            <dd className="text-xs text-ink-2">
+              {q.draftsWaiting ? `${q.draftsWaiting} with a draft to review · ` : ''}oldest {durationText((q.oldestOpenDays ?? 0) * 24)}
+            </dd>
+          )}
+        </div>
+      </dl>
+    </section>
+  );
+}
 
 /** "Answered: <question>, reviewed by A. Reyes, 4 Nov [Show]": the loop closed for the asker. */
 function AnsweredNotice({ q, by, onShow, onDismiss }: { q: QuestionItem; by?: string | undefined; onShow: () => void; onDismiss: () => void }) {
@@ -412,8 +596,9 @@ function BzButton({ given, give }: { given: boolean; give: () => Promise<boolean
   );
 }
 
-function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onFlag: () => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
+function AnswerCard({ shown, index, onAsk, onFlag, onReview, alert, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onFlag: () => void; onReview: () => Promise<boolean>; alert: { on: boolean; set: () => void; open: () => void } | null; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
   const [why, setWhy] = useState(false);
+  const [reviewFailed, setReviewFailed] = useState(false);
   const { answer, result } = shown;
   const t = TRUST[shown.state === 'unanswered' && answer.trust !== 'none' ? 'none' : answer.trust];
   const Icon = t.icon;
@@ -421,13 +606,20 @@ function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Show
   const insights = result && answer.flag.binding ? findInsights({ flag: answer.flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals }, index) : [];
   const chips = shown.state === 'ready' ? followUps(answer, index) : [];
   const tall = answer.flag.kind !== 'kpi';
+  const drafted = answer.trust === 'drafted' && shown.state !== 'unanswered';
   return (
-    <article className="rounded-2xl border border-line bg-panel p-5 shadow-sm" aria-label={`Answer: ${answer.question}`}>
+    <article
+      data-trust={drafted ? 'drafted' : shown.state === 'unanswered' ? 'none' : answer.trust}
+      className={`rounded-2xl p-5 shadow-sm ${drafted ? 'border-2 border-dashed border-warn bg-panel' : 'border border-line bg-panel'}`}
+      aria-label={`Answer: ${answer.question}`}
+      aria-describedby={`trust-${shown.key}`}
+    >
       <p className="text-xs text-ink-3">You asked</p>
       <h2 className="text-lg font-semibold">{answer.question}</h2>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-        <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${t.tone}`}>
-          <Icon size={13} /> {t.label}
+        <span id={`trust-${shown.key}`} data-testid="trust-badge" className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${t.tone}`}>
+          <Icon size={13} aria-hidden="true" /> {t.label}
+          <span className="sr-only"> {t.sr}</span>
           {answer.entry && shown.state === 'ready' ? ` · ${answer.entry.acceptedBy}, ${answer.entry.acceptedAt.slice(0, 10)}` : ''}
         </span>
         {shown.from?.kind === 'snapshot' && (
@@ -436,7 +628,7 @@ function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Show
           </span>
         )}
         {shown.from?.kind === 'live' && <span className="text-ink-3">Live data</span>}
-        {shown.queued && <span className="text-ink-3">· Sent to the analysts {answer.trust === 'drafted' && shown.state === 'ready' ? 'to review' : 'to answer'}</span>}
+        {shown.queued && shown.state === 'unanswered' && <span className="text-ink-3">· Sent to the analysts to answer</span>}
         <button type="button" onClick={() => setWhy((w) => !w)} className="text-accent underline-offset-2 hover:underline" aria-expanded={why}>
           Why this answer?
         </button>
@@ -455,6 +647,14 @@ function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Show
       )}
       {shown.state === 'ready' && result && answer.flag.binding && (
         <>
+          {drafted && (
+            <div className="mt-3 rounded-lg bg-warn-soft px-3 py-2 text-xs text-ink">
+              <p>
+                <b>Not yet reviewed.</b> Semaphore drafted this{shown.draftBy && shown.draftBy !== 'local rules' ? ` with ${shown.draftBy}` : ''} from the catalog; no analyst has checked it, so treat the numbers with care.
+              </p>
+              <p className="mt-1 text-ink-2">{dataAccessNote(shown.from?.kind === 'live' ? 'live' : 'snapshot')}</p>
+            </div>
+          )}
           <p className="mt-3 text-sm text-ink-2">{describeFlag(answer.flag, hoist, index).join(' ')}</p>
           <div className={`mt-3 rounded-xl border border-line p-3 ${tall ? 'h-72' : 'h-28'}`}>
             <FlagView flag={answer.flag} result={result} index={index} selections={{}} onSelect={() => undefined} themeKey={themeKey} />
@@ -467,6 +667,25 @@ function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Show
                 </li>
               ))}
             </ul>
+          )}
+          {canAskForReview(answer.trust, shown.state) && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {shown.reviewAsked ? (
+                <span role="status" className="flex items-center gap-1 text-sm text-ink-2">
+                  <Check size={14} className="text-good" /> Sent for review. An analyst will accept, edit or reject it, and you will see the answer here.
+                </span>
+              ) : (
+                <button type="button" onClick={() => void onReview().then((ok) => setReviewFailed(!ok))} className="flex min-h-9 items-center gap-1.5 rounded-lg bg-accent px-3 text-sm font-semibold text-panel hover:opacity-90">
+                  <Send size={14} /> Ask for review
+                </button>
+              )}
+              {reviewFailed && <span className="text-xs text-bad">Could not send it. Try again.</span>}
+            </div>
+          )}
+          {alert && (
+            <div className="mt-2">
+              <AlertMe on={alert.on} label={answer.question} onSet={alert.set} onOpen={alert.open} />
+            </div>
           )}
           {(answer.trust === 'reviewed' || answer.trust === 'adjusted') && !shown.queued && (
             <button type="button" onClick={onFlag} className="mt-3 text-sm text-ink-2 underline-offset-2 hover:text-ink hover:underline">

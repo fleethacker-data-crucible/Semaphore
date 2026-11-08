@@ -4,7 +4,10 @@
 // reviewed answer yet.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Anchor, BadgeCheck, BookOpen, CircleAlert, Hammer, Inbox, LayoutDashboard, PartyPopper, RotateCcw, Sparkles, ThumbsUp, X } from 'lucide-react';
+import { Anchor, BadgeCheck, BookOpen, Check, CircleAlert, CircleHelp, Gauge, Hammer, Inbox, LayoutDashboard, PartyPopper, Pencil, RotateCcw, Sparkles, ThumbsUp, X } from 'lucide-react';
+import { answerQuality, durationText } from '../../../src/core/answer-quality.ts';
+import { describeFlag } from '../../../src/core/describe.ts';
+import { acceptDraft, draftFlag, rejectDraft } from '../../../src/core/review.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import { impactFor, isoWeek, spark, teamWeek, weekCue } from '../../../src/core/impact.ts';
 import { byDemand, coverage, flagForReview, type PlaybookEntry, type QuestionItem, restoreEntry, retireEntry, withAskers } from '../../../src/core/playbook.ts';
@@ -111,17 +114,33 @@ export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnsw
 
           {tab === 'questions' && (
             <>
+              <QualityLine playbook={playbook} />
               {open.length === 0 ? (
                 <EmptyState compact tone="success" icon={Inbox} headline="All caught up." body="No leadership questions are waiting." />
               ) : (
                 <ul className="space-y-2">
                   {open.map((q) => (
-                    <QuestionRow key={q.id} q={q} showAskers={social.showAskers} onAnswer={() => onAnswer(q)} onDismiss={() => void playbook.saveQuestion({ ...q, status: 'dismissed', updated: new Date().toISOString() })} />
+                    <QuestionRow
+                      key={q.id}
+                      q={q}
+                      index={index}
+                      showAskers={social.showAskers}
+                      onAnswer={() => onAnswer(q)}
+                      onDismiss={() => void playbook.saveQuestion({ ...q, status: 'dismissed', updated: new Date().toISOString() })}
+                      onAccept={async () => {
+                        const done = acceptDraft(q, user, index);
+                        if (!done) return false;
+                        await playbook.saveEntries([done.entry]);
+                        await playbook.saveQuestion(done.question);
+                        return true;
+                      }}
+                      onReject={(reason) => void playbook.saveQuestion(rejectDraft(q, user, reason))}
+                    />
                   ))}
                 </ul>
               )}
               <p className="pt-3 text-[11px] text-ink-3">
-                "Build the answer" adds a flag with the question as its brief. Accept it and the question is answered: the next time anyone asks it, they get your reviewed answer, and the people who asked are told.
+                "Build the answer" adds a flag with the question as its brief. Accept it and the question is answered: the next time anyone asks it, they get your reviewed answer, and the people who asked are told. A question with a draft can be accepted as it is, edited in the builder, or rejected with a reason the asker sees.
               </p>
             </>
           )}
@@ -191,27 +210,103 @@ export function PlaybookPanel({ playbook, index, user, reviewer, onClose, onAnsw
 
 // ---------------------------------------------------------------------------------------------
 
-function QuestionRow({ q, showAskers, onAnswer, onDismiss }: { q: QuestionItem; showAskers: boolean; onAnswer: () => void; onDismiss: () => void }) {
+/** The queue's numbers, from the questions and the ask files (src/core/answer-quality.ts). */
+function QualityLine({ playbook }: { playbook: PlaybookState }) {
+  const q = useMemo(() => answerQuality({ asks: playbook.asks, questions: playbook.questions, counted: playbook.social.impact }), [playbook.asks, playbook.questions, playbook.social.impact]);
+  const pct = q.reviewedShare === null ? null : Math.round(q.reviewedShare * 100);
+  return (
+    <section aria-label="Answer quality" className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-panel-2 px-3 py-2 text-xs text-ink-2">
+      <span className="flex items-center gap-1 font-semibold text-ink">
+        <Gauge size={13} className="text-brass" /> Last {q.weeks} weeks
+      </span>
+      <span>Reviewed answers: {!playbook.social.impact ? 'not counted (impact is off)' : pct === null ? 'none shown yet' : <b className="text-ink">{pct}%</b>}</span>
+      <span>
+        To a reviewed answer: {q.answered ? <><b className="text-ink">median {durationText(q.medianHours)}</b>, 90th percentile {durationText(q.p90Hours)}</> : 'none answered yet'}
+      </span>
+      <span>
+        Queue: <b className="text-ink">{q.open}</b>
+        {q.open ? `, oldest ${durationText((q.oldestOpenDays ?? 0) * 24)}` : ''}
+        {q.draftsWaiting ? `, ${q.draftsWaiting} draft${q.draftsWaiting === 1 ? '' : 's'} to review` : ''}
+      </span>
+    </section>
+  );
+}
+
+function QuestionRow({ q, index, showAskers, onAnswer, onDismiss, onAccept, onReject }: { q: QuestionItem; index: CatalogIndex; showAskers: boolean; onAnswer: () => void; onDismiss: () => void; onAccept: () => Promise<boolean>; onReject: (reason: string) => void }) {
   const { askers } = withAskers(q);
   const last = askers[askers.length - 1] ?? q.askedBy;
   const who = askers.length > 1 ? `Asked by ${askers.length} people${showAskers ? ` · most recently ${last}` : ''}` : showAskers ? `Asked by ${q.askedBy}` : 'Asked by one person';
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const [problem, setProblem] = useState('');
+  const draft = q.draft && q.reviewRequested ? q.draft : null;
+  const words = useMemo(() => {
+    if (!draft) return '';
+    const f = draftFlag(q, 'review', { x: 0, y: 0, w: 4, h: 4 });
+    return describeFlag(f, { version: 1, id: 'review', title: '', brief: '', grid: { cols: 12 }, filters: draft.filters, flags: [], updated: '' }, index).join(' ');
+  }, [draft, q, index]);
   return (
-    <li className="rounded-lg border border-line p-3">
+    <li className="rounded-lg border border-line p-3" data-testid="question-row">
       <div className="flex items-start gap-2">
         <p className="flex-1 text-sm font-medium">{q.title}</p>
         {askers.length > 1 && <span className="shrink-0 rounded-full bg-brass-soft px-2 py-0.5 text-[11px] font-semibold text-brass">{askers.length} asking</span>}
       </div>
       <p className="mt-0.5 text-[11px] text-ink-3">
-        {who} · first asked {shortDate(q.askedAt)} · {q.shown === 'drafted' ? 'they saw a draft, not reviewed' : 'they got no answer yet'}
+        {who} · first asked {shortDate(q.askedAt)} · {draft ? 'they asked for the draft they saw to be reviewed' : q.shown === 'drafted' ? 'they saw a draft, not reviewed' : 'they got no answer yet'}
       </p>
-      <div className="mt-2 flex gap-2">
-        <button type="button" onClick={onAnswer} className="flex min-h-8 items-center gap-1 rounded-md bg-accent px-3 text-xs font-semibold text-panel hover:opacity-90">
-          <Sparkles size={12} /> Build the answer
-        </button>
-        <button type="button" onClick={onDismiss} className="min-h-8 rounded-md border border-line px-3 text-xs hover:border-bad hover:text-bad">
-          Dismiss
-        </button>
-      </div>
+      {draft && (
+        <div className="mt-2 rounded-md border border-dashed border-warn bg-warn-soft px-2.5 py-2 text-xs text-ink">
+          <p className="flex items-center gap-1 font-semibold text-warn">
+            <CircleHelp size={12} aria-hidden="true" /> Drafted — not yet reviewed
+            <span className="font-normal text-ink-3">by {draft.by}, {draft.from === 'live' ? 'run live with their own sign-in' : 'from a saved snapshot'}</span>
+          </p>
+          <p className="mt-1">{words}</p>
+        </div>
+      )}
+      {rejecting ? (
+        <form
+          className="mt-2 flex gap-2"
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            onReject(reason);
+            setRejecting(false);
+          }}
+        >
+          <input autoFocus value={reason} onChange={(ev) => setReason(ev.target.value.slice(0, 300))} placeholder="Why not? The asker sees this." aria-label="Reason for rejecting" className="min-h-8 min-w-0 flex-1 rounded-md border border-line bg-panel px-2 text-xs focus:border-accent focus:outline-none" />
+          <button type="submit" className="min-h-8 rounded-md bg-bad px-3 text-xs font-semibold text-panel">
+            Reject
+          </button>
+          <button type="button" onClick={() => setRejecting(false)} className="min-h-8 rounded-md px-2 text-xs text-ink-3 hover:bg-panel-2">
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {draft ? (
+            <>
+              <button type="button" onClick={() => void onAccept().then((ok) => setProblem(ok ? '' : 'This draft no longer fits the catalog: edit it in the builder instead.'))} className="flex min-h-8 items-center gap-1 rounded-md bg-accent px-3 text-xs font-semibold text-panel hover:opacity-90">
+                <Check size={12} /> Accept draft
+              </button>
+              <button type="button" onClick={onAnswer} className="flex min-h-8 items-center gap-1 rounded-md border border-line px-3 text-xs hover:border-accent">
+                <Pencil size={12} /> Edit in builder
+              </button>
+              <button type="button" onClick={() => setRejecting(true)} className="min-h-8 rounded-md border border-line px-3 text-xs hover:border-bad hover:text-bad">
+                Reject
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={onAnswer} className="flex min-h-8 items-center gap-1 rounded-md bg-accent px-3 text-xs font-semibold text-panel hover:opacity-90">
+                <Sparkles size={12} /> Build the answer
+              </button>
+              <button type="button" onClick={onDismiss} className="min-h-8 rounded-md border border-line px-3 text-xs hover:border-bad hover:text-bad">
+                Dismiss
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {problem && <p className="mt-1 text-xs text-bad">{problem}</p>}
     </li>
   );
 }

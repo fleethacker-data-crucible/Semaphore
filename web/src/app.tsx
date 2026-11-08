@@ -23,7 +23,7 @@ import type { QlikImported } from '../../src/core/qlik.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
-import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
+import { isStale, type Snapshot, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
 import { api, describeError, listItems, loadItem, type ProfileTable, profileTable, type ServerSource, type StoredItem } from './lib/api.ts';
@@ -905,6 +905,19 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.entries, ctx]);
 
+  // Alerts (lib/alerts.ts, loaded on first use): checked when the page opens and whenever a snapshot is
+  // refreshed here; a firing is a toast, and is read aloud when the alert asks for it.
+  useEffect(() => {
+    if (!playbook.loaded || currentView === 'refresh' || !playbook.snapshots.length) return;
+    const timer = window.setTimeout(() => {
+      void import('./lib/alerts.ts')
+        .then((m) => m.checkAndTell({ server: !!server, user, entries: playbook.entries, snapshots: playbook.snapshots, source: 'page' }, (t) => notify(t, { tone: 'error' })))
+        .catch(() => undefined);
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, playbook.snapshots, currentView]);
+
   // Recurring reports: note the days this analyst opens the page (once a day), offer a schedule
   // when there is a rhythm, and produce any edition that is due while its owner is away.
   const [offerTick, setOfferTick] = useState(0);
@@ -958,6 +971,7 @@ export function App() {
       let refreshed = 0;
       let skipped = 0;
       const failed: Array<{ id: string; title: string; error: string }> = [];
+      const taken: Snapshot[] = [];
       for (const e of playbook.entries.filter((x) => x.status !== 'retired')) {
         if (!canReach(e.source, ctx)) {
           skipped++;
@@ -968,6 +982,7 @@ export function App() {
           const snap = await takeSnapshot(e, index, (plan) => runAnywhere(plan, ctx));
           if (!snap) throw new Error('It no longer plans against the catalog.');
           await playbook.saveSnapshot(snap);
+          taken.push(snap);
           refreshed++;
           say(`Refreshed ${e.title}.`);
         } catch (err) {
@@ -976,6 +991,17 @@ export function App() {
         }
       }
       say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
+      // Alerts on the refreshed flags, applied by the server (lib/alerts.ts), and this run's briefing for the weekly draft.
+      if (taken.length) {
+        const snaps = [...playbook.snapshots.filter((s) => !taken.some((t) => t.id === s.id)), ...taken];
+        const alerts = await import('./lib/alerts.ts');
+        await alerts.checkAndTell({ server: !!server, user, entries: playbook.entries, snapshots: snaps, source: 'refresh' }, (t) => say(`Alert: ${t}`)).catch(() => 0);
+        if (server) {
+          const { buildBriefingPackage } = await import('./lib/briefing-package.ts');
+          const p = await buildBriefingPackage({ entries: playbook.entries, snapshots: snaps, index, user, alerts: [], theme }).catch(() => null);
+          if (p) await api('/api/mail/briefing', { method: 'PUT', json: { subject: p.subject, html: p.html, text: p.text, attachment: p.report } }).catch(() => undefined);
+        }
+      }
       // Regular reports due while their analyst is away.
       for (const line of await produceDueEditions(playbook, ctx, index, user, null, draftingProvider(index, ai, useAi)).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
@@ -991,10 +1017,32 @@ export function App() {
     api<{ at: string; computer: string; refreshed: number; failed: unknown[] }>('/api/refresh-report').then(setLastRefresh, () => setLastRefresh(null));
   }, [server, currentView]);
 
+  // A leader's question no reviewed answer or local rule could read: Fairlead drafts it when it is on (shown as drafted).
+  const draftLive = useCallback(
+    async (question: string) => {
+      const provider = draftingProvider(index, ai, useAi);
+      if (provider.local) return null;
+      const size = DEFAULT_SIZE.bar;
+      const blank: Flag = { id: 'answer', kind: 'bar', title: '', brief: question, layout: { x: 0, y: 0, w: size.w, h: size.h }, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
+      const out = await draftFlag(provider, { ...blankHoist(), flags: [blank] }, blank, index, { auto: true });
+      if (out.fallbackReason || !out.draft.binding) return null;
+      return { flag: { ...applyFlagDraft(blank, out.draft), title: out.draft.title || question, status: 'drafted' as const }, by: provider.label };
+    },
+    [index, ai, useAi],
+  );
+
   const answerQuestionItem = useCallback(
     (q: QuestionItem) => {
       setPlaybookOpen(false);
       const id = newId();
+      // A question with a draft the asker wants reviewed: the draft itself, to check, change and accept (src/core/review.ts, loaded on use).
+      if (q.draft && q.reviewRequested) {
+        void import('../../src/core/review.ts').then((m) => {
+          change((h) => ({ ...h, flags: [...h.flags, m.draftFlag(q, id, findSlot(h.flags, 4, 4, h.grid.cols))] }));
+          setSelectedId(id);
+        });
+        return;
+      }
       change((h) => {
         const layout = findSlot(h.flags, 4, 4, h.grid.cols);
         return { ...h, flags: [...h.flags, { id, kind: 'bar', title: '', brief: q.title, layout, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [`Asked by ${q.askedBy}. Draft it, check it, and accept it to answer them.`] }] };
@@ -1170,7 +1218,7 @@ export function App() {
       <>
         <PanelBoundary name="leadership view">
           <Suspense fallback={<PanelSkeleton label="leadership view" />}>
-            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onSettings={() => setSettingsOpen(true)} onBuilder={() => setView('builder')} />
+            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} server={!!server} drafter={draftLive} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onSettings={() => setSettingsOpen(true)} onBuilder={() => setView('builder')} />
           </Suspense>
         </PanelBoundary>
         <ShakedownAskMark />

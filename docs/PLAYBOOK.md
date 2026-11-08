@@ -41,8 +41,10 @@ Every answer carries a trust label, so nobody mistakes a guess for reviewed work
 | Label | When | What Semaphore does |
 | --- | --- | --- |
 | **Reviewed: built by Dana, accepted 12 Oct** | The question matches a playbook entry | Reruns that exact binding on today's data |
-| **Drafted by Semaphore, not reviewed** | The question uses known measures and fields in a new combination | Drafts it with local rules, clearly labelled |
+| **Drafted — not yet reviewed** | The question uses known measures and fields in a new combination (or, with Fairlead on, anything it can draft) | Drafts it live, shows it in a dashed amber card that says so in words and to screen readers, and offers **Ask for review** |
 | **Can't answer yet** | Nothing in the catalog fits | Explains what it did and did not understand, and puts the question in the analyst's queue |
+
+See [Drafted answers, alerts and the briefing email](#drafted-answers-alerts-and-the-briefing-email) for what happens after a draft.
 
 Each answer offers follow-up chips ("by region", "vs last year", "top 10"), the plain-English readback that is already on the back of every flag, and its "worth a look" insights.
 
@@ -98,6 +100,27 @@ The playbook is the list of answers leadership trusts, so someone has to notice 
 - **Any analyst can retire an entry,** with a one-line reason; it stays in the history.
 - **Semaphore flags problems itself:** an entry is marked **needs review** when it stops running, when a measure or field it uses changes in the catalog, or when nobody has used it for six months. Needs-review entries are still answered, labelled as such.
 - **One named reviewer** (`playbookReviewer` in settings, by default the lead analyst) sees the needs-review list first, so it cannot fall between the cracks.
+
+## Drafted answers, alerts and the briefing email
+
+**Drafted answers and review.** When nothing reviewed answers a question, Semaphore drafts one live: local rules from the catalog, or Fairlead when it is on and local rules cannot read the question. Its numbers come from a saved snapshot when one covers it, otherwise from a live query on this computer. The card is labelled **Drafted — not yet reviewed** (dashed amber border, the same words for screen readers) and is never styled like a reviewed answer. It says whose data it shows:
+
+- *Live*: the query runs with the person's own database sign-in from Lazarette. **Semaphore has no row-level security of its own**; the database's own row security decides which rows they see.
+- *From a snapshot*: it shows what the analysts' refresh could read.
+
+A drafted answer goes to the analysts only when the asker presses **Ask for review** (a question with no answer at all still goes to the queue at once). The question is saved with the draft attached (`draft`, `reviewRequested` on the question file). In the playbook's Questions tab the analyst sees the draft labelled the same way, described in words, and can:
+
+- **Accept draft**: it becomes a reviewed playbook entry in the asker's words (filed under "Leadership questions", accepted by that analyst) and the question is answered; the next time anyone asks it, the answer is reviewed;
+- **Edit in builder**: the draft is dropped on the page as a drafted flag with the question as its brief; accepting it answers the question as any accepted flag does;
+- **Reject**: with a reason the asker sees.
+
+A draft is never a playbook entry until it is accepted, so it never feeds "What changed", the headline numbers, alerts or the briefing as if it were reviewed (src/core/review.ts).
+
+**Alerts.** "Alert me" sits on every reviewed number with a red colour rule (the glance tiles and reviewed answer cards), and typing *Tell me when labor cost goes red* (optionally *...and when it is back to normal*) sets one for the reviewed flag that answers "labor cost". An alert is the flag, its red rule and who asked, kept as `alerts\<id>.json` in the Semaphore folder (without a server, in this browser). It is checked whenever its data refreshes: a snapshot refresh on any open page, page open, and the headless refresh run (`Launch-Semaphore.bat --refresh`). The page works out the value from the snapshot (a KPI's total; for a chart, the row closest to breaking the rule) and the server applies the rule (`POST /api/alerts/check`, server/Alerts.ps1), so two pages never fire one change twice. It fires once per change into red, optionally once when it goes back to normal, and each firing is kept with its time, value and the data's as-of time (the last 50). Firings show as a toast, a red badge on the bell in the Leadership view and in the Alerts panel; an alert can also be read aloud (TalkForge, or a voice installed on this PC) and added to the next briefing. When a pipeline's Publish step rebuilds the tables behind a flag, the server cannot work out the new value (snapshots hold partial sums that the page re-adds), so it marks the alert with a note and the check happens at the next refresh or page open.
+
+**Briefing email, never sent.** **Email this briefing** in the Leadership view builds the briefing from reviewed answers only (what changed, headline numbers, the alerts asked for) as plain HTML, with the shared report of the reviewed flags attached. **Draft in Outlook** asks the server to create an unsent draft through Outlook on this computer (`Outlook.Application` over COM from Windows PowerShell 5.1), saved to Drafts and opened; Semaphore never calls Send, so the person checks it and sends it from Outlook. When Outlook is not installed, or COM is blocked by policy, it says so, and **Save as email (.eml)** saves the same message (marked `X-Unsent: 1`, with no sender) for the default mail app to open as a draft. Recipients come from a saved list (`mail\user-<name>.json`). A weekly draft can be switched on (weekday and time, off by default): while Semaphore runs, the server turns the latest saved briefing (`mail\latest-briefing.json`, saved by each draft and each refresh run) into an Outlook draft at that time, or an .eml in `mail\outbox` without Outlook. No SMTP, Graph or webhooks are used (server/Mail.ps1, src/core/briefing-mail.ts).
+
+**Answer quality.** The Leadership view (before anything is asked) and the playbook's Questions tab show, over the last 8 weeks: the share of answers shown that were reviewed rather than drafted, the median and 90th-percentile time from a question to its reviewed answer, and the open queue (how many, how many with a draft to review, the oldest). The share is read from the weekly ask files (drafted answers are counted there under `~drafted`), so it shows "not counted" when the Impact switch is off for the deployment or the person; the timing and the queue come from the question files and name nobody (src/core/answer-quality.ts).
 
 ## Closing the loop, and keeping it humane
 
