@@ -5,7 +5,8 @@
 // server binds the parameters with the driver's own API.
 
 import { type CatalogIndex, type Dialect, type FieldType, isIdentifier, isSqlDialect } from './catalog.ts';
-import { cleanSql, cleanType, dedupes, stepsFor } from './cleaning.ts';
+import { cleanType, dedupes, stepsFor } from './cleaning.ts';
+import { dedupesStored, fieldSql, makerOf, reshapedTable, unpivotSql, usesTiles } from './reshape.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { MANY_ALIAS, manyJoinSql, manyParts, renderManyBlock, type SqlKit } from './manyjoin.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
@@ -38,6 +39,8 @@ export interface RenderOptions {
   dialect?: Dialect;
 }
 
+export const TILES_ELSEWHERE = 'Equal-count groups (quartiles and the like) rank every row of their own table, so they are only read on charts of that table, without a one-to-many split.';
+
 export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date(), options: RenderOptions = {}): RenderedSql {
   const source = index.source(plan.source);
   if (!source) throw new SqlError(`Unknown source "${plan.source}".`);
@@ -57,7 +60,16 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   const aliased = joins.length > 0 || dedupe || !!plan.many;
   // A one-to-many split reads the many side through a derived table of distinct pairs (manyjoin.ts).
   const many = plan.many ? manyParts(plan, index) : null;
-  const kit: SqlKit = { quote, quoteTable, truncate, filterSql, SqlError };
+  const kit: SqlKit = {
+    quote,
+    quoteTable: (name, d) => {
+      if (reshapedTable(index, plan.source, name)) throw new SqlError('A table made by a cleaning step (reshape) cannot be on the many side of a one-to-many split yet.');
+      return quoteTable(name, d);
+    },
+    truncate,
+    filterSql,
+    SqlError,
+  };
   // Oracle takes no AS before a table alias; the others accept it.
   const as = (alias: string) => `${dialect === 'oracle' ? '' : 'AS '}${quote(alias, dialect)}`;
   const stored = (fieldKey: string): string => {
@@ -69,15 +81,26 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   };
   const typeOf = (fieldKey: string): FieldType => (plan.raw ? (index.field(fieldKey)?.type ?? 'string') : cleanType(index, fieldKey));
 
-  let from = quoteTable(plan.table, dialect);
-  if (dedupe) from = `(SELECT DISTINCT * FROM ${from}) ${as(BASE_ALIAS)}`;
-  else if (aliased) from = `${from} ${as(BASE_ALIAS)}`;
-  for (const j of joins) {
-    const on = `${quote(j.left.alias, dialect)}.${quote(j.left.column, dialect)} = ${quote(j.alias, dialect)}.${quote(j.column, dialect)}`;
-    const joined = `LEFT JOIN ${quoteTable(j.table, dialect)} ${as(j.alias)} ON ${on}`;
-    // Access needs each join but the last wrapped: FROM ((a LEFT JOIN b ON …) LEFT JOIN c ON …).
-    from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
-  }
+  // A reshaped table (an unpivot step, reshape.ts) is read as a derived table of UNION ALLs.
+  const reshaped = (name: string) => reshapedTable(index, plan.source, name);
+  const tableText = (name: string, alias: string | null): string => {
+    const step = reshaped(name);
+    if (!step) return alias ? `${quoteTable(name, dialect)} ${as(alias)}` : quoteTable(name, dialect);
+    const storedTable = index.field(step.field)!.table;
+    const inner = () => (dedupesStored(index, step) ? `(SELECT DISTINCT * FROM ${quoteTable(storedTable, dialect)}) ${as('s')}` : quoteTable(storedTable, dialect));
+    return `${unpivotSql(index, step, dialect, (value, type) => bind({ value, type }), (n) => quote(n, dialect), inner)} ${as(alias ?? 'v')}`;
+  };
+  // Built when it is written into the text, so its bound values come in the order they appear.
+  const fromText = (): string => {
+    let from = dedupe ? `(SELECT DISTINCT * FROM ${tableText(plan.table, null)}) ${as(BASE_ALIAS)}` : tableText(plan.table, aliased ? BASE_ALIAS : null);
+    for (const j of joins) {
+      const on = `${quote(j.left.alias, dialect)}.${quote(j.left.column, dialect)} = ${quote(j.alias, dialect)}.${quote(j.column, dialect)}`;
+      const joined = `LEFT JOIN ${tableText(j.table, j.alias)} ON ${on}`;
+      // Access needs each join but the last wrapped: FROM ((a LEFT JOIN b ON …) LEFT JOIN c ON …).
+      from = dialect === 'access' && j !== joins[0] ? `(${from}) ${joined}` : `${from} ${joined}`;
+    }
+    return from;
+  };
 
   // The derived table is added after the cleaning columns are written, because the "?" dialects
   // need values bound in the order they appear in the text.
@@ -97,25 +120,26 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
       ...plan.filters.filter((f) => !many?.owns(f.field)).map((f) => f.field),
     ]),
   ];
+  let from: string;
   const inner = new Map<string, string>();
-  if (!plan.raw && used.some((k) => stepsFor(index, k).length)) {
+  // Fields made by a step (split, merge, bucket) are computed in the inner query too, raw or not.
+  if ((!plan.raw && used.some((k) => stepsFor(index, k).length)) || used.some((k) => makerOf(index, k))) {
     const cols = used.map((k, i) => {
       inner.set(k, `c${i}`);
-      const steps = stepsFor(index, k);
-      let expr = stored(k);
-      if (steps.length) {
-        try {
-          expr = cleanSql(steps, expr, dialect, (value, type) => bind({ value, type }));
-        } catch (e) {
-          throw new SqlError((e as Error).message);
-        }
+      // Equal-count groups rank every row of the base table, which is what the inner query reads.
+      if (usesTiles(index, k) && (index.field(k)?.table !== plan.table || plan.many)) throw new SqlError(TILES_ELSEWHERE);
+      let expr: string;
+      try {
+        expr = fieldSql(index, k, !!plan.raw, stored, dialect, (value, type) => bind({ value, type }))();
+      } catch (e) {
+        throw new SqlError((e as Error).message);
       }
       return `${expr} AS ${quote(`c${i}`, dialect)}`;
     });
     // The group values of the many side pass through unchanged (cleaned inside the derived table).
     for (const g of many?.dims ?? []) cols.push(`${quote(MANY_ALIAS, dialect)}.${quote(g.col, dialect)} AS ${quote(g.col, dialect)}`);
-    from = `(SELECT ${cols.join(', ')} FROM ${withMany(from)}) ${as('q')}`;
-  } else from = withMany(from);
+    from = `(SELECT ${cols.join(', ')} FROM ${withMany(fromText())}) ${as('q')}`;
+  } else from = withMany(fromText());
   const column = (fieldKey: string): string => {
     if (!inner.size) return stored(fieldKey);
     const c = inner.get(fieldKey);

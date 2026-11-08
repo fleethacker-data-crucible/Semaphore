@@ -9,6 +9,7 @@ import { runPlan, type TableRows } from '../../../src/core/engine.ts';
 import { comparisonPlanFor, comparisonSelections } from '../../../src/core/drill-compare.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
 import { comparisonShift, planFlag, planLeaves, type QueryPlan } from '../../../src/core/planner.ts';
+import { storedTables } from '../../../src/core/reshape.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
 import type { CsvWorker } from './worker.ts';
@@ -173,7 +174,9 @@ async function run(plan: QueryPlan, ctx: DataContext) {
   if (ctx.localSources.has(plan.source)) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
-    const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])].every((t) => ctx.workerTables?.has(t));
+    // A reshaped table (reshape.ts) is built from its stored table, wherever that is held.
+    const read = storedTables(ctx.index, plan.source, [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])]);
+    const inWorker = !!ctx.worker && read.every((t) => ctx.workerTables?.has(t));
     return { origin: 'page' as const, result: await cache.remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);

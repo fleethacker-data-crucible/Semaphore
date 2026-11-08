@@ -3,6 +3,7 @@
 
 import type { CleaningStep } from './cleaning.ts';
 import { baseInputs, checkFormulas } from './formula.ts';
+import { checkReshape } from './reshape.ts';
 import type { Relationship } from './joins.ts';
 
 /**
@@ -218,6 +219,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   for (const c of catalog.cleaning ?? []) {
     if (!fieldKeys.has(c.field)) problems.push(`Cleaning step "${c.id}" names unknown field "${c.field}".`);
   }
+  problems.push(...checkReshape(catalog));
   for (const h of catalog.hierarchies ?? []) {
     if (h.levels.length < 2) problems.push(`Drill path "${h.label}" needs at least two levels.`);
     for (const l of h.levels) if (!fieldKeys.has(l)) problems.push(`Drill path "${h.label}" names unknown field "${l}".`);
@@ -234,8 +236,25 @@ export function pruneCatalog(catalog: Catalog): Catalog {
   const sources = new Set(catalog.sources.map((s) => s.id));
   const tables = new Set(catalog.fields.map((f) => `${f.source}|${f.table}`));
   const out: Catalog = { ...catalog };
-  if (catalog.cleaning) out.cleaning = catalog.cleaning.filter((c) => fields.has(c.field));
-  if (catalog.hierarchies) out.hierarchies = catalog.hierarchies.filter((h) => h.levels.every((l) => fields.has(l)));
+  if (catalog.cleaning) {
+    // A step that makes fields goes with any field it reads, and its fields go with it.
+    let steps = catalog.cleaning.filter((c) => fields.has(c.field) && (c.fields ?? []).every((k) => fields.has(k)));
+    for (let changed = true; changed; ) {
+      const ids = new Set(steps.map((c) => c.id));
+      const kept = catalog.fields.filter((f) => !f.derived || ids.has(f.derived));
+      const keys = new Set(kept.map((f) => f.key));
+      const next = steps.filter((c) => keys.has(c.field) && (c.fields ?? []).every((k) => keys.has(k)));
+      changed = next.length !== steps.length || kept.length !== out.fields.length;
+      steps = next;
+      out.fields = kept;
+    }
+    out.cleaning = steps;
+    // Measures of a made field that went (a split part's count) go too.
+    const made = new Set(out.fields.map((f) => f.key));
+    out.metrics = catalog.metrics.filter((m) => !m.field || made.has(m.field) || !fields.has(m.field));
+  }
+  const left = new Set(out.fields.map((f) => f.key));
+  if (catalog.hierarchies) out.hierarchies = catalog.hierarchies.filter((h) => h.levels.every((l) => left.has(l)));
   if (catalog.relationships) out.relationships = catalog.relationships.filter((r) => sources.has(r.source) && tables.has(`${r.source}|${r.from.table}`) && tables.has(`${r.source}|${r.to.table}`));
   return out;
 }
