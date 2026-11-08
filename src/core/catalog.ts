@@ -2,6 +2,7 @@
 // and flags refer to them by key. The AI and the planner only ever see the catalog, never rows.
 
 import type { CleaningStep } from './cleaning.ts';
+import { baseInputs, checkFormulas } from './formula.ts';
 import type { Relationship } from './joins.ts';
 
 /**
@@ -90,9 +91,15 @@ export interface Field {
   /** Distinct values, if profiled. The planner uses it to estimate result sizes. */
   cardinality?: number;
   synonyms?: string[];
+  /**
+   * Set on a field a cleaning step made (a split part, a merged or bucketed column, a reshaped
+   * table's column): the id of that step. Undoing the step removes the field.
+   */
+  derived?: string;
 }
 
-export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct';
+/** 'formula': worked out from other measures (formula.ts), never aggregated by a database itself. */
+export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct' | 'formula';
 
 export interface Metric {
   key: string;
@@ -102,6 +109,8 @@ export interface Metric {
   field?: string;
   /** Table the metric counts rows of when `field` is omitted. */
   table?: string;
+  /** For agg 'formula': other metric keys, numbers, + - * / and parentheses (formula.ts). */
+  formula?: string;
   source: string;
   format?: 'number' | 'currency' | 'percent';
   synonyms?: string[];
@@ -148,6 +157,10 @@ export function indexCatalog(catalog: Catalog): CatalogIndex {
 
 /** Table a metric reads from, whether it aggregates a field or counts rows. */
 export function metricTable(index: CatalogIndex, metric: Metric): string | undefined {
+  if (metric.agg === 'formula') {
+    const first = baseInputs(metric.key, index.metric)[0];
+    return first ? metricTable(index, first) : undefined;
+  }
   if (metric.field) return index.field(metric.field)?.table;
   return metric.table;
 }
@@ -179,6 +192,7 @@ export function checkCatalog(catalog: Catalog): string[] {
     if (metricKeys.has(m.key) || fieldKeys.has(m.key)) problems.push(`Duplicate key "${m.key}".`);
     metricKeys.add(m.key);
     if (!sourceIds.has(m.source)) problems.push(`Metric "${m.key}" names unknown source "${m.source}".`);
+    if (m.agg === 'formula') continue; // checked by checkFormulas below
     if (m.field === undefined) {
       if (m.agg !== 'count') problems.push(`Metric "${m.key}" needs a field for ${m.agg}.`);
       if (!m.table || !isIdentifier(m.table)) problems.push(`Metric "${m.key}" counts rows but names no valid table.`);
@@ -193,6 +207,7 @@ export function checkCatalog(catalog: Catalog): string[] {
       problems.push(`Metric "${m.key}" uses ${m.agg} on a field that is not a number.`);
     }
   }
+  problems.push(...checkFormulas(catalog));
   for (const r of catalog.relationships ?? []) {
     if (!sourceIds.has(r.source)) problems.push(`Relationship "${r.id}" names unknown source "${r.source}".`);
     for (const c of [r.from, r.to]) {

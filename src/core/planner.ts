@@ -5,8 +5,9 @@
 // lets a click elsewhere filter this flag locally with no round trip. Slices that would make
 // the result too large are dropped; selections on those fields go back to the source instead.
 
-import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
+import { type Aggregate, type CatalogIndex, type Metric, metricTable } from './catalog.ts';
 import { dayStart } from './dates.ts';
+import { baseInputs, type FormulaNode, type FormulaOp, parseFormula } from './formula.ts';
 import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
 import { type PlannedJoin, planJoins } from './joins.ts';
 import { type ManyJoin, ManyScope, buildManyJoin } from './manyjoin.ts';
@@ -30,11 +31,35 @@ export interface PlannedAggregate {
   field: string | null;
 }
 
+export type MetricParts = { sum?: string; count?: string; min?: string; max?: string; distinct?: string };
+
 export interface PlannedMetric {
   key: string;
   agg: Aggregate;
   /** Partial aliases the displayed value is rebuilt from. avg uses sum and count. */
-  parts: { sum?: string; count?: string; min?: string; max?: string; distinct?: string };
+  parts: MetricParts;
+  /** For a formula: its tree, with every input measure (through nested formulas) as a leaf of partials. */
+  expr?: PlannedExpr;
+}
+
+/** A formula as planned: numbers, operators and plain measures read from the query's partials. */
+export type PlannedExpr =
+  | { t: 'num'; v: number }
+  | { t: 'neg'; x: PlannedExpr }
+  | { t: 'bin'; op: FormulaOp; l: PlannedExpr; r: PlannedExpr }
+  | { t: 'leaf'; key: string; agg: Exclude<Aggregate, 'formula'>; parts: MetricParts };
+
+/** Every plain measure a planned metric reads: itself, or the leaves of its formula. */
+export function planLeaves(m: PlannedMetric): Array<{ agg: Aggregate; parts: MetricParts }> {
+  if (!m.expr) return [m];
+  const out: Array<{ agg: Aggregate; parts: MetricParts }> = [];
+  const walk = (e: PlannedExpr): void => {
+    if (e.t === 'leaf') out.push(e);
+    else if (e.t === 'neg') walk(e.x);
+    else if (e.t === 'bin') (walk(e.l), walk(e.r));
+  };
+  walk(m.expr);
+  return out;
 }
 
 export interface QueryPlan {
@@ -113,6 +138,11 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   for (const key of b.metrics) {
     const m = index.metric(key);
     if (!m) return { ok: false, error: `Unknown metric "${key}".` };
+    if (m.agg === 'formula') {
+      // Every input of a formula is read from the flag's one table.
+      const tables = new Set(baseInputs(key, index.metric).map((x) => metricTable(index, x)));
+      if (tables.size > 1) return { ok: false, error: `"${m.label}" combines measures from different tables; a formula's inputs come from one table.` };
+    }
     const t = metricTable(index, m);
     if (!t) return { ok: false, error: `Metric "${key}" has no table.` };
     if (source && source !== m.source) return { ok: false, error: `Metric "${m.label}" is in a different source; a flag reads from one source.` };
@@ -193,22 +223,46 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     return alias;
   };
   let reaggregable = true;
-  for (const key of b.metrics) {
-    const m = index.metric(key)!;
+  const plain = (m: Metric): MetricParts => {
     const field = m.field ?? null;
-    const pm: PlannedMetric = { key, agg: m.agg, parts: {} };
-    if (m.agg === 'sum') pm.parts.sum = partial('sum', field);
-    else if (m.agg === 'count') pm.parts.count = partial('count', field);
-    else if (m.agg === 'min') pm.parts.min = partial('min', field);
-    else if (m.agg === 'max') pm.parts.max = partial('max', field);
+    const parts: MetricParts = {};
+    if (m.agg === 'sum') parts.sum = partial('sum', field);
+    else if (m.agg === 'count') parts.count = partial('count', field);
+    else if (m.agg === 'min') parts.min = partial('min', field);
+    else if (m.agg === 'max') parts.max = partial('max', field);
     else if (m.agg === 'avg') {
-      pm.parts.sum = partial('sum', field);
-      pm.parts.count = partial('count', field);
+      parts.sum = partial('sum', field);
+      parts.count = partial('count', field);
     } else {
-      pm.parts.distinct = partial('count_distinct', field);
+      parts.distinct = partial('count_distinct', field);
       reaggregable = false;
     }
-    metrics.push(pm);
+    return parts;
+  };
+  // A formula's inputs become hidden partials; nested formulas are folded into one tree.
+  const expand = (node: FormulaNode, seen: string[]): PlannedExpr => {
+    if (node.t === 'num') return node;
+    if (node.t === 'neg') return { t: 'neg', x: expand(node.x, seen) };
+    if (node.t === 'bin') return { t: 'bin', op: node.op, l: expand(node.l, seen), r: expand(node.r, seen) };
+    const m = index.metric(node.key);
+    if (!m || seen.includes(node.key)) throw new PlanRefusal(`The formula of "${index.metric(seen[0]!)?.label ?? seen[0]}" cannot be read: check its measures under Data > Measures.`);
+    if (m.agg !== 'formula') return { t: 'leaf', key: m.key, agg: m.agg, parts: plain(m) };
+    const p = parseFormula(m.formula ?? '');
+    if (!p.ok) throw new PlanRefusal(`The formula of "${m.label}" cannot be read: ${p.error}`);
+    return expand(p.node, [...seen, node.key]);
+  };
+  for (const key of b.metrics) {
+    const m = index.metric(key)!;
+    if (m.agg === 'formula') {
+      try {
+        metrics.push({ key, agg: 'formula', parts: {}, expr: expand({ t: 'ref', key }, []) });
+      } catch (e) {
+        if (e instanceof PlanRefusal) return { ok: false, error: e.message };
+        throw e;
+      }
+      continue;
+    }
+    metrics.push({ key, agg: m.agg, parts: plain(m) });
   }
 
   // Own dimensions, then candidate slices.
@@ -325,8 +379,9 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     // A "top N" is cut at the source only when nothing is re-aggregated locally, not when it
     // ranks by an average (SQL would rank by the sum the average is rebuilt from), and not when
     // values are shown as a share of the total (the total is taken across every row, before the cut).
+    // A formula is computed locally too, so it is ranked there.
     const sortAgg = b.sort ? index.metric(b.sort.by)?.agg : undefined;
-    if (chosen.length === 0 && sortAgg !== 'avg' && !b.share) {
+    if (chosen.length === 0 && sortAgg !== 'avg' && sortAgg !== 'formula' && !b.share) {
       plan.limit = Math.min(b.limit, rowCap);
       // The cut result holds only the top N, so selecting a value outside it needs the source.
       const selectable = new Set(selectableKeys(hoist).map(dimensionKey));
@@ -335,6 +390,8 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   }
   return { ok: true, plan };
 }
+
+class PlanRefusal extends Error {}
 
 const GRAIN_DEFAULT: Record<TimeGrain, number> = { year: 10, quarter: 40, month: 120, week: 520, day: 3650 };
 const UNKNOWN_CARDINALITY = 100;

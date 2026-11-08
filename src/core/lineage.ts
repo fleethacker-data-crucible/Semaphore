@@ -4,6 +4,7 @@
 // it answers "what breaks if this column changes?" and "where does this number come from?".
 
 import { type Catalog, indexCatalog, metricTable } from './catalog.ts';
+import { formulaRefs, parseFormula } from './formula.ts';
 import { joinPath } from './joins.ts';
 import { reachOf } from './manyjoin.ts';
 import type { Hoist } from './hoist.ts';
@@ -66,8 +67,16 @@ export function buildLineage(catalog: Catalog, hoist: Hoist, all = false): Linea
   const addMetric = (key: string) => {
     const m = index.metric(key);
     if (!m) return;
-    nodes.set(id.metric(key), { id: id.metric(key), kind: 'metric', label: m.label, detail: m.agg.replace('_', ' ') });
-    if (m.field) {
+    if (nodes.has(id.metric(key))) return;
+    nodes.set(id.metric(key), { id: id.metric(key), kind: 'metric', label: m.label, detail: m.agg === 'formula' ? `formula: ${m.formula ?? ''}` : m.agg.replace('_', ' ') });
+    if (m.agg === 'formula') {
+      // A calculated measure reads other measures, which lead back to their fields and tables.
+      const p = parseFormula(m.formula ?? '');
+      for (const ref of p.ok ? formulaRefs(p.node) : []) {
+        addMetric(ref);
+        if (nodes.has(id.metric(ref))) edge(id.metric(ref), id.metric(key));
+      }
+    } else if (m.field) {
       addField(m.field);
       edge(id.field(m.field), id.metric(key));
     } else {

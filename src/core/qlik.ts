@@ -514,7 +514,7 @@ export function parseQlikExpression(expr: string): QlikExpression {
   }
   if (!PLAIN.test(inner)) return { ok: false, reason: 'Aggregates a calculation, not a field; add the calculation as a field first or ask the AI.' };
   const field = unquote(inner);
-  const word = { sum: 'Total', avg: 'Average', min: 'Lowest', max: 'Highest', count: 'Count of', count_distinct: 'Distinct' }[agg];
+  const word = { sum: 'Total', avg: 'Average', min: 'Lowest', max: 'Highest', count: 'Count of', count_distinct: 'Distinct', formula: 'Formula' }[agg];
   return { ok: true, agg, field, filters, label: `${word} ${field}` };
 }
 

@@ -131,6 +131,13 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
     onClick = 'drill';
   }
 
+  // "cost per hull = labor cost / hulls": once the calculated measure exists, the brief means it,
+  // not the measures its definition names.
+  const def = /([a-z][a-z0-9 '-]{0,60}?)\s*(?:=|\bis defined as\b)\s*([^.;]{1,200})/.exec(text);
+  if (def && mentions(def[1]!, index).some((m) => m.kind === 'metric' && index.metric(m.key)?.agg === 'formula')) {
+    const at = def.index + def[0].length - def[2]!.length;
+    blocked.push([at, at + def[2]!.length]);
+  }
   const all = mentions(text, index).filter((m) => !blocked.some(([s, e]) => m.start >= s && m.end <= e));
   const metricKeys = unique(all.filter((m) => m.kind === 'metric').map((m) => m.key));
 
@@ -411,7 +418,7 @@ export function starterHoistLocally(index: CatalogIndex, table?: string): HoistD
   const metrics = cat.metrics.filter((m) => tableOf(m) === subject);
   const fields = cat.fields.filter((f) => f.table === subject);
   // Headline order: a row count, totals, averages, distinct counts.
-  const rank = { count: 0, sum: 1, avg: 2, count_distinct: 3, max: 4, min: 5 } as const;
+  const rank = { count: 0, sum: 1, avg: 2, count_distinct: 3, max: 4, min: 5, formula: 6 } as const;
   const headline = [...metrics].sort((x, y) => rank[x.agg] - rank[y.agg]).slice(0, 4);
   const main = metrics.find((m) => m.agg === 'sum') ?? headline[0]!;
   const date = fields.find((f) => f.type === 'date');
