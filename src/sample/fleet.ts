@@ -9,6 +9,12 @@ import type { TableRows } from '../core/engine.ts';
 const REGIONS = ['Northeast', 'Southeast', 'Gulf', 'Pacific Northwest', 'Southwest', 'Great Lakes'];
 const CLASSES = ['Cutter', 'Patrol boat', 'Buoy tender', 'Icebreaker', 'Tug', 'Landing craft', 'Frigate', 'Destroyer', 'Survey vessel', 'Supply ship', 'Ferry', 'Research vessel'];
 const STATUSES = ['Open', 'In progress', 'Awaiting parts', 'Closed', 'Cancelled'];
+/** The states each region's home ports are in (USPS codes, in REGIONS order), for the map example. */
+const HOME_STATES = ['ME MA RI CT NY NJ', 'VA NC SC GA FL', 'TX LA MS AL FL', 'WA OR AK', 'CA HI CA AZ', 'MI OH WI IL MN PA'].map((s) => s.split(' '));
+const homeState = (region: string, hull: string) => {
+  const list = HOME_STATES[REGIONS.indexOf(region)]!;
+  return list[Number(hull.slice(2)) % list.length]!;
+};
 const PARTS = ['Impeller', 'Gasket set', 'Fuel injector', 'Bilge pump', 'Radar module', 'Shaft seal', 'Anode', 'Filter cartridge', 'Hydraulic hose', 'Alternator', 'Propeller', 'Battery bank'];
 
 /** Mulberry32: small, fast and the same everywhere. */
@@ -61,6 +67,8 @@ export function fleetSampleRows(today: Date = new Date(), count = 6000): TableRo
       hull_no: hull,
       labor_cost: cost,
       days_open: daysOpen,
+      // From the region and the hull, not the random walk, so every other value stays as it was.
+      home_state: homeState(region, hull),
     });
   }
   const parts: Array<Record<string, Cell>> = PARTS.map((p, i) => ({ 'Item Name': p, QtyOnHand: Math.round(5 + r() * 400 * (i % 3 === 0 ? 0.2 : 1)) }));

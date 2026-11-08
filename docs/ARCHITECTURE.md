@@ -37,6 +37,7 @@ Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpL
                            ├─ /api/vault, /api/vault/pair, /unpair     Lazarette pairing and status (names, never values)
                            ├─ /api/ai, /api/ai/check, /api/ai/v1/chat/completions   Fairlead relay (the key stays server-side)
                            ├─ /api/widgets, /api/widgets/<id>          the team widget library (JSON files in <home>\widgets)
+                           ├─ /api/maps, /api/maps/<id>                region maps for map flags (GeoJSON in <home>\maps; MAPS.md)
                            ├─ /sandbox/widget.html                     a custom widget's frame, under its own CSP (no network,
                            │                                           sandboxed, framed by Semaphore only; no session)
                            └─ /api/client-log                          the page's own script errors, into the server log

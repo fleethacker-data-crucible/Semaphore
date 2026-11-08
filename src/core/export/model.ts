@@ -38,7 +38,8 @@ export interface ExportImage {
 
 /** The chart's numbers, for formats that can draw a native, editable chart. */
 export interface ExportChart {
-  type: 'bar' | 'line' | 'area' | 'pie';
+  /** 'combo': bars and lines together; each series says which it is and which scale it is on. */
+  type: 'bar' | 'line' | 'area' | 'pie' | 'combo';
   horizontal?: boolean;
   stacked?: boolean;
   /** Stacked to 100%: the values are the real numbers, and the chart shows each as a share of its stack. */
@@ -50,6 +51,10 @@ export interface ExportChart {
     color: string;
     /** The earlier window of a comparison: drawn in grey, not a palette colour. */
     previous?: boolean;
+    /** Combo charts: drawn as bars or a line (bars when left out). */
+    as?: 'bar' | 'line';
+    /** Combo charts: on the second scale, at the right. */
+    axis?: 'right';
   }>;
 }
 

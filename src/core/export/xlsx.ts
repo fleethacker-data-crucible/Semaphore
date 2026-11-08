@@ -367,7 +367,8 @@ function seriesXml(chart: ExportChart, refs: ChartRefs, i: number, fallback: str
   const cat = `<c:cat><c:strRef><c:f>${xml(refs.category)}</c:f>${stringCache(chart.categories)}</c:strRef></c:cat>`;
   const val = `<c:val><c:numRef><c:f>${xml(refs.values[i]!)}</c:f>${numberCache(s.values)}</c:numRef></c:val>`;
   const head = `<c:idx val="${i}"/><c:order val="${i}"/>${tx}`;
-  if (chart.type === 'line') {
+  const kind = chart.type === 'combo' ? (s.as ?? 'bar') : chart.type;
+  if (kind === 'line') {
     const dash = s.previous ? '<a:prstDash val="dash"/>' : '';
     return `<c:ser>${head}<c:spPr><a:ln w="28575" cap="rnd">${fillXml(color)}${dash}<a:round/></a:ln></c:spPr><c:marker><c:symbol val="${s.previous ? 'none' : 'circle'}"/><c:size val="5"/><c:spPr>${fillXml(color)}<a:ln w="9525">${fillXml(color)}</a:ln></c:spPr></c:marker>${cat}${val}<c:smooth val="0"/></c:ser>`;
   }
@@ -379,7 +380,7 @@ function seriesXml(chart: ExportChart, refs: ChartRefs, i: number, fallback: str
       '<c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/><c:showLeaderLines val="1"/></c:dLbls>';
     return `<c:ser>${head}${points.join('')}${labels}${cat}${val}</c:ser>`;
   }
-  if (chart.type === 'bar') {
+  if (kind === 'bar') {
     return `<c:ser>${head}<c:spPr>${fillXml(color)}</c:spPr><c:invertIfNegative val="0"/>${cat}${val}</c:ser>`;
   }
   return `<c:ser>${head}<c:spPr>${fillXml(color)}</c:spPr>${cat}${val}</c:ser>`;
@@ -392,7 +393,24 @@ function chartXml(chart: ExportChart, title: string, refs: ChartRefs, accent: st
   const grouping = chart.percent ? 'percentStacked' : stacked ? 'stacked' : 'standard';
   const axes = '<c:axId val="111111111"/><c:axId val="222222222"/>';
   let plot: string;
-  if (chart.type === 'bar') {
+  // A combo: a bar group and a line group per scale; the right-hand scale has its own (hidden) category axis.
+  const hasLeft = chart.series.some((s) => s.axis !== 'right');
+  const onRight = (s: ExportChart['series'][number]) => hasLeft && s.axis === 'right';
+  const twoScales = chart.type === 'combo' && chart.series.some(onRight);
+  if (chart.type === 'combo') {
+    plot = '';
+    for (const right of [false, true]) {
+      const ids = right ? '<c:axId val="333333333"/><c:axId val="444444444"/>' : axes;
+      for (const as of ['bar', 'line'] as const) {
+        const group = chart.series.map((s, i) => ((s.as ?? 'bar') === as && onRight(s) === right ? seriesXml(chart, refs, i, accent) : '')).join('');
+        if (!group) continue;
+        plot +=
+          as === 'bar'
+            ? `<c:barChart><c:barDir val="col"/><c:grouping val="${stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${group}<c:gapWidth val="60"/>${stacked ? '<c:overlap val="100"/>' : ''}${ids}</c:barChart>`
+            : `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${group}<c:marker val="1"/>${ids}</c:lineChart>`;
+      }
+    }
+  } else if (chart.type === 'bar') {
     plot =
       `<c:barChart><c:barDir val="${horizontal ? 'bar' : 'col'}"/><c:grouping val="${chart.percent ? 'percentStacked' : stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${series}` +
       `<c:gapWidth val="60"/>${stacked ? '<c:overlap val="100"/>' : ''}${axes}</c:barChart>`;
@@ -411,7 +429,11 @@ function chartXml(chart: ExportChart, title: string, refs: ChartRefs, accent: st
       : `<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="${horizontal ? 'maxMin' : 'minMax'}"/></c:scaling><c:delete val="0"/><c:axPos val="${horizontal ? 'l' : 'b'}"/>` +
         `<c:numFmt formatCode="General" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="low"/>${quiet}<c:crossAx val="222222222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
         `<c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horizontal ? 'b' : 'l'}"/>${grid}` +
-        `<c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="111111111"/><c:crosses val="${horizontal ? 'max' : 'autoZero'}"/><c:crossBetween val="${chart.type === 'area' ? 'midCat' : 'between'}"/></c:valAx>`;
+        `<c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="111111111"/><c:crosses val="${horizontal ? 'max' : 'autoZero'}"/><c:crossBetween val="${chart.type === 'area' ? 'midCat' : 'between'}"/></c:valAx>` +
+        (twoScales
+          ? `<c:catAx><c:axId val="333333333"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="1"/><c:axPos val="b"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="444444444"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
+            `<c:valAx><c:axId val="444444444"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="r"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="333333333"/><c:crosses val="max"/><c:crossBetween val="between"/></c:valAx>`
+          : '');
   const legend = chart.type === 'pie' || chart.series.length > 1 ? `<c:legend><c:legendPos val="${chart.type === 'pie' ? 'r' : 'b'}"/><c:overlay val="0"/></c:legend>` : '';
   const heading = xml(clip(cleanText(title), 200));
   return (

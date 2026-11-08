@@ -17,7 +17,7 @@ import { toXlsx } from '../../../src/core/export/xlsx.ts';
 import { type Flag, toneFor } from '../../../src/core/hoist.ts';
 import type { FrozenFlag } from '../../../src/core/reports.ts';
 import { compressionSupported } from '../../../src/core/export/zip.ts';
-import { chartToSvg, loadExtras, paperColors } from '../components/Chart.tsx';
+import { chartToSvg, loadExtras, loadMap, paperColors } from '../components/Chart.tsx';
 import { CHART_KINDS, isRichKind } from '../../../src/core/kinds.ts';
 import { chartCategories, flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
 import type { FlagResult } from './data.ts';
@@ -81,13 +81,22 @@ function imageHeight(flag: Flag): number {
  * the real numbers with `percent` set, so Excel stacks them to 100% itself.
  */
 function chartNumbers(flag: Flag, result: FlagResult, option: Record<string, unknown>, colors: readonly string[], style: FlagStyle): ExportChart | null {
-  // The richer kinds have no editable Office chart to match, so they travel as the picture and the table.
-  if (isRichKind(flag.kind)) return null;
   const series = (option.series ?? []) as Array<Record<string, unknown>>;
   const valueOf = (d: unknown) => {
     const v = typeof d === 'object' && d !== null ? (d as { value?: unknown }).value : d;
     return typeof v === 'number' ? v : null;
   };
+  // A combo is an Excel bar and line chart, each series on its own scale, as the page draws it.
+  if (flag.kind === 'combo' && series.every((s) => s.type === 'bar' || s.type === 'line')) {
+    return {
+      type: 'combo',
+      ...(series.some((s) => s.stack) ? { stacked: true } : {}),
+      categories: ((option.xAxis as { data?: string[] }).data ?? []).slice(),
+      series: series.map((s, i) => ({ name: String(s.name ?? ''), values: ((s.data ?? []) as unknown[]).map(valueOf), color: colors[i % colors.length]!, as: s.type as 'bar' | 'line', ...(s.yAxisIndex === 1 ? { axis: 'right' as const } : {}) })),
+    };
+  }
+  // The other richer kinds have no editable Office chart to match, so they travel as the picture and the table.
+  if (isRichKind(flag.kind)) return null;
   if (flag.kind === 'pie') {
     const data = (series[0]?.data ?? []) as Array<{ name: string; value: unknown }>;
     return { type: 'pie', categories: data.map((d) => d.name), series: [{ name: flag.title || 'Value', values: data.map(valueOf), color: colors[0]! }] };
@@ -243,6 +252,7 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
   };
   if (isChart(flag, result)) {
     if (isRichKind(flag.kind)) await loadExtras();
+    if (flag.kind === 'map') await loadMap(style.map ?? 'us-states');
     const option = flagChartOption({ flag, result, index, selections: {}, style: { ...style, zoom: false }, c, colors, ...font });
     out.image = await draw(option, IMAGE_WIDTH, imageHeight(flag));
     out.chart = chartNumbers(flag, result, option, colors, style);

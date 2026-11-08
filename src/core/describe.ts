@@ -25,6 +25,8 @@ const KIND_NAMES: Record<Flag['kind'], string> = {
   sankey: 'A flow (Sankey) of',
   sunburst: 'A sunburst of',
   stream: 'A stream chart of',
+  combo: 'Bars and a line of',
+  map: 'A map of',
   model: 'A predictive model over',
   pivot: 'A pivot table of',
   custom: 'A custom widget drawing',
