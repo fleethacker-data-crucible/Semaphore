@@ -5,6 +5,7 @@
 // partials back up to the flag's own dimensions. Selections the result cannot answer are
 // returned in `live` so the caller re-queries the source for just this flag.
 
+import { calendarDay } from './dates.ts';
 import type { Behavior } from './hoist.ts';
 import type { QueryPlan } from './planner.ts';
 
@@ -163,8 +164,9 @@ function norm(v: Cell): string {
   if (v === null) return '\u0000null';
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   // Dates arrive as ISO strings; drivers differ on whether a UTC midnight time is included
-  // and how the zero offset is written. Other offsets are left alone (they are real times).
-  return /^\d{4}-\d{2}-\d{2}T00:00:00(\.0+)?(Z|[+-]00:?00)?$/.test(v) ? v.slice(0, 10) : v;
+  // and how the zero offset is written. A midnight stamp is the day it names (dates.ts); other
+  // times are left alone (they are real times, kept apart as values).
+  return /^\d{4}-\d{2}-\d{2}[T ]00:00(:00(\.0+)?)?(Z|[+-]00:?00)?$/.test(v) ? (calendarDay(v) ?? v) : v;
 }
 
 function toNumber(v: Cell | undefined): number | null {

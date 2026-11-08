@@ -26,7 +26,7 @@ import {
   packageRels,
   readableImage,
   relationships,
-  takenAtWords,
+  takenWords,
   TONE_FILL,
   usableChart,
   validDate,
@@ -61,11 +61,15 @@ export function columnName(index: number): string {
   return out;
 }
 
+/** Cuts a name to `max` UTF-16 units, at the last space when one falls in the second half, so a word is not split. */
 function cutName(name: string, max: number): string {
+  if (name.length <= max) return name.replace(/[\s']+$/, '');
   let out = name.slice(0, max);
   const last = out.charCodeAt(out.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1);
-  return out.replace(/[\s']+$/, '');
+  const space = out.lastIndexOf(' ');
+  if (space >= Math.ceil(max / 2) && name.charAt(out.length) !== ' ') out = out.slice(0, space);
+  return out.replace(/[\s'(\[{:,;-]+$/, '');
 }
 
 /** A legal sheet name: 31 characters at most, none of []:*?/\, no apostrophe at either end. */
@@ -303,20 +307,24 @@ function columnsXml(widths: number[]): string {
   return `<cols>${cols.join('')}</cols>`;
 }
 
-/** The table columns that hold the chart's numbers, or null if the chart needs its own block. */
-function chartColumns(table: ExportTable, chart: ExportChart): { category: number; series: number[] } | null {
+/**
+ * The table columns that hold the chart's numbers: the category column and, per series, its column
+ * or null when no column matches (that series then gets its own block beside the table). Null when
+ * the categories themselves are not in the table.
+ */
+export function chartColumns(table: ExportTable, chart: ExportChart): { category: number; series: Array<number | null> } | null {
   if (table.rows.length !== chart.categories.length) return null;
   const category = table.columns.findIndex((_, c) => table.rows.every((r, i) => cellText(r[c]) === chart.categories[i]));
   if (category < 0) return null;
-  const series: number[] = [];
-  for (const s of chart.series) {
+  const taken = new Set<number>();
+  const series = chart.series.map((s) => {
     const matches = table.columns
       .map((_, c) => c)
-      .filter((c) => c !== category && table.rows.every((r, i) => cellNumber(table.columns[c], r[c]) === s.values[i]));
-    const column = matches.find((c) => table.columns[c]!.label === s.name) ?? matches[0];
-    if (column === undefined) return null;
-    series.push(column);
-  }
+      .filter((c) => c !== category && !taken.has(c) && table.rows.every((r, i) => cellNumber(table.columns[c], r[c]) === s.values[i]));
+    const column = matches.find((c) => table.columns[c]!.label === s.name) ?? matches[0] ?? null;
+    if (column !== null) taken.add(column);
+    return column;
+  });
   return { category, series };
 }
 
@@ -349,15 +357,19 @@ function sliceColor(base: string, i: number): string {
   return mix(base, target, amount);
 }
 
+/** The grey an earlier window is drawn in, as the page draws it. */
+const PREVIOUS_INK = MUTED_INK;
+
 function seriesXml(chart: ExportChart, refs: ChartRefs, i: number, fallback: string): string {
   const s = chart.series[i]!;
-  const color = hexColor(s.color, fallback);
+  const color = s.previous ? PREVIOUS_INK : hexColor(s.color, fallback);
   const tx = `<c:tx><c:strRef><c:f>${xml(refs.names[i]!)}</c:f>${stringCache([s.name])}</c:strRef></c:tx>`;
   const cat = `<c:cat><c:strRef><c:f>${xml(refs.category)}</c:f>${stringCache(chart.categories)}</c:strRef></c:cat>`;
   const val = `<c:val><c:numRef><c:f>${xml(refs.values[i]!)}</c:f>${numberCache(s.values)}</c:numRef></c:val>`;
   const head = `<c:idx val="${i}"/><c:order val="${i}"/>${tx}`;
   if (chart.type === 'line') {
-    return `<c:ser>${head}<c:spPr><a:ln w="28575" cap="rnd">${fillXml(color)}<a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/><c:spPr>${fillXml(color)}<a:ln w="9525">${fillXml(color)}</a:ln></c:spPr></c:marker>${cat}${val}<c:smooth val="0"/></c:ser>`;
+    const dash = s.previous ? '<a:prstDash val="dash"/>' : '';
+    return `<c:ser>${head}<c:spPr><a:ln w="28575" cap="rnd">${fillXml(color)}${dash}<a:round/></a:ln></c:spPr><c:marker><c:symbol val="${s.previous ? 'none' : 'circle'}"/><c:size val="5"/><c:spPr>${fillXml(color)}<a:ln w="9525">${fillXml(color)}</a:ln></c:spPr></c:marker>${cat}${val}<c:smooth val="0"/></c:ser>`;
   }
   if (chart.type === 'pie') {
     const points = chart.categories.map(
@@ -376,13 +388,14 @@ function seriesXml(chart: ExportChart, refs: ChartRefs, i: number, fallback: str
 function chartXml(chart: ExportChart, title: string, refs: ChartRefs, accent: string): string {
   const series = chart.series.map((_, i) => seriesXml(chart, refs, i, accent)).join('');
   const horizontal = chart.type === 'bar' && !!chart.horizontal;
-  const grouping = chart.stacked ? 'stacked' : 'standard';
+  const stacked = !!chart.stacked || !!chart.percent;
+  const grouping = chart.percent ? 'percentStacked' : stacked ? 'stacked' : 'standard';
   const axes = '<c:axId val="111111111"/><c:axId val="222222222"/>';
   let plot: string;
   if (chart.type === 'bar') {
     plot =
-      `<c:barChart><c:barDir val="${horizontal ? 'bar' : 'col'}"/><c:grouping val="${chart.stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${series}` +
-      `<c:gapWidth val="60"/>${chart.stacked ? '<c:overlap val="100"/>' : ''}${axes}</c:barChart>`;
+      `<c:barChart><c:barDir val="${horizontal ? 'bar' : 'col'}"/><c:grouping val="${chart.percent ? 'percentStacked' : stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${series}` +
+      `<c:gapWidth val="60"/>${stacked ? '<c:overlap val="100"/>' : ''}${axes}</c:barChart>`;
   } else if (chart.type === 'line') {
     plot = `<c:lineChart><c:grouping val="${grouping}"/><c:varyColors val="0"/>${series}<c:marker val="1"/>${axes}</c:lineChart>`;
   } else if (chart.type === 'area') {
@@ -515,7 +528,7 @@ function summarySheet(doc: ExportDocument, plans: FlagPlan[], strings: Strings, 
     grid.height(r, linesFor(value, SUMMARY_REST) * 15 + 1);
     r += 1;
   };
-  fact('Taken at', takenAtWords(doc.takenAt));
+  fact('Taken at', takenWords(doc));
   fact('By', doc.by);
   if (doc.filters.length === 0) fact('Filters', 'None');
   doc.filters.forEach((filter, i) => fact(i === 0 ? 'Filters' : '', filter));
@@ -536,8 +549,11 @@ function summarySheet(doc: ExportDocument, plans: FlagPlan[], strings: Strings, 
       grid.text(r, 0, flag.title, styles.style({}));
       grid.text(r, 1, h.label, styles.style({}));
       grid.text(r, 2, h.text, styles.style(toneStyle(h.tone, 'right')));
-      if (typeof h.value === 'number' && Number.isFinite(h.value)) grid.number(r, 3, h.value, tone);
-      else grid.blank(r, 3, tone);
+      if (typeof h.value === 'number' && Number.isFinite(h.value)) {
+        // The value keeps the headline's format, so 0.25 reads as 25.0% and 1200000 as $1,200,000.
+        const code = h.format ? numberFormat({ label: h.label, numeric: true, format: h.format }, [[{ text: h.text, value: h.value }]], 0) : undefined;
+        grid.number(r, 3, h.value, code ? styles.style({ ...toneStyle(h.tone), numFmt: code }) : tone);
+      } else grid.blank(r, 3, tone);
       grid.text(r, 4, h.change ?? '', styles.style({}));
       r += 1;
     }
@@ -653,31 +669,47 @@ function flagSheet(plan: FlagPlan, strings: Strings, styles: Styles, accent: str
     const headerCell = (c: number) => `${sheet}!$${columnName(c)}$1`;
     const count = chart.categories.length;
     const found = chartColumns(table, chart);
-    let refs: ChartRefs;
+    const missing = found ? chart.series.map((_, k) => k).filter((k) => found.series[k] === null) : chart.series.map((_, k) => k);
     let right = tableCols;
-    if (found) {
-      refs = { category: range(found.category, count), names: found.series.map(headerCell), values: found.series.map((c) => range(c, count)), followFilter: true };
-    } else {
-      // The chart's numbers do not line up with the table, so they get their own block beside it.
+    const names: string[] = [];
+    const values: string[] = [];
+    let categoryRef = found ? range(found.category, count) : '';
+    if (missing.length > 0) {
+      // Numbers the table does not hold (or a chart that does not line up with it at all) get their
+      // own block beside the table; series the table does hold keep reading the table.
       const at = tableCols + 1;
+      const block = (k: number) => at + 1 + missing.indexOf(k);
       grid.text(0, at, 'Chart data', header);
       widen(at, 12);
       chart.categories.forEach((category, i) => {
         grid.text(i + 1, at, category, styles.style({}));
         if (i < 500) widen(at, displayWidth(category) + 2);
       });
-      chart.series.forEach((s, k) => {
-        const c = at + 1 + k;
+      for (const k of missing) {
+        const s = chart.series[k]!;
+        const c = block(k);
         grid.text(0, c, s.name, header);
         widen(c, Math.max(12, displayWidth(s.name) + 2));
         s.values.forEach((v, i) => {
           if (v === null) grid.blank(i + 1, c, 0);
           else grid.number(i + 1, c, v, 0);
         });
+      }
+      right = at + 1 + missing.length;
+      if (!found) categoryRef = range(at, count);
+      chart.series.forEach((_, k) => {
+        const c = found?.series[k] ?? block(k);
+        names.push(headerCell(c));
+        values.push(range(c, count));
       });
-      right = at + 1 + chart.series.length;
-      refs = { category: range(at, count), names: chart.series.map((_, k) => headerCell(at + 1 + k)), values: chart.series.map((_, k) => range(at + 1 + k, count)), followFilter: false };
+    } else {
+      for (const c of found!.series as number[]) {
+        names.push(headerCell(c));
+        values.push(range(c, count));
+      }
     }
+    // A filter on the table may hide rows only when every series reads the table.
+    const refs: ChartRefs = { category: categoryRef, names, values, followFilter: !!found && missing.length === 0 };
     chartPart = chartXml(chart, flag.title, refs, accent);
     drawing = drawingXml(anchor(right + 1, 1, CHART_WIDTH_PX, CHART_HEIGHT_PX, chartFrame(flag.title)));
   } else if (image) {

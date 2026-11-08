@@ -26,7 +26,7 @@ import {
   packageRels,
   readableImage,
   relationships,
-  takenAtWords,
+  takenWords,
   TONE_FILL,
   validDate,
   xml,
@@ -194,7 +194,7 @@ export async function toDocx(doc: ExportDocument): Promise<Uint8Array> {
 
   const body: string[] = [para(doc.title.trim() || 'Report', 'Title')];
   if (doc.brief) body.push(para(doc.brief));
-  body.push(para(`Taken at: ${takenAtWords(doc.takenAt)}`, 'Meta'));
+  body.push(para(`Taken at: ${takenWords(doc)}`, 'Meta'));
   body.push(para(`By: ${doc.by}`, 'Meta'));
   body.push(para(`Filters: ${filtersWords(doc)}`, 'Meta'));
   if (doc.flags.length === 0) body.push(para(NO_FLAGS));

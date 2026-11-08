@@ -354,14 +354,22 @@ function convert(raw: string, type: FieldType): Cell | undefined {
   }
 }
 
-/** Column names must pass isIdentifier(): letters, digits, underscore and space. */
+/** Names that would write to a plain object's prototype chain instead of to a row or a table. */
+const RESERVED = /^(__proto__|constructor|prototype)$/i;
+
+/**
+ * Column names must pass isIdentifier(): letters, digits, underscore and space. A name that is an
+ * object's own machinery (`__proto__`) gets a prefix, so a row keyed by column names stays a row.
+ */
 function cleanName(h: string): string {
   let s = h.trim().replace(/[^A-Za-z0-9_ ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (/^[0-9]/.test(s)) s = `c ${s}`;
+  if (RESERVED.test(s)) s = `c ${s}`;
   return s;
 }
 
 export function tableName(fileName: string): string {
   const base = fileName.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
-  return cleanName(base).replace(/ /g, '_') || 'data';
+  const name = cleanName(base).replace(/ /g, '_') || 'data';
+  return RESERVED.test(name) ? `c_${name}` : name;
 }

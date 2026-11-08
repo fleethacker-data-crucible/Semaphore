@@ -125,9 +125,13 @@ function Invoke-SemCommand {
             'Sources' { return (& $r $true @(Get-SemSources -HomeDir $HomeDir | ForEach-Object { [ordered]@{ id = $_.id; label = $_.label; kind = $_.kind; provider = $_.provider } }) '' '' $false) }
             'DocList' { $docs = Get-SemDocList -Dir (Get-SemDocDir -Kind $kind -HomeDir $HomeDir); return (& $r $true $docs '' '' $false) }
             'DocGet' {
+                # Result is the parsed object for callers in this process; Raw is the stored text, which the CLI
+                # prints and writes unchanged (ConvertTo-Json would cut deep documents at its depth and respell the rest).
                 $text = Read-SemDoc -Dir (Get-SemDocDir -Kind $kind -HomeDir $HomeDir) -Id $id
                 if ($null -eq $text) { return (& $r $false $null "No $noun0 '$id'." '' $false) }
-                return (& $r $true ($text | ConvertFrom-Json) '' '' $false)
+                $out = & $r $true ($text | ConvertFrom-Json) '' '' $false
+                $out.Raw = $text.TrimStart([char]0xFEFF).Trim()
+                return $out
             }
             'DocPut' {
                 $path = [IO.Path]::GetFullPath([string]$Options['file'])
@@ -147,7 +151,10 @@ function Invoke-SemCommand {
             'RefreshReport' {
                 $file = Join-Path (Get-SemDocDir -Kind 'snapshots' -HomeDir $HomeDir) '.last-refresh.json'
                 if (-not [IO.File]::Exists($file)) { return (& $r $false $null 'No refresh has run yet.' '' $false) }
-                return (& $r $true ([IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json) '' '' $false)
+                $text = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
+                $out = & $r $true ($text | ConvertFrom-Json) '' '' $false
+                $out.Raw = $text.TrimStart([char]0xFEFF).Trim()
+                return $out
             }
             'VaultStatus' { return (& $r $true (Get-SemVaultStatus -HomeDir $HomeDir) '' '' $false) }
             'VaultPair' {
@@ -165,7 +172,11 @@ function Invoke-SemCommand {
             'RefreshRun' {
                 if (@(Get-SemInstances -Root $Root).Count -gt 0) { return (& $r $false $null 'Semaphore is open on this computer; it refreshes snapshots itself. Close it first, or use it.' '' $false) }
                 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'server\Start-Semaphore.ps1'), '--refresh') -Wait -PassThru -WindowStyle Hidden
-                return (& $r ($p.ExitCode -eq 0) ([ordered]@{ exitCode = $p.ExitCode }) $(if ($p.ExitCode -ne 0) { "The refresh run exited with code $($p.ExitCode)." } else { '' }) 'The refresh run finished. See "refresh report".' $false)
+                $code = [int]$p.ExitCode
+                $why = ''
+                if ($code -eq 3) { $why = 'Another Semaphore was already running on this computer, so nothing was refreshed. Close it first, or use it.' }
+                elseif ($code -ne 0) { $why = "The refresh run exited with code $code." }
+                return (& $r ($code -eq 0) ([ordered]@{ exitCode = $code }) $why 'The refresh run finished. See "refresh report".' $false)
             }
             'SessionStop' {
                 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'server\Stop-Semaphore.ps1')) -Wait -PassThru -WindowStyle Hidden

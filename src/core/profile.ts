@@ -142,7 +142,8 @@ export function humanize(name: string): string {
     .toLowerCase()
     .split(' ')
     .filter(Boolean);
-  return words.map((w) => (w === 'id' ? 'id' : (ABBREVIATIONS[w] ?? w))).join(' ');
+  // Object.hasOwn: a column named "constructor" is a word, not Object's constructor.
+  return words.map((w) => (w === 'id' ? 'id' : Object.hasOwn(ABBREVIATIONS, w) ? ABBREVIATIONS[w]! : w)).join(' ');
 }
 
 function synonymsFor(column: string, words: string): string[] {

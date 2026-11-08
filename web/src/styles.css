@@ -89,7 +89,8 @@
   --line: #e2dccf;
   --ink: #0d2233;
   --ink-2: #4a5866;
-  --ink-3: #7d8894;
+  /* 4.8:1 on the #f4f1ea page and 5.6:1 on white: AA for the 11 px hints that use it (tests/skin-contrast.test.ts). */
+  --ink-3: #606b77;
   --brass: #a8834a;
   --brass-soft: #f3ead9;
   --accent: #1f6f8b;
@@ -378,6 +379,18 @@ body {
   .flip-enter, .flag-run, .hint-row { animation: none; }
   * { transition: none !important; animation-duration: 0s !important; }
 }
+/* The same, when the person turned motion off in Settings (lib/motion.ts). */
+:root[data-reduce-motion='true'] .flip-enter, :root[data-reduce-motion='true'] .flag-run, :root[data-reduce-motion='true'] .hint-row { animation: none; }
+:root[data-reduce-motion='true'] * { transition: none !important; animation-duration: 0s !important; }
+:root[data-reduce-motion='true'] [data-design-motion='lively'] .flag-card { animation: none; }
+
+/* A switch (Settings): a checkbox underneath, so it reads as one; drawn as a pill with a knob. */
+.switch { appearance: none; -webkit-appearance: none; width: 36px; height: 20px; margin: 0; border-radius: 999px; border: 1px solid var(--fl-control-border); background: var(--panel-2); position: relative; cursor: pointer; flex-shrink: 0; transition: background 150ms ease-out, border-color 150ms ease-out; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: transform 150ms ease-out, background 150ms ease-out; }
+.switch:checked { background: var(--accent); border-color: var(--accent); }
+.switch:checked::after { background: var(--panel); transform: translateX(16px); }
+.switch:disabled { cursor: default; opacity: 0.5; }
+.switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* Brand (UNIFIED-UI 5 and 8): the full emblem with its wordmark, the Night watch or Chart room
    version of it, and the display serif for the welcome headline. */

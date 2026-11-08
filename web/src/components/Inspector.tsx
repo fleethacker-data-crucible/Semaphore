@@ -283,7 +283,7 @@ export function Inspector(p: InspectorProps) {
                         type="button"
                         aria-pressed={on}
                         onClick={() => setBehavior({ ignore: on ? flag.behavior.ignore.filter((k) => k !== f.key) : [...flag.behavior.ignore, f.key] })}
-                        className={`rounded-full border px-2 py-0.5 ${on ? 'border-brass bg-brass-soft text-ink' : 'border-line text-ink-3 hover:border-brass'}`}
+                        className={`min-h-8 rounded-full border px-2 ${on ? 'border-brass bg-brass-soft text-ink' : 'border-line text-ink-3 hover:border-brass'}`}
                       >
                         {f.label}
                       </button>

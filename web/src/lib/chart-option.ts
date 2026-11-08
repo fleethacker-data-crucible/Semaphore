@@ -112,12 +112,15 @@ function pieOption(input: ChartInput, base: Option, x: { key: string; grain?: Ti
   if (form === 'treemap') {
     return { ...base, tooltip, series: [{ type: 'treemap', roam: false, nodeClick: false, breadcrumb: { show: false }, left: 2, right: 2, top: 2, bottom: 2, itemStyle: { gapWidth: 2, borderColor: c.panel }, label: { show: labelled, formatter: '{b}', overflow: 'truncate' }, data }] };
   }
-  const radius = form === 'pie' ? [0, '72%'] : form === 'rose' ? ['16%', '76%'] : ['42%', '72%'];
+  // A legend down the right takes room, so the pie moves left and shrinks rather than sit under it.
+  const beside = style.legend === 'right';
+  const shrink = (r: string) => (beside ? `${Math.round(Number.parseInt(r, 10) * 0.85)}%` : r);
+  const radius = (form === 'pie' ? ['0%', '72%'] : form === 'rose' ? ['16%', '76%'] : ['42%', '72%']).map(shrink);
   return {
     ...base,
     tooltip,
     legend,
-    series: [{ type: 'pie', radius, ...(form === 'rose' ? { roseType: 'radius' } : {}), itemStyle: { borderColor: c.panel, borderWidth: 2, ...(style.corners ? { borderRadius: style.corners } : {}), ...glow }, label: { show: labelled, color: c.ink2, formatter: '{b}\n{d}%' }, labelLine: { show: labelled }, emphasis, data }],
+    series: [{ type: 'pie', radius, ...(beside ? { center: ['40%', '50%'] } : {}), ...(form === 'rose' ? { roseType: 'radius' } : {}), itemStyle: { borderColor: c.panel, borderWidth: 2, ...(style.corners ? { borderRadius: style.corners } : {}), ...glow }, label: { show: labelled, color: c.ink2, formatter: '{b}\n{d}%' }, labelLine: { show: labelled }, emphasis, data }],
   };
 }
 
@@ -147,6 +150,11 @@ export function flagChartOption(input: ChartInput): Option {
   const asPercent = b.share || percent;
   const fmt = (k: string) => (n: number) => formatNumber(n, asPercent ? 'percent' : metricFormat(k));
   const share = (k: string, v: number | null) => (b.share && typeof v === 'number' && result.display.totals[k] ? v / (result.display.totals[k] as number) : v);
+  // The earlier window's values are shares of the earlier window's own total (data.ts previousTotals).
+  const previousShare = (k: string, v: number | null) => {
+    const total = result.previousTotals?.[k] ?? result.display.totals[k];
+    return b.share && typeof v === 'number' && total ? v / total : v;
+  };
 
   const base: Option = {
     textStyle: { color: c.ink2, fontFamily: input.fontFamily ?? 'Segoe UI, system-ui, sans-serif' },
@@ -174,6 +182,8 @@ export function flagChartOption(input: ChartInput): Option {
       : {};
 
   const seriesList: Array<Record<string, unknown>> = [];
+  // Whether every share of the 100% layout fell in 0..1 (a negative part can push one outside).
+  let sharesInRange = true;
   if (series) {
     const names: Cell[] = [];
     for (const r of rows) {
@@ -181,7 +191,8 @@ export function flagChartOption(input: ChartInput): Option {
       if (!names.some((n) => String(n) === String(v))) names.push(v);
     }
     const k = b.metrics[0]!;
-    const totalAt = (cat: Cell) => rows.filter((r) => String(r.dims[x.key]) === String(cat)).reduce((sum, r) => sum + (typeof r.values[k] === 'number' ? (r.values[k] as number) : 0), 0);
+    // Each part's size, so a negative part takes its share of the stack rather than shrinking the whole.
+    const totalAt = (cat: Cell) => rows.filter((r) => String(r.dims[x.key]) === String(cat)).reduce((sum, r) => sum + (typeof r.values[k] === 'number' ? Math.abs(r.values[k] as number) : 0), 0);
     const stacked = !isLine && layout !== 'grouped';
     names.forEach((n, ni) => {
       const color = colors[ni % colors.length]!;
@@ -200,7 +211,9 @@ export function flagChartOption(input: ChartInput): Option {
           const v = r ? (r.values[k] ?? null) : null;
           if (percent) {
             const total = totalAt(cat);
-            return typeof v === 'number' && total ? v / total : null;
+            const part = typeof v === 'number' && total ? v / total : null;
+            if (part !== null && (part < 0 || part > 1)) sharesInRange = false;
+            return part;
           }
           return r ? share(k, v) : null;
         }),
@@ -240,7 +253,7 @@ export function flagChartOption(input: ChartInput): Option {
           barMaxWidth: 42,
           data: categories.map((cat) => {
             const ri = rows.findIndex((row) => String(row.dims[x.key]) === String(cat));
-            return ri >= 0 ? share(k, result.previous![ri]?.[k] ?? null) : null;
+            return ri >= 0 ? previousShare(k, result.previous![ri]?.[k] ?? null) : null;
           }),
         });
       }
@@ -250,13 +263,15 @@ export function flagChartOption(input: ChartInput): Option {
   // Hovering dims the rest, on the page and in a shared report.
   if (style.focus) for (const s of seriesList) s.emphasis = { focus: seriesList.length > 1 ? 'series' : 'self' };
 
-  // A goal line and the average, on the first series' scale. Neither applies to shares of a whole.
+  // A goal line and the average, on the first series' scale. Neither applies when the axis is a
+  // share of a whole (a share flag or the 100% layout): a target of 500 would flatten shares of 0..1.
   const lines: Array<Record<string, unknown>> = [];
-  if (style.target && !percent) {
+  if (style.target && !asPercent) {
     const name = style.target.label || 'Target';
-    lines.push({ [horizontal ? 'xAxis' : 'yAxis']: style.target.value, name, label: { formatter: name, position: 'insideEndTop', color: c.ink }, lineStyle: { color: c.ink, type: 'dashed', width: 1.5 } });
+    // A function, so braces in the label are text rather than ECharts' {a} {b} {c} templates.
+    lines.push({ [horizontal ? 'xAxis' : 'yAxis']: style.target.value, name, label: { formatter: () => name, position: 'insideEndTop', color: c.ink }, lineStyle: { color: c.ink, type: 'dashed', width: 1.5 } });
   }
-  if (style.average && !percent && seriesList[0]) {
+  if (style.average && !asPercent && seriesList[0]) {
     lines.push({ type: 'average', name: 'Average', ...(horizontal ? { valueDim: 'x' } : {}), label: { formatter: (p: { value: number }) => `Average ${fmt(b.metrics[0]!)(p.value)}`, position: 'insideEndBottom', color: c.ink2 }, lineStyle: { color: c.ink3, type: 'dotted', width: 1.5 } });
   }
   if (lines.length) seriesList[0]!.markLine = { silent: true, symbol: 'none', data: lines };
@@ -274,7 +289,8 @@ export function flagChartOption(input: ChartInput): Option {
     splitLine: { show: style.gridLines !== false, lineStyle: { color: c.line } },
     axisLabel: { color: c.ink3, formatter: fmt(k), hideOverlap: true },
     splitNumber: horizontal ? 3 : 5,
-    ...(percent ? { max: 1 } : {}),
+    // Shares stop at 100% unless a negative part pushed one outside 0..1; then the axis is left free.
+    ...(percent && sharesInRange ? { max: 1 } : {}),
     // Only a line may leave zero out: a bar's length is its value.
     ...(isLine && style.zeroBase === false ? { scale: true } : {}),
   }));

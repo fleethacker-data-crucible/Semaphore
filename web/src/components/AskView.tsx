@@ -217,13 +217,13 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
           <span className="flex items-center gap-1" title="Reviewed answers in the playbook">
             <BadgeCheck size={13} /> {live.length} reviewed answer{live.length === 1 ? '' : 's'}
           </span>
-          <button type="button" onClick={onTheme} aria-label={theme === 'dark' ? 'Light theme' : 'Dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'} className="rounded-md p-1.5 text-ink-2 hover:bg-panel-2">
+          <button type="button" onClick={onTheme} aria-label={theme === 'dark' ? 'Light theme' : 'Dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <button type="button" onClick={onSettings} aria-label="Settings" title="Settings" className="rounded-md p-1 text-ink-2 hover:bg-panel-2">
+          <button type="button" onClick={onSettings} aria-label="Settings" title="Settings" className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
             <Settings2 size={16} />
           </button>
-          <button type="button" onClick={onBuilder} className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-ink-2 hover:border-accent" title="Open the analysts' builder">
+          <button type="button" onClick={onBuilder} className="flex min-h-8 items-center gap-1.5 rounded-md border border-line px-2.5 text-ink-2 hover:border-accent" title="Open the analysts' builder">
             <LayoutDashboard size={13} /> Builder
           </button>
         </div>

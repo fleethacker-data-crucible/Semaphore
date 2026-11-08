@@ -98,3 +98,69 @@ test('a chart saves on its own as a picture', async ({ semaphore, page }) => {
   const [svg] = await Promise.all([page.waitForEvent('download'), saved.getByRole('button', { name: 'svg' }).click()]);
   expect((await readFile(await svg.path())).toString()).toContain('<svg');
 });
+
+/** The text of a chart's SVG labels, for reading its axes back without a hook into the chart library. */
+async function svgTexts(card: ReturnType<Page['locator']>): Promise<string[]> {
+  return card.locator('[role="img"] svg text').allTextContents();
+}
+
+test('a layout or scale change takes the axis with it, both ways', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  // Give the bar flag a second field, so its bars can stack and share. The change goes into this
+  // page's own working copy: written to the folder behind the page's back, it would rightly raise the
+  // conflict bar (someone else saved since).
+  await expect.poll(async () => (await semaphore.stored('hoists', EXAMPLE_ID)) !== null, { timeout: 10_000 }).toBe(true);
+  await page.evaluate(() => {
+    const raw = localStorage.getItem('semaphore.hoist');
+    if (!raw) throw new Error('no working copy');
+    const h = JSON.parse(raw) as { flags: Array<{ id: string; binding: { dimensions: Array<{ field: string }> } | null }> };
+    h.flags.find((f) => f.id === 'bar-region')!.binding!.dimensions.push({ field: 'jobs.status' });
+    localStorage.setItem('semaphore.hoist', JSON.stringify(h));
+  });
+  await page.reload();
+  await semaphore.continueToBuilder();
+
+  const bars = page.locator('[data-flag-card]', { hasText: 'Labor cost by region' }).first();
+  await bars.locator('h3').click();
+  const inspector = page.getByRole('complementary', { name: 'Flag inspector' });
+  await inspector.getByRole('button', { name: 'Look' }).click();
+  const layout = inspector.getByRole('group', { name: 'Layout' });
+  await expect(layout.getByRole('button', { name: 'Best fit' })).toHaveAttribute('aria-pressed', 'true');
+  await layout.getByRole('button', { name: '100%' }).click();
+  // A share of the whole: the axis is in percent and never passes 100% (tick steps vary with the card's size).
+  const percents = async () => (await svgTexts(bars)).filter((x) => /^\d+(\.\d+)?%$/.test(x)).map((x) => parseFloat(x));
+  await expect.poll(async () => (await percents()).length).toBeGreaterThan(1);
+  expect(Math.max(...(await percents()))).toBeLessThanOrEqual(100);
+  await layout.getByRole('button', { name: 'Stacked' }).click();
+  // The 100% cap went with the layout: the axis is back in dollars and reaches past 100.
+  await expect.poll(async () => (await svgTexts(bars)).filter((t) => /%$/.test(t))).toEqual([]);
+  await expect.poll(async () => (await svgTexts(bars)).some((t) => /^\$?\d/.test(t) && !/%$/.test(t))).toBe(true);
+
+  const line = page.locator('[data-flag-card]', { hasText: 'Work orders per month' }).first();
+  await line.locator('h3').click();
+  await inspector.getByRole('button', { name: 'Look' }).click();
+  const zero = inspector.getByRole('checkbox', { name: 'Start the scale at zero' });
+  await expect(zero).toBeChecked();
+  const atZero = await svgTexts(line);
+  expect(atZero).toContain('0');
+  await zero.uncheck();
+  await expect.poll(() => svgTexts(line)).not.toEqual(atZero);
+  await zero.check();
+  // Switching the floating scale off again really puts zero back.
+  await expect.poll(() => svgTexts(line)).toEqual(atZero);
+});
+
+test('Page design shows the skin\'s own cards as Standard until another style is chosen', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  await page.getByRole('button', { name: 'Page design' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Page design' });
+  const cards = dialog.getByRole('group', { name: 'Cards' });
+  await expect(cards.getByRole('button', { name: 'Standard' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-design-card="standard"]')).toHaveCount(1);
+  await cards.getByRole('button', { name: 'Raised' }).click();
+  await expect(page.locator('[data-design-card="raised"]')).toHaveCount(1);
+  await cards.getByRole('button', { name: 'Standard' }).click();
+  await expect(page.locator('[data-design-card="standard"]')).toHaveCount(1);
+});

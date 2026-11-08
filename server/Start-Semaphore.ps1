@@ -21,7 +21,8 @@
     -Ask         / --ask          open the leadership view (Ask-Semaphore.bat); settings "view" sets the default
     -Refresh     / --refresh      refresh every playbook snapshot in a headless Edge or Chrome, report, and
                                   stop (for an IT-approved morning run on an always-on machine; at most
-                                  settings refreshTimeoutMin minutes)
+                                  settings refreshTimeoutMin minutes). Exit 3 when another Semaphore was
+                                  already running and nothing was refreshed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -238,6 +239,13 @@ if ($vaultSources.Count -gt 0 -and -not $CheckOnly) {
 
 # ---- One instance -----------------------------------------------------------
 function Exit-SemReuse([int]$ReusePort, [string]$Why) {
+    if ($Refresh) {
+        # A refresh run must not hand its work to a copy someone is using (it refreshes stale snapshots itself),
+        # and must not report success for a refresh that did not run: exit 3, which the CLI reports.
+        Write-SemLog 'WARN' ("Refresh: another Semaphore is already running on port {0} ({1}); nothing was refreshed" -f $ReusePort, $Why)
+        Write-Host "Refresh: another Semaphore is already running on http://127.0.0.1:$ReusePort/ ($Why); nothing was refreshed." -ForegroundColor Yellow
+        exit 3
+    }
     Write-SemLog 'INFO' ("Reusing the running Semaphore on port {0}: {1}" -f $ReusePort, $Why)
     if ($NoBrowser) { Write-Host "Semaphore is already running on http://127.0.0.1:$ReusePort/ ($Why)." -ForegroundColor Yellow }
     elseif (-not (Request-SemOpenBrowser -Port $ReusePort)) { Write-SemLog 'WARN' "The running copy on port $ReusePort did not accept the open request" }
@@ -257,7 +265,10 @@ if ($running.Count -gt 0) {
             # No copy answers: one is still starting (no runtime file yet), or it hangs.
             $starting = @($running | Where-Object { -not $_.File } | Where-Object {
                 $p = Get-Process -Id $_.Pid -ErrorAction SilentlyContinue
-                $p -and $p.StartTime -and ((Get-Date) - $p.StartTime).TotalSeconds -lt 90 })
+                $young = $false
+                # StartTime is denied for another account's process: such a copy is not "ours still starting".
+                if ($p) { try { $young = ($p.StartTime -and ((Get-Date) - $p.StartTime).TotalSeconds -lt 90) } catch { $young = $false } }
+                $young })
             if ($starting.Count -gt 0) { Write-SemLog 'INFO' "Another launch is still starting ($where); leaving it"; exit 0 }
             Write-SemLog 'WARN' "A running copy does not answer ($where): stopping it"
             foreach ($r in $running) { [void](Stop-SemInstance -Instance $r) }

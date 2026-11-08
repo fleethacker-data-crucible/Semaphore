@@ -77,6 +77,29 @@ function Find-SemSource {
 # ---------------------------------------------------------------------------
 # Guard, parameters, identifiers
 # ---------------------------------------------------------------------------
+# Statement keywords that never belong in a read. T-SQL (SQL Server, Synapse) needs no ';' between statements, so
+# "SELECT 1 EXEC sp_who" is two statements: these are refused wherever they stand outside a quoted string or a
+# quoted identifier. The database's read-only login is the real control (docs/VAULT.md); this is defence in depth.
+$script:SemSqlRefusedWordsRx = '(?i)\b(EXEC|EXECUTE|DROP|ALTER|CREATE|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|GRANT|REVOKE|DENY|BACKUP|RESTORE|DBCC|GO|INTO)\b'
+
+function Remove-SemSqlQuoted {
+    # The SQL with the inside of every 'string', "name", [name] and `name` blanked (doubled closers stay inside),
+    # so a keyword check sees only the statement itself.
+    param([string]$Sql)
+    $sb = New-Object Text.StringBuilder $Sql.Length
+    $close = [char]0
+    foreach ($ch in $Sql.ToCharArray()) {
+        if ($close -ne [char]0) {
+            if ($ch -eq $close) { $close = [char]0; [void]$sb.Append($ch) } else { [void]$sb.Append(' ') }
+            continue
+        }
+        if ($ch -eq "'" -or $ch -eq '"' -or $ch -eq '`') { $close = $ch }
+        elseif ($ch -eq '[') { $close = ']' }
+        [void]$sb.Append($ch)
+    }
+    return $sb.ToString()
+}
+
 function Test-SemSqlGuard {
     # $null when the SQL may run, else the reason it is refused.
     param([string]$Sql)
@@ -88,8 +111,15 @@ function Test-SemSqlGuard {
     if ($t.Contains(';')) { return 'The SQL may not contain ";".' }
     if ($t.Contains('--')) { return 'The SQL may not contain "--".' }
     if ($t.Contains('/*')) { return 'The SQL may not contain "/*".' }
-    # SELECT ... INTO creates a table in SQL Server and Access; the SQL desk takes typed SQL, so refuse it.
-    if ($t -match '(?i)\bINTO\b') { return 'The SQL may not contain INTO: Semaphore only reads.' }
+    # SELECT ... INTO creates a table in SQL Server and Access, and T-SQL runs "SELECT 1 DROP TABLE t" as two
+    # statements without a ';': refuse every statement keyword that stands outside quotes.
+    $bare = Remove-SemSqlQuoted $t
+    $m = [regex]::Match($bare, $script:SemSqlRefusedWordsRx)
+    if ($m.Success) {
+        $word = $m.Groups[1].Value.ToUpperInvariant()
+        if ($word -eq 'INTO') { return 'The SQL may not contain INTO: Semaphore only reads.' }
+        return ('The SQL may not contain ' + $word + ': Semaphore only reads, one SELECT at a time.')
+    }
     return $null
 }
 
@@ -756,7 +786,7 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.VaultPath
     . $Ctx.ConnectorsPath
 }
-Set-SemVaultRequest $Ctx.Vault
+Clear-SemVaultRequest
 $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
 $script:Sem.Port = $Ctx.Port
@@ -765,6 +795,8 @@ $script:Sem.Responded = $false
 try {
     $Client.SendTimeout = 30000
     $script:Sem.Stream = $Client.GetStream()
+    # Lazarette is asked here, in the worker, so a slow or locked vault never holds the main loop (Vault.ps1, the one seam).
+    if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { Set-SemVaultRequest (Get-SemVaultForRequest -Req $Req -HomeDir $Ctx.Home) }
     if ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
     elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
@@ -772,6 +804,7 @@ try {
     Write-SemLog 'ERROR' ('{0}: {1}' -f $Req.Path, $_.Exception.Message)
     if (-not $script:Sem.Responded) { try { Send-SemError 500 'internal' 'Internal server error.' } catch { } }
 } finally {
+    Clear-SemVaultRequest   # the secrets of this request do not wait in the idle runspace for the next one
     $script:Sem.Stream = $null
     try { $Client.Close() } catch { }
 }
@@ -794,39 +827,98 @@ function Initialize-SemWorkers {
     }
 }
 
+$script:SemWorkerDefaultDeadlineSec = 300
+$script:SemWorkerDeadlineMarginSec = 60
+
+function Get-SemWorkerDeadlineSec {
+    # How long a worker may run before the main loop gives up on it: the query plan's time limit plus a margin
+    # (the connect, the vault read and writing the rows), else 300 s (a profile walks many columns; a model can be slow).
+    param($Req)
+    if ($null -ne $Req -and $Req.Path -eq '/api/query') {
+        return ((Get-SemBoundedInt (Get-SemJsonProp $Req.Json 'timeoutSec') 60 1 300) + $script:SemWorkerDeadlineMarginSec)
+    }
+    return $script:SemWorkerDefaultDeadlineSec
+}
+
 function Start-SemWorkerRequest {
+    # The main loop hands the connection to a worker and goes on; the worker resolves the request's Lazarette
+    # secrets itself (the worker script), so nothing slow runs here.
     param($Req)
     $ctx = $script:Sem.WorkerContext.Clone()
     $ctx.Port = $script:Sem.Port
-    # Lazarette is asked from this (main) runspace: resolve this request's secrets here and hand them over (Vault.ps1).
-    $ctx.Vault = $null
-    if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { $ctx.Vault = Get-SemVaultForRequest -Req $Req -HomeDir $script:Sem.Home }
     $ps = [powershell]::Create()
     $ps.RunspacePool = $script:Sem.Pool
     [void]$ps.AddScript($script:SemWorkerScript).AddArgument($Req.Client).AddArgument($Req).AddArgument($ctx)
     $handle = $ps.BeginInvoke()
-    $script:Sem.Workers.Add(@{ PS = $ps; Handle = $handle; Path = $Req.Path; Clock = [Diagnostics.Stopwatch]::StartNew() })
+    $script:Sem.Workers.Add(@{ PS = $ps; Handle = $handle; Path = $Req.Path; Client = $Req.Client; Clock = [Diagnostics.Stopwatch]::StartNew(); DeadlineSec = (Get-SemWorkerDeadlineSec $Req); TimedOut = $false })
     $script:Sem.Deferred = $true
     $script:Sem.Responded = $true
 }
 
+function Stop-SemWorkerLate {
+    # A worker past its deadline: its client gets a 504 (when the socket is still open) and is closed, the
+    # pipeline is asked to stop without waiting for it, and the item stays in the list, marked, until the
+    # pipeline really ends (then Update-SemWorkers reaps it). Returns $true when the client was answered.
+    param([hashtable]$Item)
+    $Item.TimedOut = $true
+    $answered = $false
+    $client = $Item.Client
+    if ($null -ne $client) {
+        try {
+            if ($client.Connected) {
+                $msg = 'The request took longer than {0} s and was given up; the source may still be working on it.' -f $Item.DeadlineSec
+                Send-SemError 504 'timeout' $msg -Stream ($client.GetStream())
+                $answered = $true
+            }
+        } catch { }
+        try { $client.Close() } catch { }
+    }
+    try { [void]$Item.PS.BeginStop($null, $null) } catch { }
+    Write-SemLog 'WARN' ('Worker {0}: gave up after {1} s (deadline {2} s); the pipeline was asked to stop' -f $Item.Path, [int]$Item.Clock.Elapsed.TotalSeconds, $Item.DeadlineSec)
+    return $answered
+}
+
 function Update-SemWorkers {
+    # Reaps finished workers and gives up on those past their deadline (Stop-SemWorkerLate).
     $w = $script:Sem.Workers
     if ($null -eq $w) { return }
     foreach ($item in @($w.ToArray())) {
-        if (-not $item.Handle.IsCompleted) { continue }
-        try { [void]$item.PS.EndInvoke($item.Handle) } catch { Write-SemLog 'ERROR' ('Worker ' + $item.Path + ': ' + $_.Exception.Message) }
+        if (-not $item.Handle.IsCompleted) {
+            if (-not $item.TimedOut -and $null -ne $item.DeadlineSec -and $null -ne $item.Clock -and $item.Clock.Elapsed.TotalSeconds -gt $item.DeadlineSec) { [void](Stop-SemWorkerLate -Item $item) }
+            continue
+        }
+        if (-not $item.TimedOut) { try { [void]$item.PS.EndInvoke($item.Handle) } catch { Write-SemLog 'ERROR' ('Worker ' + $item.Path + ': ' + $_.Exception.Message) } }
         try { $item.PS.Dispose() } catch { }
         [void]$w.Remove($item)
     }
 }
 
 function Close-SemWorkers {
+    # Asks every pipeline to stop and waits a bounded time (never Stop(), which waits as long as a stuck driver
+    # call does), then disposes what stopped and leaves the rest to end with the process.
+    param([int]$WaitMs = 3000)
     $w = $script:Sem.Workers
     if ($null -ne $w) {
-        foreach ($item in @($w.ToArray())) { try { $item.PS.Stop(); $item.PS.Dispose() } catch { } }
+        $stops = New-Object System.Collections.Generic.List[object]
+        foreach ($item in @($w.ToArray())) {
+            try { $client = $item.Client; if ($null -ne $client) { $client.Close() } } catch { }
+            try { $stops.Add(@{ Item = $item; Ar = $item.PS.BeginStop($null, $null) }) } catch { }
+        }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($s in $stops) {
+            $left = [Math]::Max(0, $WaitMs - [int]$clock.ElapsedMilliseconds)
+            $done = $false
+            try { $done = $s.Ar.AsyncWaitHandle.WaitOne($left) } catch { $done = $false }
+            if ($done) { try { $s.Item.PS.Dispose() } catch { } }
+            else { Write-SemLog 'WARN' ('Worker ' + $s.Item.Path + ' did not stop within ' + $WaitMs + ' ms; left to end with the process') }
+        }
         $w.Clear()
     }
-    if ($null -ne $script:Sem.Pool) { try { $script:Sem.Pool.Close(); $script:Sem.Pool.Dispose() } catch { } }
+    if ($null -ne $script:Sem.Pool) {
+        try {
+            $ar = $script:Sem.Pool.BeginClose($null, $null)
+            if ($ar.AsyncWaitHandle.WaitOne($WaitMs)) { $script:Sem.Pool.EndClose($ar); $script:Sem.Pool.Dispose() }
+        } catch { }
+    }
     $script:Sem.Pool = $null
 }

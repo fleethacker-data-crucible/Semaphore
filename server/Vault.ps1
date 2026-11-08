@@ -17,9 +17,10 @@
 # Roles per provider ($script:SemVaultRoles). A required role with no value stops the request with a sentence;
 # an optional role with no value leaves a note (in the log, on the query answer and on a connect error).
 #
-# The main loop reads the secrets for the one source a request names (Resolve-SemVaultSecrets, the one seam)
-# and hands the values to the worker with that request. They live in memory for that request only, are
-# never logged, returned or written, and are scrubbed from error text (Get-SemVaultSafeText).
+# The worker that serves a request reads the secrets for the one source it names (Resolve-SemVaultSecrets, the
+# one seam, through Get-SemVaultForRequest in the worker script of Query.ps1), so a slow or locked Lazarette
+# never holds the main loop. They live in memory for that request only (Clear-SemVaultRequest when it ends),
+# are never logged, returned or written, and are scrubbed from error text (Get-SemVaultSafeText).
 # =============================================================================
 
 . (Join-Path $PSScriptRoot 'Lazarette.Client.ps1')
@@ -183,10 +184,19 @@ function Get-SemVaultPurpose {
 # ---------------------------------------------------------------------------
 # Status (GET /api/vault, vault status): names and states only, never a value
 # ---------------------------------------------------------------------------
+# The share states Lazarette last reported, kept for a minute: the tool protocol has no state-only call, so each
+# check is a real read that returns the values (dropped at once) and is written to Lazarette's log. Opening the
+# Settings page twice in a minute asks once. Pairing or unpairing clears it.
+$script:SemVaultStatusCacheSec = 60
+$script:SemVaultStatusCache = $null
+
+function Clear-SemVaultStatusCache { $script:SemVaultStatusCache = $null }
+
 function Get-SemVaultStatus {
     # paired / running / locked, which source reads which share, and which shares Lazarette has for Semaphore.
-    # When paired and running it asks Lazarette once for every share the sources name; the values are dropped at once.
-    param([string]$HomeDir)
+    # When paired and running it asks Lazarette once for every share the sources name; the values are dropped at
+    # once and the states are kept for 60 s (-NoCache asks again).
+    param([string]$HomeDir, [switch]$NoCache, [datetime]$Now = (Get-Date))
     $sources = New-Object System.Collections.Generic.List[object]
     $names = New-Object System.Collections.Generic.List[string]
     foreach ($s in @(Get-SemSources -HomeDir $HomeDir)) {
@@ -203,6 +213,13 @@ function Get-SemVaultStatus {
     $out = [ordered]@{ tool = $script:SemVaultTool; paired = [bool]$init.Paired; running = (Test-SemVaultRunning); locked = $null; problem = $init.Problem; sources = $sources.ToArray(); shared = @(); notShared = @() }
     if (-not $out.running) { $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.'; if (-not $out.paired) { $out.problem += ' ' + $init.Problem } }
     if (-not $out.paired -or -not $out.running -or $names.Count -eq 0) { return $out }
+    $cacheKey = ($names | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join ','
+    $cache = $script:SemVaultStatusCache
+    if (-not $NoCache -and $null -ne $cache -and $cache.Key -eq $cacheKey -and ($Now - $cache.At).TotalSeconds -lt $script:SemVaultStatusCacheSec) {
+        $out.locked = $false; $out.problem = $null
+        $out.shared = @($cache.Shared); $out.notShared = @($cache.NotShared); $out.cachedAt = $cache.At.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        return $out
+    }
     $shared = New-Object System.Collections.Generic.List[string]
     $missing = New-Object System.Collections.Generic.List[object]
     for ($i = 0; $i -lt $names.Count; $i += 32) {
@@ -226,6 +243,7 @@ function Get-SemVaultStatus {
     $out.problem = $null
     $out.shared = $shared.ToArray()
     $out.notShared = $missing.ToArray()
+    $script:SemVaultStatusCache = @{ Key = $cacheKey; At = $Now; Shared = @($shared.ToArray()); NotShared = @($missing.ToArray()) }
     return $out
 }
 
@@ -281,6 +299,17 @@ function Set-SemVaultRequest {
     # Worker: install the request's vault context ($null clears it).
     param($Context)
     $script:SemVaultRequest = $Context
+}
+
+function Clear-SemVaultRequest {
+    # Worker, when a request ends: the values are overwritten in their hashtable before the context is dropped, so
+    # the idle runspace holds no secret while it waits for the next request.
+    $c = $script:SemVaultRequest
+    if ($null -ne $c -and $c -is [hashtable] -and $c.ContainsKey('Values') -and $c.Values -is [hashtable]) {
+        foreach ($k in @($c.Values.Keys)) { $c.Values[$k] = $null }
+        $c.Values.Clear()
+    }
+    $script:SemVaultRequest = $null
 }
 
 function Get-SemVaultValue {
@@ -346,6 +375,7 @@ function Register-SemVaultPairing {
 }
 
 function Unregister-SemVaultPairing {
+    Clear-SemVaultStatusCache
     return [bool](Unregister-LazaretteToolPairing -Tool $script:SemVaultTool)
 }
 
@@ -373,6 +403,7 @@ function Invoke-SemVaultPairRoute {
     }
     if (-not $ok) { Send-SemError 400 'vault-code' $refusal; return }
     Write-SemLog 'INFO' 'Paired with Lazarette from the Settings screen'
+    Clear-SemVaultStatusCache
     Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home)
 }
 

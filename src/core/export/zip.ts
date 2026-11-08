@@ -49,6 +49,25 @@ async function throughStream(data: Uint8Array, stream: { readable: ReadableStrea
   return joinBytes(chunks);
 }
 
+/**
+ * Whether this runtime can deflate. CompressionStream('deflate-raw') arrived in Chromium 103 and Node
+ * 21; without it the ZIP writer stores entries and the PDF writes plain streams, so a file still comes
+ * out, only larger. Checked once: the answer cannot change while the page is open.
+ */
+function canCompress(format: 'deflate-raw' | 'deflate'): boolean {
+  try {
+    if (typeof CompressionStream !== 'function' || typeof DecompressionStream !== 'function') return false;
+    new CompressionStream(format);
+    new DecompressionStream(format);
+    return true;
+  } catch {
+    return false;
+  }
+}
+export const compressionSupported: boolean = canCompress('deflate-raw');
+/** The zlib-wrapped kind, which PDF and PNG use; older than deflate-raw (Chromium 80). */
+export const zlibSupported: boolean = canCompress('deflate');
+
 export const deflateRaw = (data: Uint8Array) => throughStream(data, new CompressionStream('deflate-raw'));
 export const inflateRaw = (data: Uint8Array) => throughStream(data, new DecompressionStream('deflate-raw'));
 /** Deflate in a zlib wrapper, as PDF's FlateDecode and PNG's IDAT use. */
@@ -70,8 +89,12 @@ const UTF8_NAMES = 0x0800;
 const STORE = 0;
 const DEFLATE = 8;
 
-/** Builds a ZIP. Each entry is deflated, or stored when deflate would not make it smaller. */
-export async function zip(entries: ZipEntry[], options: { date?: Date } = {}): Promise<Uint8Array> {
+/**
+ * Builds a ZIP. Each entry is deflated, or stored when deflate would not make it smaller or the
+ * runtime cannot deflate at all (`options.store` forces storing, for tests).
+ */
+export async function zip(entries: ZipEntry[], options: { date?: Date; store?: boolean } = {}): Promise<Uint8Array> {
+  const store = options.store || !compressionSupported;
   if (entries.length > 0xffff) throw new Error('A ZIP without ZIP64 holds at most 65,535 files.');
   const encoder = new TextEncoder();
   const { time, day } = dosStamp(options.date);
@@ -89,7 +112,7 @@ export async function zip(entries: ZipEntry[], options: { date?: Date } = {}): P
 
     const name = encoder.encode(entry.name);
     const raw = typeof entry.data === 'string' ? encoder.encode(entry.data) : entry.data;
-    const packed = raw.length > 0 ? await deflateRaw(raw) : raw;
+    const packed = raw.length > 0 && !store ? await deflateRaw(raw) : raw;
     const method = packed.length < raw.length ? DEFLATE : STORE;
     const body = method === DEFLATE ? packed : raw;
     const crc = crc32(raw);

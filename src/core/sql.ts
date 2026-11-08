@@ -189,6 +189,9 @@ export function filterSql(f: Filter, col: string, type: FieldType, bind: (p: Sql
     type === 'date' ? `${col} < ${bind({ value: nextDay(String(v)), type: 'date' })}` : `${col} <= ${p(v)}`;
   switch (f.op) {
     case 'eq':
+      // An empty value means "blank": the in-page engine reads '' and null alike, so SQL does too
+      // (a drill into the blank bar, drill.ts). Only text can hold an empty string.
+      if (f.values[0] === '') return type === 'string' ? `(${col} IS NULL OR ${col} = ${p('')})` : `${col} IS NULL`;
       if (type === 'date') return `${col} >= ${p(f.values[0]!)} AND ${upTo(f.values[0]!)}`;
       return `${col} = ${p(f.values[0]!)}`;
     case 'in':

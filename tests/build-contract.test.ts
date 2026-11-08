@@ -29,6 +29,19 @@ test('inline script, style, event handlers and javascript: URLs fail', () => {
   assert.equal(checkIndexHtml(good.replace('<div id="root">', '<a href="javascript:go()">x</a><div id="root">')).length, 1);
 });
 
+test('scripts are walked in order: an unclosed first script is reported even when a later one is closed', () => {
+  const add = (html: string) => good.replace('<div id="root">', `${html}<div id="root">`);
+  // A browser runs an unclosed first script up to the NEXT </script>, swallowing the module tag in
+  // between: that is reported as a body on a <script src>, and the swallowed tag is not judged twice.
+  const unclosedFirst = checkIndexHtml(add('<script src="assets/a-ABCDEFGH.js">'));
+  assert.deepEqual(unclosedFirst, ['a <script src> with inline code in its body']);
+  // A script with no end tag after it is reported as unclosed, once.
+  assert.deepEqual(checkIndexHtml(good.replace('</body>', '<script src="assets/b-ABCDEFGH.js"></body>')), ['an unclosed <script> tag']);
+  // Two well-formed external scripts pass; each is judged on its own body.
+  assert.deepEqual(checkIndexHtml(add('<script src="assets/a-ABCDEFGH.js"></script><script src="assets/b-ABCDEFGH.js"></script>')), []);
+  assert.deepEqual(checkIndexHtml(add('<script src="assets/a-ABCDEFGH.js"></script><script src="assets/b-ABCDEFGH.js">x()</script>')), ['a <script src> with inline code in its body']);
+});
+
 test('a script the browser runs is not hidden by an odd end tag or a comment trick', () => {
   const add = (html: string) => good.replace('<div id="root">', `${html}<div id="root">`);
   assert.equal(checkIndexHtml(add('<script>alert(1)</script foo>')).length, 1);

@@ -395,21 +395,48 @@ export function coverage(entries: readonly PlaybookEntry[], index: CatalogIndex)
     .sort((a, b) => a.entries - b.entries || a.label.localeCompare(b.label));
 }
 
-/** Validate an entry read from the shared folder. Anything malformed is skipped by the caller. */
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A filter as the code reads it: a field name, an op and a list of values (hoist.ts parseFilters checks the rest). */
+export function isFilterShape(v: unknown): boolean {
+  return isRecord(v) && typeof v.field === 'string' && typeof v.op === 'string' && Array.isArray(v.values);
+}
+
+/** A binding as the code reads it: metrics, dimensions (each with a field) and filters, all arrays. */
+export function isBindingShape(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    Array.isArray(v.metrics) &&
+    v.metrics.every((m) => typeof m === 'string') &&
+    Array.isArray(v.dimensions) &&
+    v.dimensions.every((d) => isRecord(d) && typeof d.field === 'string') &&
+    Array.isArray(v.filters) &&
+    v.filters.every(isFilterShape) &&
+    (v.sort === undefined || (isRecord(v.sort) && typeof v.sort.by === 'string'))
+  );
+}
+
+/**
+ * Validate an entry read from the shared folder. Anything malformed is skipped by the caller. The
+ * shape is checked as deep as the code reads it without a catalog (binding, filters, thresholds,
+ * phrasings); whether its keys still exist is checkHealth()'s job.
+ */
 export function isEntry(raw: unknown): raw is PlaybookEntry {
-  if (typeof raw !== 'object' || raw === null) return false;
-  const e = raw as Record<string, unknown>;
+  if (!isRecord(raw)) return false;
+  const e = raw;
   return (
     e.version === 1 &&
     typeof e.id === 'string' &&
     /^[A-Za-z0-9_-]{1,64}$/.test(e.id) &&
     typeof e.question === 'string' &&
     typeof e.kind === 'string' &&
-    typeof e.binding === 'object' &&
-    e.binding !== null &&
+    isBindingShape(e.binding) &&
     Array.isArray(e.pageFilters) &&
+    e.pageFilters.every(isFilterShape) &&
     Array.isArray(e.thresholds) &&
+    e.thresholds.every((t) => isRecord(t) && typeof t.metric === 'string' && typeof t.op === 'string' && typeof t.value === 'number' && typeof t.tone === 'string') &&
     Array.isArray(e.phrasings) &&
+    e.phrasings.every((p) => typeof p === 'string') &&
     typeof e.acceptedBy === 'string' &&
     typeof e.acceptedAt === 'string' &&
     (e.status === 'active' || e.status === 'needs-review' || e.status === 'retired') &&

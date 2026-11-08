@@ -215,10 +215,10 @@ function FindingCard({ finding, onAccept, onSkip }: { finding: Finding; onAccept
       )}
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 text-xs font-medium text-ink-2">Fix: {step.sentence}</span>
-        <button type="button" disabled={step.kind === 'map' && entries.length === 0} onClick={() => onAccept(step)} className="rounded-md bg-accent px-2 py-0.5 text-xs font-semibold text-panel disabled:opacity-40">
+        <button type="button" disabled={step.kind === 'map' && entries.length === 0} onClick={() => onAccept(step)} className="min-h-8 rounded-md bg-accent px-2.5 text-xs font-semibold text-panel disabled:opacity-40">
           Accept
         </button>
-        <button type="button" onClick={onSkip} className="rounded-md border border-line px-2 py-0.5 text-xs">
+        <button type="button" onClick={onSkip} className="min-h-8 rounded-md border border-line px-2.5 text-xs">
           Not now
         </button>
       </div>

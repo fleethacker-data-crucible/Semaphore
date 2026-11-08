@@ -57,9 +57,9 @@ To build it yourself:
 
 > **Current connections:** optional model requests go through the local [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead) proxy. Database and Athena requests currently use Semaphore's own connectors and settings. Routing data sources through Fairlead is a direction in [TechStack](TechStack), not the implementation today.
 
-**AI drafting (optional).** Local rules draft every flag with no model. AI provider keys live in Lazarette and reach only Fairlead; Semaphore only ever holds a client token that Fairlead issues to it. To draft with a model, install a key for **Semaphore** in **Fairlead > Clients** (Fairlead stores it in Windows Credential Manager as `Fairlead/Semaphore`), or as a manual fallback create a client key there, then double-click **`Set-SemaphoreAiKey.bat`** and paste it (only `fl-…` tokens are accepted, never a provider key) (it stores the key under the same name); `SEMAPHORE_AI_KEY` overrides the stored key. Legacy DPAPI files remain readable for compatibility. The Fairlead key never reaches the page. Drafts then go through Fairlead's `local` route, so prompts stay on this computer; the **AI** button in the header shows the state and switches it off. If Fairlead is down or refuses the key, local rules draft instead and say why. See [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md).
+**AI drafting (optional).** Local rules draft every flag with no model. AI provider keys live in Lazarette and reach only Fairlead; Semaphore only ever holds a client token that Fairlead issues to it. To draft with a model, install a key for **Semaphore** in **Fairlead > Clients** (Fairlead stores it in Windows Credential Manager as `Fairlead/Semaphore`), or as a manual fallback create a client key there, then double-click **`Set-SemaphoreAiKey.bat`** and paste it (only `fl-…` tokens are accepted, never a provider key) (it stores the key under the same name); `SEMAPHORE_AI_KEY` overrides the stored key. Legacy DPAPI files remain readable for compatibility. The Fairlead key never reaches the page. Drafts then go through Fairlead's `local` route, so prompts stay on this computer; **Settings > AI drafting** shows the state and switches it off. If Fairlead is down or refuses the key, local rules draft instead and say why. See [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md).
 
-Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore's block is loopback ports 8800–8802 (Fleet port registry), clear of Eight Bells, Scrimshaw and Fairlead (8774–8776); it asks Fairlead for AI on 127.0.0.1:8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Scheduled report editions and snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install an automatic background service or task.
+Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `--check-only` (self-check, no server), `-Port <n>` (or `--port <n>`). Semaphore's block is loopback ports 8800–8802 (Fleet port registry), clear of Eight Bells, Scrimshaw and Fairlead (8774–8776); it asks Fairlead for AI on 127.0.0.1:8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Scheduled report editions and snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install an automatic background service or task.
 
 ## Architecture at a glance
 
@@ -154,11 +154,13 @@ Node 22.18 or later. `npm ci` installs the build tools (esbuild, Tailwind, React
 ```shell
 npm test             # node --test: core, data path and UI logic
 npm run typecheck    # strict tsc for the core and the UI
-npm run build        # web/dist
+npm run build        # web/dist, then the CSP build contract (no inline script or style)
+npm run size         # size report; fails when the initial JS is over web/size-budget.json
+npm run e2e          # Playwright against tests/e2e/mock-server.mjs (needs npm run build first)
 npm run dev          # rebuild on change
 ```
 
-Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShell 5.1.
+Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShell 5.1. The end-to-end suite uses Playwright's Chromium locally and the installed Edge in CI (`SEMAPHORE_E2E_BROWSER_CHANNEL=msedge`); CI runs on GitHub-hosted Windows runners (see the note at the top of `.github/workflows/ci.yml`).
 
 ## Documentation
 

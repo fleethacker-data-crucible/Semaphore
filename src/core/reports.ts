@@ -10,6 +10,7 @@
 import type { Briefing } from './briefing.ts';
 import type { DrillStep } from './drill.ts';
 import type { Flag } from './hoist.ts';
+import type { HoistDesign } from './design.ts';
 
 export type Cadence = { every: 'week'; weekday: number } | { every: 'month'; day: number };
 
@@ -79,6 +80,8 @@ export interface Edition {
   /** Who produced it (the computer's user), shown so leadership knows it is a stand-in. */
   by: string;
   cols: number;
+  /** The page's design when the edition was produced, so it reads as the page did (design.ts). */
+  design?: HoistDesign;
   flags: FrozenFlag[];
   /** What changed, in a few sentences linked to flags (briefing.ts). */
   briefing?: Briefing;

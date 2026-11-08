@@ -1,5 +1,13 @@
 # fleet-gate: the org-wide PR check (see STANDARDS.md in fleethacker-comms-data-crucible).
 # The reusable workflow is pinned to a comms main commit; bump the SHA to adopt gate updates.
+#
+# KNOWN TO FAIL while Semaphore is public: fleethacker-comms-data-crucible is a private repository,
+# and GitHub only lets a private repository's reusable workflow be called from other private or
+# internal repositories of the org. From a public caller the run fails at startup with "This run
+# likely failed because of a workflow file issue" (runs 42394044981, 42333922562; Capstan sees the
+# same; private Lazarette does not). The ways out are to publish the gate from a public repo, inline
+# its steps here, or make Semaphore private again. That is Anthony's and Jeremy's call, so this file
+# is left as it is.
 name: fleet-gate
 on:
   pull_request:

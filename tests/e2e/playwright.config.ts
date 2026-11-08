@@ -1,19 +1,21 @@
 // End-to-end tests for the Semaphore browser UI against tests/e2e/mock-server.mjs, a Node stand-in
-// for the PowerShell server (same gate, launch codes, presence and document store).
+// for the PowerShell server (same gate, launch codes, presence, headers and document store).
 //   npm run build && npm run e2e
-// Locally the suite uses Playwright's Chromium; CI on the Windows runner sets
-// SEMAPHORE_E2E_BROWSER_CHANNEL=msedge to use the installed Edge (nothing is downloaded).
+// Locally the suite uses Playwright's Chromium; CI sets SEMAPHORE_E2E_BROWSER_CHANNEL=msedge to use
+// the installed Edge (nothing is downloaded). SEMAPHORE_E2E_TRACE=retain-on-failure keeps a trace
+// and screenshot for each failed test under tests/e2e/.output (CI uploads that folder).
 import { defineConfig } from '@playwright/test';
 import path from 'node:path';
 
 const port = Number(process.env.SEMAPHORE_E2E_PORT || 47681);
+const trace = (process.env.SEMAPHORE_E2E_TRACE as 'off' | 'retain-on-failure' | 'on' | undefined) || 'off';
 
 export default defineConfig({
   testDir: __dirname,
   testMatch: /.*\.spec\.ts$/,
   outputDir: path.join(__dirname, '.output', 'results'),
   fullyParallel: false,
-  workers: 1, // one shared mock; the tests that stop a server start their own
+  workers: 1, // one shared mock, reset before every test; the tests that stop a server start their own
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
@@ -21,7 +23,8 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     viewport: { width: 1440, height: 900 },
-    trace: 'off',
+    trace,
+    screenshot: trace === 'off' ? 'off' : 'only-on-failure',
   },
   projects: [{ name: 'browser', use: { browserName: 'chromium', ...(process.env.SEMAPHORE_E2E_BROWSER_CHANNEL ? { channel: process.env.SEMAPHORE_E2E_BROWSER_CHANNEL } : {}) } }],
   webServer: {

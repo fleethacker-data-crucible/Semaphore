@@ -41,8 +41,16 @@ export interface ExportChart {
   type: 'bar' | 'line' | 'area' | 'pie';
   horizontal?: boolean;
   stacked?: boolean;
+  /** Stacked to 100%: the values are the real numbers, and the chart shows each as a share of its stack. */
+  percent?: boolean;
   categories: string[];
-  series: Array<{ name: string; values: Array<number | null>; color: string }>;
+  series: Array<{
+    name: string;
+    values: Array<number | null>;
+    color: string;
+    /** The earlier window of a comparison: drawn in grey, not a palette colour. */
+    previous?: boolean;
+  }>;
 }
 
 export interface ExportHeadline {
@@ -50,6 +58,7 @@ export interface ExportHeadline {
   /** Formatted: "$1.2M". */
   text: string;
   value: number | null;
+  format?: ExportNumberFormat;
   tone?: ExportTone;
   /** "+12% vs previous period". */
   change?: string;
@@ -77,6 +86,8 @@ export interface ExportDocument {
   brief: string;
   /** ISO time the numbers were taken. */
   takenAt: string;
+  /** The same time in the reader's own words and zone ("07/11/2026, 14:05:00"); the writers prefer it when set. */
+  takenAtText?: string;
   by: string;
   /** Page filters and selections in words: "Region is East". */
   filters: string[];
@@ -85,7 +96,17 @@ export interface ExportDocument {
   flags: ExportFlag[];
 }
 
-/** A safe file name stem: lower case, hyphens, never empty. */
+/** Names Windows keeps for devices, which it refuses as file names whatever the extension. */
+const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/** A safe file name stem: lower case, letters and digits in any script, hyphens, never empty. */
 export function fileStem(title: string, fallback = 'semaphore-report'): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || fallback;
+  const stem = String(title ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/, '');
+  if (!stem) return fallback;
+  return RESERVED_NAMES.test(stem) ? `${stem}-file` : stem;
 }

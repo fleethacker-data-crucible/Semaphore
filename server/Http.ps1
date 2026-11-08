@@ -5,8 +5,9 @@
 #
 #   * Bound to 127.0.0.1 only (Assert-SemLoopbackEndpoint). Connections are accepted into a pending
 #     list and served when they send data, so an idle browser preconnect never stalls the loop.
-#   * Headers must arrive within 5 s (32 KB cap); bodies are capped at 8 MB and must arrive within
-#     30 s. Transfer-Encoding and duplicate Content-Length are rejected.
+#   * Headers must arrive within 5 s (32 KB cap); bodies are capped at 8 MB (2 MB for a document PUT,
+#     checked before the body is read or parsed) and must arrive within 30 s for /api/query, 10 s for
+#     every other route (Get-SemBodyLimit). Transfer-Encoding and duplicate Content-Length are rejected.
 #   * Every request: loopback caller, Host 127.0.0.1:<port> or localhost:<port>, Origin (when
 #     present) the same origin; otherwise 403.
 #   * /api/*: header X-Semaphore-Session must equal the session token (constant-time compare),
@@ -14,7 +15,9 @@
 #     The token is never logged, never put in the runtime file, never on a command line and never
 #     read from a query string: launch links carry a single-use code that /api/launch trades for it.
 #   * /api/query and /api/profile run on a small runspace pool (Query.ps1), so a slow database never
-#     blocks heartbeats, static files or other flags' queries.
+#     blocks heartbeats, static files or other flags' queries. Each worker has a deadline (the plan's
+#     time limit plus a margin, else 300 s): past it the client gets a 504, the pipeline is asked to
+#     stop, and the worker no longer keeps the server alive (Update-SemWorkers).
 #   * Presence (TechStack "Lifecycle rules"): stop 90 s after the last heartbeat (settings
 #     heartbeatTimeoutSec; long enough for a throttled background tab), or 5 s after a leaving
 #     signal with no new heartbeat; never while a query or save is running.
@@ -180,8 +183,12 @@ function Get-SemStaticCacheControl {
 }
 
 function Send-SemBytes {
-    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '')
-    $stream = $script:Sem.Stream
+    # Writes to $Stream when given (a worker's client the main loop answers for), else the current request's stream.
+    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '', [IO.Stream]$Stream = $null)
+    # ($stream and $Stream are one variable in PowerShell: $own remembers which case this is.)
+    $own = ($null -eq $Stream)
+    if ($own) { $Stream = $script:Sem.Stream }
+    $stream = $Stream
     if ($null -eq $stream) { return }
     if ($null -eq $Bytes) { $Bytes = New-Object byte[] 0 }
     $lines = @("HTTP/1.1 $Status $(Get-SemHttpReason $Status)")
@@ -194,12 +201,12 @@ function Send-SemBytes {
     $stream.Write($head, 0, $head.Length)
     if ($Bytes.Length -gt 0 -and -not $HeadOnly) { $stream.Write($Bytes, 0, $Bytes.Length) }
     $stream.Flush()
-    $script:Sem.Responded = $true
+    if ($own) { $script:Sem.Responded = $true }
 }
 
 function Send-SemJsonText {
-    param([int]$Status, [string]$Json)
-    Send-SemBytes -Status $Status -ContentType 'application/json; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($Json))
+    param([int]$Status, [string]$Json, [switch]$HeadOnly, [IO.Stream]$Stream = $null)
+    Send-SemBytes -Status $Status -ContentType 'application/json; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($Json)) -HeadOnly:$HeadOnly -Stream $Stream
 }
 
 function ConvertTo-SemJson {
@@ -210,14 +217,14 @@ function ConvertTo-SemJson {
 }
 
 function Send-SemJson {
-    param([int]$Status, $Object)
-    Send-SemJsonText -Status $Status -Json (ConvertTo-SemJson $Object)
+    param([int]$Status, $Object, [switch]$HeadOnly, [IO.Stream]$Stream = $null)
+    Send-SemJsonText -Status $Status -Json (ConvertTo-SemJson $Object) -HeadOnly:$HeadOnly -Stream $Stream
 }
 
 function Send-SemError {
-    # { error: "message", code: "..." }. Never a stack trace or a connection string.
-    param([int]$Status, [string]$Code, [string]$Message)
-    Send-SemJson -Status $Status -Object ([ordered]@{ error = $Message; code = $Code })
+    # { error: "message", code: "..." }. Never a stack trace or a connection string. -HeadOnly: headers only (a HEAD request).
+    param([int]$Status, [string]$Code, [string]$Message, [switch]$HeadOnly, [IO.Stream]$Stream = $null)
+    Send-SemJson -Status $Status -Object ([ordered]@{ error = $Message; code = $Code }) -HeadOnly:$HeadOnly -Stream $Stream
 }
 
 function Send-SemNoContent { Send-SemBytes -Status 204 -ContentType '' -Bytes (New-Object byte[] 0) }
@@ -250,12 +257,14 @@ function Read-SemHttpRequest {
     $req = ConvertFrom-SemRequestHead -Text ([Text.Encoding]::ASCII.GetString($buf.ToArray(), 0, $headerEnd - 4)) -RemoteAddress $remote
     if ($req.ContainsKey('ErrorStatus')) { Send-SemError $req.ErrorStatus $req.ErrorCode $req.ErrorMessage; return $null }
     $len = $req.ContentLength
+    $limits = Get-SemBodyLimit -Path $req.Path
+    if ($len -gt $limits.MaxBytes) { Send-SemError 413 'too-large' $limits.TooLarge; return $null }
     $body = New-Object byte[] 0
     if ($len -gt 0) {
         $body = New-Object byte[] $len
         $read = 0
         while ($read -lt $len) {
-            if ($deadline.ElapsedMilliseconds -gt 30000) { Send-SemError 408 'timeout' 'Request body too slow.'; return $null }
+            if ($deadline.ElapsedMilliseconds -gt $limits.DeadlineMs) { Send-SemError 408 'timeout' 'Request body too slow.'; return $null }
             $c = $stream.Read($body, $read, $len - $read)
             if ($c -le 0) { break }
             $read += $c
@@ -267,12 +276,27 @@ function Read-SemHttpRequest {
     return $req
 }
 
+$script:SemDocRouteRx = '^/api/(hoists|catalogs|playbook|snapshots|questions|team)/[^/]+$'
+
+function Get-SemBodyLimit {
+    <#
+      The body cap and the time the whole body may take, by route, decided before a byte of it is read:
+        /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
+        a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
+        everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
+    #>
+    param([string]$Path)
+    if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
+    if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
+    return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
+}
+
 function ConvertFrom-SemRequestHead {
     # Parses the request line and headers (no body). Returns a request hashtable; on a malformed
-    # request it carries ErrorStatus / ErrorCode / ErrorMessage instead.
+    # request it carries ErrorStatus / ErrorCode / ErrorMessage instead. The method is upper case only.
     param([string]$Text, $RemoteAddress)
     $lines = $Text -split "`r`n"
-    if ($lines.Count -lt 1 -or $lines[0] -notmatch '^([A-Z]{3,7}) (\S+) HTTP/1\.[01]$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Malformed request line.' } }
+    if ($lines.Count -lt 1 -or $lines[0] -cnotmatch '^([A-Z]{3,7}) (\S+) HTTP/1\.[01]$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Malformed request line.' } }
     $method = $Matches[1]; $target = $Matches[2]
     $headers = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
     $contentLength = 0; $clCount = 0
@@ -395,8 +419,8 @@ function Send-SemStatic {
     }
     $r = Resolve-SemStaticFile -WebRoot $script:Sem.WebRoot -Path $Req.Path
     switch ($r.Kind) {
-        'refused' { Send-SemError 404 'not-found' 'Not found.'; return }
-        'missing' { Send-SemError 404 'not-found' 'Not found.'; return }
+        'refused' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
+        'missing' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
         'notbuilt' {
             Send-SemBytes -Status 200 -ContentType 'text/html; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes((Get-SemNotBuiltPage))) -Csp (Get-SemNotBuiltCsp) -HeadOnly:$head
             return
@@ -436,9 +460,19 @@ function Register-SemBusyEnd {
     $script:Sem.Presence.BusyEnd = $Now
 }
 
+function Get-SemActiveWorkerCount {
+    # Workers still inside their deadline. A worker that was given up on (Update-SemWorkers, TimedOut) no
+    # longer counts: it has had its 504 and its stop request, and must not keep the server alive.
+    $w = $script:Sem.Workers
+    if ($null -eq $w) { return 0 }
+    $n = 0
+    foreach ($item in @($w.ToArray())) { if (-not $item.TimedOut) { $n++ } }
+    return $n
+}
+
 function Test-SemBusy {
     if ($script:Sem.SyncBusy) { return $true }
-    if ($null -ne $script:Sem.Workers -and $script:Sem.Workers.Count -gt 0) { return $true }
+    if ((Get-SemActiveWorkerCount) -gt 0) { return $true }
     return $false
 }
 
@@ -527,6 +561,8 @@ function Invoke-SemRequest {
     if ($path.StartsWith('/__fleethacker/') -or $path.StartsWith('/__semaphore/')) { Invoke-SemFleetEndpoint -Req $Req; return }
     if ($path -eq '/api' -or $path.StartsWith('/api/')) {
         if ($Req.Body.Length -gt 0) {
+            $limits = Get-SemBodyLimit -Path $path
+            if ($Req.Body.Length -gt $limits.MaxBytes) { Send-SemError 413 'too-large' $limits.TooLarge; return }   # the cap before the parse
             $text = (New-Object Text.UTF8Encoding $false).GetString($Req.Body)
             # Only a JSON object is a valid API body (ConvertFrom-Json would unroll a one-element array).
             if (-not $text.TrimStart().StartsWith('{')) { Send-SemError 400 'bad-json' 'Request body must be a JSON object.'; return }
@@ -636,10 +672,10 @@ function Start-SemHttpServer {
         if ($OnReady) { & $OnReady }
         while ($true) {
             if ($script:Sem.StopRequested) {
-                # Let running queries finish (up to 15 s) before the pool is closed.
+                # Let running queries finish (up to 15 s) before the pool is closed; a worker already given up on does not hold this.
                 if ($null -eq $stopClock) { $stopClock = [Diagnostics.Stopwatch]::StartNew() }
                 Update-SemWorkers
-                if ($script:Sem.Workers.Count -eq 0 -or $stopClock.ElapsedMilliseconds -gt 15000) { break }
+                if ((Get-SemActiveWorkerCount) -eq 0 -or $stopClock.ElapsedMilliseconds -gt 15000) { break }
                 Start-Sleep -Milliseconds 50
                 continue
             }

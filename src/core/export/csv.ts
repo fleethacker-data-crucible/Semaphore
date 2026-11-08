@@ -3,7 +3,7 @@
 
 import { fileStem } from './model.ts';
 import type { ExportDocument, ExportFlag, ExportTable } from './model.ts';
-import { cellNumber, cellText, filtersWords, flagTable, noAnswer, NOTHING_TO_SHOW, takenAtWords, validDate } from './shared.ts';
+import { cellNumber, cellText, filtersWords, flagTable, noAnswer, NOTHING_TO_SHOW, percentLabel, percentValue, takenWords, validDate } from './shared.ts';
 import { zip } from './zip.ts';
 import type { ZipEntry } from './zip.ts';
 
@@ -19,15 +19,19 @@ function field(text: string): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** One table as CSV text. Pass `bom: true` for a file Excel should read as UTF-8. */
+/**
+ * One table as CSV text. Pass `bom: true` for a file Excel should read as UTF-8. A percent column is
+ * written as the percentage the page shows (36.9, not 0.369), and its header says so.
+ */
 export function toCsv(table: ExportTable, options: { bom?: boolean } = {}): string {
-  const lines = [table.columns.map((c) => field(guardFormula(c.label))).join(',')];
+  const lines = [table.columns.map((c) => field(guardFormula(c.format === 'percent' ? percentLabel(c.label) : c.label))).join(',')];
   for (const row of table.rows) {
     lines.push(
       table.columns
         .map((column, i) => {
           const n = cellNumber(column, row[i]);
-          return n !== null ? String(n) : field(guardFormula(cellText(row[i])));
+          if (n === null) return field(guardFormula(cellText(row[i])));
+          return String(column.format === 'percent' ? percentValue(n) : n);
         })
         .join(','),
     );
@@ -45,7 +49,8 @@ function headlinesTable(flag: ExportFlag): ExportTable {
     ],
     rows: (flag.headlines ?? []).map((h) => [
       { text: h.label, value: h.label },
-      { text: h.value === null ? '' : h.text, value: h.value },
+      // A percent headline's value is the percentage shown, so it reads like "Shown as" does.
+      { text: h.value === null ? '' : h.text, value: h.value !== null && h.format === 'percent' ? percentValue(h.value) : h.value },
       { text: h.text, value: h.text },
       { text: h.change ?? '', value: h.change ?? null },
     ]),
@@ -71,13 +76,14 @@ export async function flagsToCsvZip(doc: ExportDocument): Promise<Uint8Array> {
   const readme = [
     doc.title,
     ...(doc.brief ? [doc.brief] : []),
-    `Taken at: ${takenAtWords(doc.takenAt)}`,
+    `Taken at: ${takenWords(doc)}`,
     `By: ${doc.by}`,
     `Filters: ${filtersWords(doc)}`,
     '',
     ...(contents.length > 0 ? contents : ['This export has no flags.']),
     '',
     'Text that starts with = + - or @ has a leading apostrophe so a spreadsheet will not run it as a formula.',
+    'A column marked (%) holds percentages as shown on the page (36.9 for 36.9%), not fractions.',
     '',
   ].join(CRLF);
   entries.unshift({ name: 'README.txt', data: BOM + readme });

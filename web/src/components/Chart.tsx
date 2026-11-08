@@ -41,19 +41,16 @@ export interface ChartClick {
 }
 
 /**
- * The parts of an option that decide how the chart is built rather than what it shows. When only
- * the data changes (a selection, a refresh) the chart is updated in place, not redrawn from scratch.
+ * How each option is applied. Series, axes, zoom and legend are replaced outright, so a setting
+ * that a look expresses by leaving a key out (an axis `max`, a floating `scale`) really goes away
+ * when it is left out again; everything else (grid, tooltip, text) merges, so the chart updates in
+ * place rather than being redrawn from scratch.
  */
-function shapeOf(option: EChartsCoreOption): string {
-  const o = option as { series?: Array<Record<string, unknown>>; xAxis?: unknown; yAxis?: unknown; legend?: unknown; color?: unknown; dataZoom?: unknown };
-  const axis = (a: unknown) => (Array.isArray(a) ? a : a ? [a] : []).map((x) => (x as { type?: string; inverse?: boolean }).type + String((x as { inverse?: boolean }).inverse ?? ''));
-  return JSON.stringify([(o.series ?? []).map((s) => [s.type, s.name, s.stack, s.yAxisIndex, s.xAxisIndex]), axis(o.xAxis), axis(o.yAxis), o.legend ?? null, o.color, !!o.dataZoom]);
-}
+export const APPLY_OPTION: { replaceMerge: string[] } = { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom', 'legend'] };
 
 export function EChart({ option, onClick, label, describedBy, motion = 'calm' }: { option: EChartsCoreOption; onClick?: (e: ChartClick) => void; label: string; describedBy?: string; motion?: Motion }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts | null>(null);
-  const shape = useRef<string | null>(null);
   const click = useRef(onClick);
   click.current = onClick;
   const [failed, setFailed] = useState<string | null>(null);
@@ -65,7 +62,6 @@ export function EChart({ option, onClick, label, describedBy, motion = 'calm' }:
     const c = echarts.init(el.current!, undefined, { renderer: 'svg' });
     chart.current = c;
     hasExtras.current = extrasReady;
-    shape.current = null;
     c.on('click', (p) => click.current?.({ name: String((p as { name?: unknown }).name ?? ''), seriesName: (p as { seriesName?: string }).seriesName, dataIndex: (p as { dataIndex: number }).dataIndex, raw: ((p as { data?: { raw?: unknown } }).data ?? {}).raw }));
     return c;
   };
@@ -79,7 +75,6 @@ export function EChart({ option, onClick, label, describedBy, motion = 'calm' }:
       ro.disconnect();
       chart.current?.dispose();
       chart.current = null;
-      shape.current = null;
     };
   }, []);
 
@@ -95,15 +90,10 @@ export function EChart({ option, onClick, label, describedBy, motion = 'calm' }:
     }
     try {
       // Motion: none under reduced motion, otherwise no mark moves for over 200 ms (UNIFIED-UI 7).
-      const full = { ...option, ...chartMotion(motion) };
-      const next = shapeOf(full);
-      if (shape.current === next) c.setOption(full, { replaceMerge: ['series'] });
-      else c.setOption(full, { notMerge: true });
-      shape.current = next;
+      c.setOption({ ...option, ...chartMotion(motion) }, APPLY_OPTION);
       setFailed(null);
     } catch (e) {
       c.clear();
-      shape.current = null;
       setFailed((e as Error).message);
     }
     };

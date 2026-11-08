@@ -55,7 +55,7 @@ export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onO
 
           {bar && (
             <Group title="Bars">
-              {hasSeries && <Choice label="Layout" value={shown.barLayout ?? 'auto'} options={[{ id: 'stacked', label: 'Stacked' }, { id: 'grouped', label: 'Side by side' }, { id: 'percent', label: '100%' }]} onChange={(barLayout) => set({ barLayout })} />}
+              {hasSeries && <Choice label="Layout" value={shown.barLayout ?? 'auto'} options={[{ id: 'auto', label: 'Best fit' }, { id: 'stacked', label: 'Stacked' }, { id: 'grouped', label: 'Side by side' }, { id: 'percent', label: '100%' }]} onChange={(barLayout) => set({ barLayout })} />}
               <Choice label="Direction" value={shown.orientation ?? 'auto'} options={[{ id: 'auto', label: 'Best fit' }, { id: 'vertical', label: 'Up' }, { id: 'horizontal', label: 'Across' }]} onChange={(orientation) => set({ orientation })} />
             </Group>
           )}

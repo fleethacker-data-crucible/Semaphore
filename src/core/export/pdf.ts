@@ -22,11 +22,17 @@ import {
   noAnswer,
   NOTHING_TO_SHOW,
   rgb,
-  takenAtWords,
+  takenWords,
   TONE_FILL,
   validDate,
 } from './shared.ts';
-import { crc32, deflateZlib, inflateZlib, joinBytes } from './zip.ts';
+import { crc32, deflateZlib, inflateZlib, joinBytes, zlibSupported } from './zip.ts';
+
+/** Deflates a stream's bytes when the runtime can; otherwise they go in plain, with no filter. */
+async function flate(data: Uint8Array, options: { store?: boolean } = {}): Promise<{ bytes: Uint8Array; filter: string }> {
+  if (options.store || !zlibSupported) return { bytes: data, filter: '' };
+  return { bytes: await deflateZlib(data), filter: ' /Filter /FlateDecode' };
+}
 
 const PAGE_WIDTH = 792;
 const PAGE_HEIGHT = 612;
@@ -216,10 +222,12 @@ function infoString(text: string): string {
 interface DecodedImage {
   width: number;
   height: number;
-  /** Deflated in a zlib wrapper: `width * height * 3` bytes of RGB once inflated. */
+  /** `width * height * 3` bytes of RGB, deflated in a zlib wrapper when `filter` says so. */
   rgb: Uint8Array;
-  /** Deflated the same way: one byte of alpha a pixel. Null when every pixel is opaque. */
+  /** One byte of alpha a pixel, stored the same way. Null when every pixel is opaque. */
   alpha: Uint8Array | null;
+  /** ' /Filter /FlateDecode', or '' when the bytes are plain. */
+  filter: string;
 }
 
 function paeth(a: number, b: number, c: number): number {
@@ -256,7 +264,7 @@ function unfilter(data: Uint8Array, height: number, rowBytes: number, pixelBytes
 }
 
 /** Reads an 8-bit RGB or RGBA PNG and prepares it for embedding. Throws on anything else. */
-export async function decodePng(png: Uint8Array): Promise<DecodedImage> {
+export async function decodePng(png: Uint8Array, options: { store?: boolean } = {}): Promise<DecodedImage> {
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
   if (png.length < 33 || view.getUint32(0) !== 0x89504e47) throw new Error('Not a PNG.');
   const width = view.getUint32(16);
@@ -277,7 +285,10 @@ export async function decodePng(png: Uint8Array): Promise<DecodedImage> {
   }
   const channels = colorType === 6 ? 4 : 3;
   const pixels = unfilter(await inflateZlib(joinBytes(idat)), height, width * channels, channels);
-  if (channels === 3) return { width, height, rgb: await deflateZlib(pixels), alpha: null };
+  if (channels === 3) {
+    const rgb = await flate(pixels, options);
+    return { width, height, rgb: rgb.bytes, alpha: null, filter: rgb.filter };
+  }
 
   const count = width * height;
   const colour = new Uint8Array(count * 3);
@@ -291,7 +302,8 @@ export async function decodePng(png: Uint8Array): Promise<DecodedImage> {
     alpha[i] = a;
     if (a !== 255) opaque = false;
   }
-  return { width, height, rgb: await deflateZlib(colour), alpha: opaque ? null : await deflateZlib(alpha) };
+  const rgb = await flate(colour, options);
+  return { width, height, rgb: rgb.bytes, alpha: opaque ? null : (await flate(alpha, options)).bytes, filter: rgb.filter };
 }
 
 interface Page {
@@ -304,7 +316,7 @@ interface Bookmark {
   y: number;
 }
 
-export async function toPdf(doc: ExportDocument): Promise<Uint8Array> {
+export async function toPdf(doc: ExportDocument, options: { store?: boolean } = {}): Promise<Uint8Array> {
   const accent = hexColor(doc.accent);
   const ink = accentInk(accent);
   const pages: Page[] = [{ ops: [] }];
@@ -381,7 +393,7 @@ export async function toPdf(doc: ExportDocument): Promise<Uint8Array> {
     rule(MARGIN, y, CONTENT_WIDTH, accent, 1.5);
     y -= 8;
     if (doc.brief) paragraph(doc.brief, { size: 12, maxLines: 10, after: 10 });
-    fact('Taken at', takenAtWords(doc.takenAt));
+    fact('Taken at', takenWords(doc));
     fact('By', doc.by);
     fact('Filters', filtersWords(doc));
     y -= 14;
@@ -484,7 +496,7 @@ export async function toPdf(doc: ExportDocument): Promise<Uint8Array> {
   for (const flag of doc.flags) {
     if (!flag.image) continue;
     try {
-      const decoded = await decodePng(flag.image.png);
+      const decoded = await decodePng(flag.image.png, options);
       const name = `Im${images.length + 1}`;
       images.push({ name, decoded });
       imageNames.set(flag, name);
@@ -557,10 +569,10 @@ export async function toPdf(doc: ExportDocument): Promise<Uint8Array> {
     page.ops.push(`BT ${colorOp(MUTED_INK, 'rg')} /F1 8 Tf ${num(PAGE_WIDTH - MARGIN - textWidth(label, 'F1', 8))} ${baseline} Td ${literal(label)} Tj ET`);
   });
 
-  return assemble(doc, pages, bookmarks, images);
+  return assemble(doc, pages, bookmarks, images, options);
 }
 
-async function assemble(doc: ExportDocument, pages: Page[], bookmarks: Bookmark[], images: Array<{ name: string; decoded: DecodedImage }>): Promise<Uint8Array> {
+async function assemble(doc: ExportDocument, pages: Page[], bookmarks: Bookmark[], images: Array<{ name: string; decoded: DecodedImage }>, options: { store?: boolean }): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const bodies: Array<Uint8Array | undefined> = [];
   const reserve = () => {
@@ -589,11 +601,11 @@ async function assemble(doc: ExportDocument, pages: Page[], bookmarks: Bookmark[
     let mask = '';
     if (decoded.alpha) {
       const maskId = reserve();
-      put(maskId, `<< /Type /XObject /Subtype /Image ${size} /ColorSpace /DeviceGray /Filter /FlateDecode >>`, decoded.alpha);
+      put(maskId, `<< /Type /XObject /Subtype /Image ${size} /ColorSpace /DeviceGray${decoded.filter} >>`, decoded.alpha);
       mask = ` /SMask ${maskId} 0 R`;
     }
     const id = reserve();
-    put(id, `<< /Type /XObject /Subtype /Image ${size} /ColorSpace /DeviceRGB /Filter /FlateDecode${mask} >>`, decoded.rgb);
+    put(id, `<< /Type /XObject /Subtype /Image ${size} /ColorSpace /DeviceRGB${decoded.filter}${mask} >>`, decoded.rgb);
     imageRefs.push(`/${name} ${id} 0 R`);
   }
 
@@ -603,7 +615,8 @@ async function assemble(doc: ExportDocument, pages: Page[], bookmarks: Bookmark[
     const pageId = reserve();
     const contentId = reserve();
     pageIds.push(pageId);
-    put(contentId, '<< /Filter /FlateDecode >>', await deflateZlib(encoder.encode(page.ops.join('\n'))));
+    const content = await flate(encoder.encode(page.ops.join('\n')), options);
+    put(contentId, `<<${content.filter} >>`, content.bytes);
     put(pageId, `<< /Type /Page /Parent ${pageTree} 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Resources ${resources} /Contents ${contentId} 0 R >>`);
   }
   put(pageTree, `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`);

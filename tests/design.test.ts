@@ -151,3 +151,39 @@ test('no mark moves for over 200 ms, and none at all if asked', () => {
   assert.equal(chartMotion('lively').animationDuration, 200);
   assert.equal(formatDim(null), '(blank)');
 });
+
+test('a target and an average stay off a chart whose axis is a share, and a target label is never a template', () => {
+  const share = setup('bar', rows);
+  (share.flag.binding as { share?: boolean }).share = true;
+  (share.result.display as { totals: Record<string, number> }).totals = { cost: 40 };
+  const o = flagChartOption({ ...share, style: { target: { value: 500, label: 'Goal {c}' }, average: true } });
+  assert.deepEqual(series(o)[0]!.data.map((d: { value: number }) => d.value), [0.25, 0.75]);
+  assert.equal(series(o)[0]!.markLine, undefined, 'a 500 target would flatten shares of 0..1');
+  const two = [{ dims: { region: 'East', kind: 'A' }, values: { cost: 1 } }, { dims: { region: 'East', kind: 'B' }, values: { cost: 3 } }];
+  assert.equal(series(flagChartOption({ ...setup('bar', two, true), style: { barLayout: 'percent', target: { value: 2, label: '' }, average: true } }))[0]!.markLine, undefined);
+  const plain = flagChartOption({ ...setup('bar', rows), style: { target: { value: 25, label: 'Goal {c} {b}' } } });
+  const label = series(plain)[0]!.markLine.data[0].label;
+  assert.equal(typeof label.formatter, 'function');
+  assert.equal(label.formatter(), 'Goal {c} {b}');
+});
+
+test('shares of 100% use the size of each part, so negatives never push a stack past 100%', () => {
+  const mixed = [
+    { dims: { region: 'East', kind: 'A' }, values: { cost: 30 } },
+    { dims: { region: 'East', kind: 'B' }, values: { cost: -10 } },
+    { dims: { region: 'West', kind: 'A' }, values: { cost: 5 } },
+    { dims: { region: 'West', kind: 'B' }, values: { cost: 5 } },
+  ];
+  const o = flagChartOption({ ...setup('bar', mixed, true), style: { barLayout: 'percent' } });
+  assert.deepEqual([series(o)[0]!.data, series(o)[1]!.data], [[0.75, 0.5], [-0.25, 0.5]]);
+  assert.equal((o.yAxis as Array<Record<string, unknown>>)[0]!.max, undefined, 'the axis is free when a share falls outside 0..1');
+  const positive = flagChartOption({ ...setup('bar', mixed.filter((r) => r.values.cost > 0), true), style: { barLayout: 'percent' } });
+  assert.equal((positive.yAxis as Array<Record<string, unknown>>)[0]!.max, 1);
+});
+
+test('a target from a shared file is a number of sensible size', () => {
+  assert.equal(parseFlagStyle({ target: { value: 1e300, label: 'x' } }), undefined);
+  assert.equal(parseFlagStyle({ target: { value: -1e300, label: 'x' } }), undefined);
+  assert.deepEqual(parseFlagStyle({ target: { value: 1e15, label: 'x' } })!.target, { value: 1e15, label: 'x' });
+  assert.deepEqual(parseFlagStyle({ target: { value: -12.5, label: '' } })!.target, { value: -12.5, label: '' });
+});

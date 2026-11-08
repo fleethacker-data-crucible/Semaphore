@@ -26,11 +26,16 @@ The playbook, snapshots and the leadership view are built (0.3); [PLAYBOOK.md](P
 ```
 Launch-Semaphore.bat ──► server/Start-Semaphore.ps1   PowerShell 5.1, TcpListener on 127.0.0.1:8800-8802
                            ├─ static UI from web/dist (compiled JS/CSS only)
-                           ├─ session token, Host/Origin checks, /__fleethacker/id and /shutdown
+                           ├─ launch code → session token (/api/launch), Host/Origin checks,
+                           │  /__fleethacker/id, /__fleethacker/shutdown, /__semaphore/open
                            ├─ /api/heartbeat, /api/leaving, /api/end   lifecycle per TechStack
-                           ├─ /api/hoists, /api/catalogs               JSON files in the user's Semaphore folder
-                           ├─ /api/query                               rendered SQL + typed parameters → ODBC / OLE DB
-                           └─ /api/profile                             tables, columns, types, distinct counts
+                           ├─ /api/hoists, /api/catalogs, /api/playbook, /api/snapshots, /api/questions, /api/team
+                           │                                           JSON files in the user's Semaphore folder (ETag / If-Match)
+                           ├─ /api/query, /api/profile                 rendered SQL + typed parameters → ODBC / OLE DB / lake / connectors
+                           ├─ /api/refresh-report, /api/commands       the last --refresh run; the CLI command registry
+                           ├─ /api/vault, /api/vault/pair, /unpair     Lazarette pairing and status (names, never values)
+                           ├─ /api/ai, /api/ai/check, /api/ai/v1/chat/completions   Fairlead relay (the key stays server-side)
+                           └─ /api/client-log                          the page's own script errors, into the server log
 
 Browser
   web/src                 React 19 UI: canvas, palette, inspector, brief editor, ask box, data panel
@@ -107,11 +112,12 @@ Hoist files, imports and AI output are capped before use: briefs at 4,000 charac
 - **Hoists and the catalog are small JSON files**, saved by the server in the user's Semaphore folder (`%USERPROFILE%\Semaphore`, or `SEMAPHORE_HOME` / `home` in settings for a network folder on non-persistent VDI profiles). Every change autosaves.
 - **Without a server** (the build opened another way) the working hoist and catalog stay in this browser's localStorage, and a hoist can be downloaded and imported as a file.
 - **CSV files** are read in the page and kept in IndexedDB so they come back after a reload. They are never uploaded.
-- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may instead name Lazarette shares for its password, user or keys, read over the Lazarette tool route (docs/VAULT.md).
+- Credentials never enter the browser or the hoist. Server sources are DSNs or integrated authentication; a connection string with a password is refused. A source may instead name Lazarette shares for its password, user or keys, read over the Lazarette tool route by the worker that serves the request, never by the main loop (docs/VAULT.md). The SQL guard is defence in depth; a read-only database login is the control.
+- Every worker request has a deadline (the query's time limit plus a margin, else 300 s): past it the client gets a 504, the pipeline is asked to stop, and the worker no longer keeps the server alive. Shutdown asks pipelines to stop with a bounded wait and never blocks on a stuck driver call.
 
 ## Sharing
 
-A report is exported as one self-contained HTML file (the same technique as Shellback's standalone edition): the cached results, the hoist and the cross-filter engine, with optional AES-GCM passphrase encryption. Recipients need nothing installed; live drill-downs are disabled in the export.
+A report is exported as one self-contained HTML file (the same technique as Shellback's standalone edition): the cached results, the hoist and the cross-filter engine, with optional AES-GCM passphrase encryption. Recipients need nothing installed. Drill levels are worked out when the report is saved, breadth first within a budget, so a drillable flag can still be clicked down inside the file; a level past the budget, and the rows behind the last level, say they were not saved ([SHARED_REPORT_DRILL.md](SHARED_REPORT_DRILL.md)). The other export formats (PDF, Excel, PowerPoint, Word, CSV, JSON) are described in [DESIGN.md](DESIGN.md).
 
 ## TechStack mapping
 
@@ -121,7 +127,7 @@ A report is exported as one self-contained HTML file (the same technique as Shel
 | PowerShell 5.1 + `TcpListener` | Loopback server, query and profile endpoints, every lifecycle rule | Done |
 | React 19 + TS | UI (`web/src`) | Done |
 | Tailwind 4 + shadcn-style | Styling with theme tokens; Lucide icons | Done (CVA and Radix not needed yet) |
-| ECharts, React Flow, Motion | Flag rendering (ECharts, SVG renderer); lineage view (Flow) | ECharts done; Flow planned |
+| ECharts, React Flow, Motion | Flag rendering (ECharts, SVG renderer); lineage view drawn with plain SVG (`web/src/components/LineageView.tsx`), so React Flow is not used | ECharts done; Flow not needed |
 | Rust → WebAssembly | Optional: cross-filter kernel if results grow; today's results are small enough for TypeScript | Not needed yet |
 | IndexedDB / localStorage | CSV files / theme, working copy | Done |
 | Service workers, Web Workers | CSV parsing and queries use a worker; app-shell service-worker caching is not implemented | CSV worker done |

@@ -7,7 +7,7 @@ Analysts decide how a page looks and how it leaves Semaphore. Neither changes wh
 The paintbrush in the header (or Hoist > Page design, or Ctrl+K) opens **Page design**. Changes show on the page as you make them, and Ctrl+Z undoes them.
 
 - **Looks** set everything at once: Standard, Bridge, Broadsheet, Beacon and Chart room. Change any part afterwards.
-- **Page**: card style, card corners, backdrop and type. Type uses fonts that ship with Windows, so nothing is downloaded.
+- **Page**: card style (Standard is the skin's own), card corners, backdrop and type. Type uses fonts that ship with Windows, so nothing is downloaded.
 - **Every chart**: palette, fill, rounded bars, glow, hover and motion.
 
 ## A flag's Look
@@ -17,10 +17,10 @@ Select a flag and open **Look** in the inspector. It shows only what applies to 
 | Flag | Settings |
 |---|---|
 | All charts | Palette or your own colours, glow, values on marks, legend position, motion, hover dimming |
-| Bar | Fill, rounded corners, stacked, side by side or 100%, direction |
+| Bar | Fill, rounded corners, layout (best fit, stacked, side by side or 100%), direction |
 | Line and area | Smooth, straight or steps, thickness, points, scale start |
 | Pie | Donut, pie, rose, funnel or treemap |
-| Bar, line, area | Grid lines, average line, target line with a label, zoom slider |
+| Bar, line, area | Grid lines, average line, target line with a label (neither is drawn on a share-of-total or 100% chart, whose axis is a percentage), zoom slider |
 | KPI | Number or gauge, size |
 | Table | Stripes, bars behind the numbers |
 | Any card | Title alignment, hidden title, coloured strip |
@@ -65,6 +65,10 @@ An export holds the summarised answers on the page, never source rows. Files oth
 
 Charts in a file are redrawn in light colours for paper, whatever the screen's theme, using the page's palette and finish. Picker flags are left out, because they are controls rather than answers.
 
-Known limits: PDF uses the standard fonts, so text outside Western European characters shows as "?", and the file says so. PDF lists up to 50 rows per flag and Word up to 500, each with a line saying how many more there are; use Excel or CSV for everything. PowerPoint charts are pictures. Only Excel's charts can be edited. Times in a file are UTC.
+Known limits: PDF uses the standard fonts, so text outside Western European characters shows as "?", and the file says so. PDF lists up to 50 rows per flag and Word up to 500, each with a line saying how many more there are; use Excel or CSV for everything. PowerPoint charts are pictures. Only Excel's charts can be edited. The "Taken at" line is written in your own time zone and format, as the browser shows it; a file made outside a browser says the time in UTC.
 
-CSV text that a spreadsheet would run as a formula is prefixed with an apostrophe. Numbers stay numbers.
+Excel charts read the flag's own table, so filtering the sheet filters the chart. Numbers the table does not hold (an earlier period for a comparison flag, or a chart whose rows do not line up with the table) go in a "Chart data" block beside the table, and only those series read the block. An earlier period is drawn in grey, as on the page; a 100% layout is a native 100% stacked chart of the real numbers.
+
+CSV text that a spreadsheet would run as a formula is prefixed with an apostrophe. Numbers stay numbers, with one exception: a percent column is written as the percentage the page shows (36.9 for 36.9%), not the fraction behind it, and its header ends in "(%)". In Excel the same cells keep the fraction with a percent format, and the Summary sheet's Value column takes each headline's own format.
+
+If the browser cannot compress (CompressionStream arrived in Edge 103), the files are still written, only stored rather than compressed, so they are larger.

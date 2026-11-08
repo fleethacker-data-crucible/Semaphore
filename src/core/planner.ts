@@ -6,6 +6,7 @@
 // the result too large are dropped; selections on those fields go back to the source instead.
 
 import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
+import { dayStart } from './dates.ts';
 import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
 import { type PlannedJoin, planJoins } from './joins.ts';
 import { type ManyJoin, ManyScope, buildManyJoin } from './manyjoin.ts';
@@ -321,10 +322,11 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   if (b.limit) {
     // Always cut locally too: Access's TOP n returns ties, so the source may send more than n.
     plan.displayLimit = b.limit;
-    // A "top N" is cut at the source only when nothing is re-aggregated locally, and not when it
-    // ranks by an average (SQL would rank by the sum the average is rebuilt from).
+    // A "top N" is cut at the source only when nothing is re-aggregated locally, not when it
+    // ranks by an average (SQL would rank by the sum the average is rebuilt from), and not when
+    // values are shown as a share of the total (the total is taken across every row, before the cut).
     const sortAgg = b.sort ? index.metric(b.sort.by)?.agg : undefined;
-    if (chosen.length === 0 && sortAgg !== 'avg') {
+    if (chosen.length === 0 && sortAgg !== 'avg' && !b.share) {
       plan.limit = Math.min(b.limit, rowCap);
       // The cut result holds only the top N, so selecting a value outside it needs the source.
       const selectable = new Set(selectableKeys(hoist).map(dimensionKey));
@@ -410,9 +412,9 @@ export function comparisonShift(plan: QueryPlan): ((key: string, value: string |
   return (key, value) => {
     const grain = grains.get(key);
     if (!grain || typeof value !== 'string') return value;
-    const t = Date.parse(value.length === 10 ? `${value}T00:00:00Z` : value);
-    if (Number.isNaN(t)) return value;
-    return ymd(periodStartUtc(shift(new Date(t), unit, by), grain, 0));
+    const day = dayStart(value); // the calendar day the text names, whatever zone it carries (dates.ts)
+    if (day === null) return value;
+    return ymd(periodStartUtc(shift(day, unit, by), grain, 0));
   };
 }
 

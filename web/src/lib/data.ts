@@ -34,6 +34,8 @@ export interface FlagResult {
   display: CrossfilterResult;
   /** Earlier values per displayed row, when the flag compares. */
   previous?: Array<Record<string, number | null> | null>;
+  /** Totals of the earlier window (as `display.totals`), so a share flag's earlier shares are shares of their own whole. */
+  previousTotals?: Record<string, number | null>;
   /**
    * The comparison window's rows as the source returned them (pre-split, like `raw`), with the
    * plan that asked for them. A shared report keeps them so it can line the comparison up again
@@ -249,6 +251,7 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
     const prev = await run(earlier, ctx);
     const prevDisplay = applySelections(earlier, prev.result.rows, comparisonSelections(plan, selections), flag.behavior);
     out.previous = lineUp(display.rows, prevDisplay.rows, comparisonShift(plan) ?? undefined);
+    out.previousTotals = prevDisplay.totals;
     out.previousRaw = { plan: earlier, rows: prev.result.rows };
   }
   return out;

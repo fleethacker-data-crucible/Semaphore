@@ -3,11 +3,11 @@ import { test } from 'node:test';
 import { flagsToCsvZip, guardFormula, toCsv } from '../src/core/export/csv.ts';
 import { toDocx } from '../src/core/export/docx.ts';
 import { EXPORT_SCHEMA_VERSION, toJson } from '../src/core/export/json.ts';
-import type { ExportDocument, ExportFlag, ExportTable } from '../src/core/export/model.ts';
+import { type ExportDocument, type ExportFlag, type ExportTable, fileStem } from '../src/core/export/model.ts';
 import { decodePng, textWidth, toPdf, toWinAnsiText, wrapText } from '../src/core/export/pdf.ts';
 import { toPptx } from '../src/core/export/pptx.ts';
 import { cleanText, xml } from '../src/core/export/shared.ts';
-import { columnName, sheetName, toXlsx, uniqueSheetNames } from '../src/core/export/xlsx.ts';
+import { chartColumns, columnName, sheetName, toXlsx, uniqueSheetNames } from '../src/core/export/xlsx.ts';
 import { crc32, deflateZlib, inflateZlib, joinBytes, zip } from '../src/core/export/zip.ts';
 
 const encoder = new TextEncoder();
@@ -281,7 +281,8 @@ async function readPdf(bytes: Uint8Array): Promise<PdfFile> {
     const from = offset + dict.index + dict[0].length;
     const length = Number(dict[1]);
     assert.equal(text.slice(from + length, from + length + 10), '\nendstream', 'stream length');
-    pages.push(latin1(await inflateZlib(bytes.subarray(from, from + length))));
+    const body = bytes.subarray(from, from + length);
+    pages.push(latin1(dict[0].includes('/FlateDecode') ? await inflateZlib(body) : body));
   }
   return { text, bytes, objects, pages };
 }
@@ -606,4 +607,121 @@ test('pdf: long tables, wide tables and hostile text stay on the page', async ()
   const empty = await readPdf(await toPdf(EMPTY));
   assert.equal(empty.pages.length, 1);
   assert.ok(pageStrings(empty.pages[0]!).includes('This report has no flags.'));
+});
+
+test('csv: a percent column is written as the percentage shown, and says so in its header', async () => {
+  const table: ExportTable = {
+    columns: [{ label: 'Region', numeric: false }, { label: 'Share', numeric: true, format: 'percent' }, { label: 'Sales', numeric: true, format: 'currency' }],
+    rows: [
+      [{ text: 'East', value: 'East' }, { text: '36.9%', value: 0.3692308 }, { text: '$1.2M', value: 1200000 }],
+      [{ text: 'West', value: 'West' }, { text: '–', value: null }, { text: '-$5', value: -5 }],
+    ],
+  };
+  assert.deepEqual(toCsv(table).trimEnd().split('\r\n'), ['Region,Share (%),Sales', 'East,36.9,1200000', 'West,–,-5']);
+  const doc: ExportDocument = { ...SIMPLE, flags: [baseFlag({ title: 'Rate', kind: 'kpi', headlines: [{ label: 'Conversion', text: '25%', value: 0.25, format: 'percent' }, { label: 'Spend', text: '$1.2M', value: 1200000, format: 'currency' }] })] };
+  const files = await unzip(await flagsToCsvZip(doc));
+  const csv = decoder.decode(files.get('01-rate.csv')!).replace(/^﻿/, '');
+  assert.deepEqual(csv.trimEnd().split('\r\n').slice(1), ['Conversion,25,25%,', 'Spend,1200000,$1.2M,']);
+  assert.match(decoder.decode(files.get('README.txt')!), /marked \(%\)/);
+});
+
+test('file names keep letters in any script and avoid names Windows reserves', () => {
+  assert.equal(fileStem('Weekly report: Q4 "Checks"'), 'weekly-report-q4-checks');
+  assert.equal(fileStem('Отчёт о продажах'), 'отчёт-о-продажах');
+  assert.equal(fileStem('売上 2026'), '売上-2026');
+  assert.equal(fileStem('CON'), 'con-file');
+  assert.equal(fileStem('lpt1'), 'lpt1-file');
+  assert.equal(fileStem('***'), 'semaphore-report');
+  assert.equal(fileStem('***', 'flag'), 'flag');
+  assert.ok(fileStem('word '.repeat(30)).length <= 60);
+  assert.ok(!fileStem('word '.repeat(30)).endsWith('-'));
+});
+
+test('a long sheet name is cut at a word, not through one', () => {
+  assert.equal(sheetName("Revenue by region (O'Neil's cut): 2025/2026", 'x'), "Revenue by region (O'Neil's");
+  assert.equal(sheetName('Sales by region, full year 2025 vs 2024', 'x'), 'Sales by region, full year 2025');
+  assert.equal(sheetName('a'.repeat(40), 'x'), 'a'.repeat(31), 'one long word is still cut to fit');
+  assert.equal(sheetName('Short name', 'x'), 'Short name');
+});
+
+test('xlsx: a comparison chart reads the table for the series it holds, and a block only for the rest', async () => {
+  const table = salesTable();
+  const chart = {
+    type: 'bar' as const,
+    categories: ['Region 1', 'Region 2', 'Region 3'],
+    series: [
+      { name: 'Sales', values: [1200.5, 2401, 3601.5], color: '#2266aa' },
+      { name: 'Sales, previous period', values: [1000, 2000, null], color: '#2266aa', previous: true },
+    ],
+  };
+  assert.deepEqual(chartColumns(table, chart), { category: 0, series: [1, null] });
+  const doc: ExportDocument = { ...SIMPLE, flags: [baseFlag({ title: 'Sales', table, chart }), baseFlag({ title: 'Mix', table, chart: { ...chart, percent: true, series: [{ name: 'A', values: [1, 2, 3], color: '#123456' }, { name: 'B', values: [1, 2, 3], color: '#654321' }] } })] };
+  const parts = await unzip(await toXlsx(doc));
+  assertPackage(parts);
+  const text = (name: string) => decoder.decode(parts.get(name)!);
+  const sales = text('xl/charts/chart2.xml');
+  assert.match(sales, /<c:f>&apos;Sales&apos;!\$B\$2:\$B\$4<\/c:f>/, 'the current series reads the table');
+  assert.match(sales, /<c:f>&apos;Sales&apos;!\$F\$2:\$F\$4<\/c:f>/, 'the earlier series reads the block');
+  assert.match(sales, /<c:f>&apos;Sales&apos;!\$A\$2:\$A\$4<\/c:f>/, 'categories come from the table');
+  assert.match(sales, /plotVisOnly val="0"/, 'a filter on the table cannot hide the block');
+  assert.match(sales, /srgbClr val="5F6B76"/, 'the earlier window is grey');
+  assert.doesNotMatch(sales, /<c:f>&apos;Sales&apos;!\$G/, 'only the missing series gets a block column');
+  const sheet = text('xl/worksheets/sheet2.xml');
+  assert.match(sheet, /<c r="F1"/);
+  assert.doesNotMatch(sheet, /<c r="G1"/);
+  const mix = text('xl/charts/chart3.xml');
+  assert.match(mix, /<c:grouping val="percentStacked"\/>/);
+  assert.match(mix, /<c:overlap val="100"\/>/);
+  assert.match(mix, /<c:v>3<\/c:v>/, 'the real numbers, not shares');
+});
+
+test('xlsx: a headline keeps its own number format on the Summary', async () => {
+  const doc: ExportDocument = { ...SIMPLE, flags: [baseFlag({ title: 'Rate', kind: 'kpi', headlines: [{ label: 'Conversion', text: '25%', value: 0.25, format: 'percent', tone: 'good' }, { label: 'Spend', text: '$1.2M', value: 1200000, format: 'currency' }, { label: 'Plain', text: '7', value: 7 }] })] };
+  const parts = await unzip(await toXlsx(doc));
+  const summary = decoder.decode(parts.get('xl/worksheets/sheet1.xml')!);
+  const styles = decoder.decode(parts.get('xl/styles.xml')!);
+  const xfs = [...(/<cellXfs[^>]*>(.*?)<\/cellXfs>/.exec(styles)![1]!).matchAll(/<xf numFmtId="(\d+)"[^>]*>/g)].map((m) => Number(m[1]));
+  const fmtIds = Object.fromEntries([...styles.matchAll(/<numFmt numFmtId="(\d+)" formatCode="([^"]*)"\/>/g)].map((m) => [m[2], Number(m[1])]));
+  const cellStyle = (ref: string) => Number(new RegExp(`<c r="${ref}" s="(\\d+)"`).exec(summary)![1]);
+  const row = Number(/<c r="D(\d+)" s="\d+"><v>0\.25<\/v>/.exec(summary)![1]);
+  assert.equal(xfs[cellStyle(`D${row}`)], fmtIds['0.0%']);
+  assert.equal(xfs[cellStyle(`D${row + 1}`)], fmtIds['&quot;$&quot;#,##0']);
+  assert.equal(xfs[cellStyle(`D${row + 2}`)], 0, 'no format when the headline has none');
+});
+
+test('without CompressionStream the ZIP stores its entries and the PDF writes plain streams', async () => {
+  const bytes = await zip([{ name: 'a.txt', data: 'hello '.repeat(500) }, { name: 'b.bin', data: new Uint8Array([1, 2, 3]) }], { store: true });
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  assert.equal(view.getUint16(8, true), 0, 'local header says stored');
+  const files = await unzip(bytes);
+  assert.equal(decoder.decode(files.get('a.txt')!), 'hello '.repeat(500));
+  assert.deepEqual([...files.get('b.bin')!], [1, 2, 3]);
+  assert.ok(bytes.length > 3000, 'nothing was deflated');
+
+  const doc = await nastyDoc();
+  const plain = await readPdf(await toPdf(doc, { store: true }));
+  assert.ok(!plain.text.includes('/FlateDecode'));
+  assert.ok(plain.text.includes('/Subtype /Image'), 'pictures still go in, uncompressed');
+  assert.ok(plain.pages.flatMap(pageStrings).join('\n').includes('and 4,950 more rows'));
+  const packed = await toPdf(doc);
+  assert.ok(packed.length < plain.bytes.length / 2, 'the plain file is the larger one');
+});
+
+test('"Taken at" prefers the browser\'s own words and falls back to UTC', async () => {
+  const utc = { ...SIMPLE, flags: [] };
+  const local = { ...utc, takenAtText: '07/11/2026, 09:05:00' };
+  const readme = async (doc: ExportDocument) => decoder.decode((await unzip(await flagsToCsvZip(doc))).get('README.txt')!);
+  assert.match(await readme(utc), /Taken at: 7 Nov 2026, 14:05 UTC/);
+  assert.match(await readme(local), /Taken at: 07\/11\/2026, 09:05:00/);
+  assert.match(await readme({ ...utc, takenAtText: '  \u0001 ' }), /Taken at: 7 Nov 2026, 14:05 UTC/, 'blank or unprintable text falls back');
+  const word = decoder.decode((await unzip(await toDocx(local))).get('word/document.xml')!);
+  assert.ok(word.includes('Taken at: 07/11/2026, 09:05:00'));
+  const slide = decoder.decode((await unzip(await toPptx(local))).get('ppt/slides/slide1.xml')!);
+  assert.ok(slide.includes('Taken at: 07/11/2026, 09:05:00'));
+  const strings = decoder.decode((await unzip(await toXlsx(local))).get('xl/sharedStrings.xml')!);
+  assert.ok(strings.includes('07/11/2026, 09:05:00'));
+  const pdf = await readPdf(await toPdf(local));
+  assert.ok(pageStrings(pdf.pages[0]!).some((s) => s.includes('07/11/2026, 09:05:00')));
+  const core = decoder.decode((await unzip(await toDocx(local))).get('docProps/core.xml')!);
+  assert.ok(core.includes('2026-11-07T14:05:00Z'), 'the file properties keep the exact UTC time');
 });

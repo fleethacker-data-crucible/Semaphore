@@ -1,4 +1,13 @@
 name: CI
+# Why GitHub-hosted Windows runners: Semaphore is a PUBLIC repository (VISIBILITY.md), and as of
+# 2026-11-07 every runner group in the fleethacker-data-crucible org has "Allow public repositories"
+# off, so a job that asks for the org's self-hosted runners is never assigned one: it sits queued until
+# GitHub's 24-hour limit cancels it (runs 42394044941, 42393710243). windows-latest gives the same
+# things the lab runners did: Windows PowerShell 5.1 as `shell: powershell`, Pester 5, Edge, and no
+# cost for a public repo. To switch back to the lab machines, set
+#   runs-on: [self-hosted, windows, powershell51, headless]
+# on the three jobs below AND have an org owner tick "Allow public repositories" on the runner group
+# that holds them (or make the repository private again). Nothing else in this file depends on which.
 on:
   push:
     branches: [main]
@@ -8,21 +17,25 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede an older run of the same PR; never cancel a main build because another merge landed.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows:
-    # Self-hosted Windows workstation runner: the server runs on the Windows PowerShell 5.1 the
-    # workstation has (team directive 12), and the core and UI build with Node.
+    # The server runs on Windows PowerShell 5.1 (team directive 12); the core and UI build with Node.
+    # Fork PRs are skipped: they have no need of a Windows run before review, and the e2e job below
+    # inherits the same condition through `needs`.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, windows, powershell51, headless]
-    timeout-minutes: 15
+    runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          # package.json engines: >=22.18 (node:sqlite is built in from 22.13).
+          node-version: '22.18'
+          cache: npm
 
       - name: Core and UI typecheck, tests, build
         shell: powershell
@@ -53,9 +66,16 @@ jobs:
         env:
           GITHUB_TOKEN: ''
           GH_TOKEN: ''
+          # The Credential Manager round-trip (Intelligence.Tests.ps1) writes to the runner's own
+          # store; it is opt-in and a throwaway hosted runner is the right place for it.
+          SEMAPHORE_TEST_CREDMAN: '1'
         run: |
           $ErrorActionPreference = 'Stop'
-          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          # The hosted image ships Pester 5.x (and the Windows-inbox 3.4); take the newest 5.
+          $pester = Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -eq 5 } | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $pester) { Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck; $pester = Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -eq 5 } | Sort-Object Version -Descending | Select-Object -First 1 }
+          Import-Module Pester -RequiredVersion $pester.Version -Force
+          Write-Host ('Pester ' + (Get-Module Pester).Version)
           $c = New-PesterConfiguration
           $c.Run.Path = 'tests/server'
           $c.Run.PassThru = $true
@@ -66,18 +86,18 @@ jobs:
           Write-Host ('{0} passed, {1} skipped' -f $r.PassedCount, $r.SkippedCount)
 
   e2e:
-    # The browser suite in the workstation's Edge against tests/e2e/mock-server.mjs (#86). Nothing is
-    # downloaded: Playwright drives the installed Edge (SEMAPHORE_E2E_BROWSER_CHANNEL=msedge).
+    # The browser suite in Edge against tests/e2e/mock-server.mjs (#86). Nothing is downloaded:
+    # Playwright drives the Edge on the image (SEMAPHORE_E2E_BROWSER_CHANNEL=msedge).
     needs: windows
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, windows, powershell51, headless]
-    timeout-minutes: 15
+    runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: '22.18'
+          cache: npm
 
       - name: Build the UI
         shell: powershell
@@ -93,12 +113,13 @@ jobs:
         shell: powershell
         env:
           SEMAPHORE_E2E_BROWSER_CHANNEL: msedge
+          # Traces and screenshots for failed tests go to tests/e2e/.output (uploaded below).
+          SEMAPHORE_E2E_TRACE: retain-on-failure
         run: |
           npm run e2e
           $rc = $LASTEXITCODE
           if ($rc -ne 0) {
-            # Job logs are not always reachable where failures are triaged: put each failed test's
-            # page snapshot (Playwright error-context.md) into annotations too.
+            # Put each failed test's page snapshot (Playwright error-context.md) into annotations too.
             foreach ($f in Get-ChildItem tests\e2e\.output\results -Recurse -Filter error-context.md -ErrorAction SilentlyContinue | Select-Object -First 4) {
               $t = (Get-Content $f.FullName -Raw); if ($t.Length -gt 7000) { $t = $t.Substring(0, 7000) }
               $t = $t -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
@@ -106,3 +127,12 @@ jobs:
             }
           }
           exit $rc
+
+      - name: Keep the e2e output (traces, screenshots, error context)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-output
+          path: tests/e2e/.output
+          if-no-files-found: ignore
+          retention-days: 7

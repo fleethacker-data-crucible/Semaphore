@@ -4,7 +4,89 @@ BeforeAll {
     $server = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..', 'server'))
     . ([IO.Path]::Combine($server, 'Common.ps1'))
     . ([IO.Path]::Combine($server, 'Http.ps1'))
+    . ([IO.Path]::Combine($server, 'Routes.ps1'))
+    . ([IO.Path]::Combine($server, 'Query.ps1'))
     $script:T0 = [datetime]'2026-10-26T12:00:00'
+}
+
+Describe 'Worker deadlines' {
+    BeforeAll {
+        function script:New-SocketPair {
+            # A connected pair on loopback: Server stands in for a request's client in the worker list, Peer is the browser.
+            $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start()
+            $peer = New-Object Net.Sockets.TcpClient
+            $peer.Connect([Net.IPAddress]::Loopback, ([Net.IPEndPoint]$l.LocalEndpoint).Port)
+            $srv = $l.AcceptTcpClient(); $l.Stop()
+            return @{ Server = $srv; Peer = $peer }
+        }
+        function script:Read-PeerText([Net.Sockets.TcpClient]$Peer) {
+            $s = $Peer.GetStream(); $s.ReadTimeout = 3000
+            $ms = New-Object IO.MemoryStream; $buf = New-Object byte[] 4096
+            try { while (($n = $s.Read($buf, 0, $buf.Length)) -gt 0) { $ms.Write($buf, 0, $n) } } catch { }
+            return [Text.Encoding]::UTF8.GetString($ms.ToArray())
+        }
+    }
+    BeforeEach {
+        $script:SemLogPath = Join-Path $TestDrive ('wk-' + [guid]::NewGuid().ToString('N') + '.log')
+        Initialize-SemWorkers -Size 2
+    }
+    AfterEach { Close-SemWorkers; $script:Sem.Workers = $null }
+
+    It 'takes the deadline from the query plan plus a margin, else 300 s' {
+        Get-SemWorkerDeadlineSec @{ Path = '/api/query'; Json = ([pscustomobject]@{ timeoutSec = 45 }) } | Should -Be 105
+        Get-SemWorkerDeadlineSec @{ Path = '/api/query'; Json = $null } | Should -Be 120
+        Get-SemWorkerDeadlineSec @{ Path = '/api/query'; Json = ([pscustomobject]@{ timeoutSec = 9999 }) } | Should -Be 360
+        Get-SemWorkerDeadlineSec @{ Path = '/api/profile'; Json = $null } | Should -Be 300
+        Get-SemWorkerDeadlineSec @{ Path = '/api/ai/v1/chat/completions'; Json = $null } | Should -Be 300
+    }
+
+    It 'answers 504, asks the pipeline to stop and stops counting a worker past its deadline' {
+        $pair = New-SocketPair
+        $ps = [powershell]::Create(); $ps.RunspacePool = $script:Sem.Pool
+        [void]$ps.AddScript({ Start-Sleep -Seconds 60 })
+        $item = @{ PS = $ps; Handle = $ps.BeginInvoke(); Path = '/api/query'; Client = $pair.Server; Clock = [Diagnostics.Stopwatch]::StartNew(); DeadlineSec = 0; TimedOut = $false }
+        $script:Sem.Workers.Add($item)
+        Test-SemBusy | Should -BeTrue
+        Start-Sleep -Milliseconds 50
+        Update-SemWorkers
+        $item.TimedOut | Should -BeTrue
+        Test-SemBusy | Should -BeFalse -Because 'a worker given up on must not keep the server alive'
+        Get-SemActiveWorkerCount | Should -Be 0
+        $text = Read-PeerText $pair.Peer
+        $text | Should -Match '^HTTP/1\.1 504 Gateway Timeout'
+        $text | Should -Match '"code":"timeout"'
+        $text | Should -Match 'given up'
+        [IO.File]::ReadAllText($script:SemLogPath) | Should -Match 'gave up after'
+        # The pipeline was asked to stop; Start-Sleep obeys, so it is reaped on a later tick.
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ($script:Sem.Workers.Count -gt 0 -and $sw.ElapsedMilliseconds -lt 5000) { Start-Sleep -Milliseconds 50; Update-SemWorkers }
+        $script:Sem.Workers.Count | Should -Be 0
+        $pair.Peer.Close()
+    }
+
+    It 'leaves a worker inside its deadline alone' {
+        $ps = [powershell]::Create(); $ps.RunspacePool = $script:Sem.Pool
+        [void]$ps.AddScript({ Start-Sleep -Milliseconds 300 })
+        $item = @{ PS = $ps; Handle = $ps.BeginInvoke(); Path = '/api/profile'; Client = $null; Clock = [Diagnostics.Stopwatch]::StartNew(); DeadlineSec = 300; TimedOut = $false }
+        $script:Sem.Workers.Add($item)
+        Update-SemWorkers
+        $item.TimedOut | Should -BeFalse
+        Test-SemBusy | Should -BeTrue
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ($script:Sem.Workers.Count -gt 0 -and $sw.ElapsedMilliseconds -lt 5000) { Start-Sleep -Milliseconds 50; Update-SemWorkers }
+        $script:Sem.Workers.Count | Should -Be 0
+    }
+
+    It 'closes the pool within its bounded wait even with a worker still running' {
+        $ps = [powershell]::Create(); $ps.RunspacePool = $script:Sem.Pool
+        [void]$ps.AddScript({ Start-Sleep -Seconds 60 })
+        $script:Sem.Workers.Add(@{ PS = $ps; Handle = $ps.BeginInvoke(); Path = '/api/query'; Client = $null; Clock = [Diagnostics.Stopwatch]::StartNew(); DeadlineSec = 300; TimedOut = $false })
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        Close-SemWorkers -WaitMs 2000
+        $sw.ElapsedMilliseconds | Should -BeLessThan 6000
+        $script:Sem.Pool | Should -BeNullOrEmpty
+        $script:Sem.Workers.Count | Should -Be 0
+    }
 }
 
 Describe 'Listener' {

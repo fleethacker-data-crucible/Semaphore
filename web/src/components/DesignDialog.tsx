@@ -3,7 +3,7 @@
 
 import { useRef } from 'react';
 import { Paintbrush, X } from 'lucide-react';
-import { type ChartLook, type HoistDesign, LOOKS, MAX_CORNERS, MAX_RADIUS } from '../../../src/core/design.ts';
+import { type CardLook, type ChartLook, type HoistDesign, LOOKS, MAX_CORNERS, MAX_RADIUS } from '../../../src/core/design.ts';
 import { useModal } from '../lib/modal.ts';
 import { Choice, Group, PalettePicker, Slider, Switch } from './StyleControls.tsx';
 
@@ -15,7 +15,9 @@ export function DesignDialog({ design, onChange, onClose }: { design: HoistDesig
   // Editing any part makes it the analyst's own look rather than the named one.
   const set = (patch: Partial<HoistDesign>) => {
     const { look: _look, ...rest } = d;
-    onChange({ ...rest, ...patch });
+    const next: HoistDesign = { ...rest, ...patch };
+    for (const k of Object.keys(next) as Array<keyof HoistDesign>) if (next[k] === undefined) delete next[k];
+    onChange(Object.keys(next).length ? next : undefined);
   };
   const setCharts = (patch: Partial<ChartLook>) => {
     const next: ChartLook = { ...charts, ...patch };
@@ -48,7 +50,8 @@ export function DesignDialog({ design, onChange, onClose }: { design: HoistDesig
           </Group>
 
           <Group title="Page">
-            <Choice label="Cards" value={d.card ?? 'raised'} options={[{ id: 'raised', label: 'Raised' }, { id: 'outline', label: 'Outlined' }, { id: 'flat', label: 'Flat' }, { id: 'glass', label: 'Glass' }]} onChange={(card) => set({ card })} />
+            {/* 'standard' is the page as the skin draws it (designAttrs' default); choosing it clears the setting. */}
+            <Choice<CardLook | 'standard'> label="Cards" value={d.card ?? 'standard'} options={[{ id: 'standard', label: 'Standard' }, { id: 'raised', label: 'Raised' }, { id: 'outline', label: 'Outlined' }, { id: 'flat', label: 'Flat' }, { id: 'glass', label: 'Glass' }]} onChange={(card) => set({ card: card === 'standard' ? undefined : card })} />
             <Slider label="Card corners" value={d.radius ?? 12} min={0} max={MAX_RADIUS} onChange={(radius) => set({ radius })} />
             <Choice label="Backdrop" value={d.backdrop ?? 'plain'} options={[{ id: 'plain', label: 'Plain' }, { id: 'tide', label: 'Tide' }, { id: 'dawn', label: 'Dawn' }, { id: 'grid', label: 'Ruled' }]} onChange={(backdrop) => set({ backdrop })} />
             <Choice label="Type" value={d.font ?? 'system'} options={[{ id: 'system', label: 'Standard' }, { id: 'serif', label: 'Serif' }, { id: 'condensed', label: 'Condensed' }, { id: 'mono', label: 'Fixed width' }]} onChange={(font) => set({ font })} />

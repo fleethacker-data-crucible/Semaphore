@@ -3,12 +3,18 @@
 // API the UI uses, with the same gate, the same launch-code exchange and the same presence rules.
 // It never runs a query against a real database and never calls Fairlead.
 //
-//   node tests/e2e/mock-server.mjs [--port 0] [--home <dir>] [--web <dir>] [--stay] [--view ask]
+//   node tests/e2e/mock-server.mjs [--port 0] [--home <dir>] [--web <dir>] [--stay] [--view ask] [--vault <state>]
 //
 //   --port      0 (default) picks a free loopback port
 //   --home      the Semaphore folder (hoists, catalogs, playbook, snapshots, questions, team);
 //               default: a new temp folder, removed when the mock stops unless --keep-home
 //   --stay      keep running when the last tab is gone (as Launch-Semaphore.bat --stay)
+//   --vault     what a paired Lazarette looks like: "unlocked" (default), "locked" (423 vault-locked
+//               state in /api/vault) or "down" (Lazarette not running). Pairing itself is in memory.
+//
+// The page's Content-Security-Policy and the other security headers are READ FROM server/Http.ps1
+// ($script:SemCsp, $script:SemPermissionsPolicy, Get-SemSecurityHeaders): the mock refuses to start
+// when it cannot find them, so it can never drift to a looser policy than the real server sends.
 //
 // Like Start-Semaphore.ps1 --no-browser it prints
 //   Semaphore <version> is running at http://127.0.0.1:<port>/. ...
@@ -19,7 +25,13 @@
 //
 // Test-only hooks (not part of Semaphore's API; same Host/Origin gate, no token):
 //   POST /__mock/launch  -> { code, link }      mint a launch code, as a second launcher run would
-//   GET  /__mock/state   -> { home, port, autoStop, tabs: [...], clientLog: [...], saves: n }
+//   GET  /__mock/state   -> { home, port, autoStop, tabs: [...], clientLog: [...], saves: n, vault }
+//   POST /__mock/reset   -> { ok: true }        back to a fresh start: every stored document and the
+//                                               .trash folders gone, unpaired, the client-log rate
+//                                               limiter, client log and save counter cleared, the
+//                                               vault state back to the --vault default. Presence is
+//                                               kept (the calling page's tab is still open).
+//   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -54,6 +66,12 @@ const keepHome = has('keep-home') || opt('home', '') !== '';
 const homeDir = path.resolve(opt('home', '') || mkdtempSync(path.join(tmpdir(), 'semaphore-mock-')));
 const stay = has('stay') || process.env.SEMAPHORE_AUTO_STOP === '0';
 const view = opt('view', '');
+const VAULT_STATES = ['unlocked', 'locked', 'down'];
+const vaultDefault = opt('vault', 'unlocked');
+if (!VAULT_STATES.includes(vaultDefault)) {
+  console.error(`mock: --vault must be one of ${VAULT_STATES.join(', ')}, not "${vaultDefault}".`);
+  process.exit(2);
+}
 const version = (() => {
   try {
     return readFileSync(path.join(repo, 'VERSION'), 'utf8').trim();
@@ -62,15 +80,32 @@ const version = (() => {
   }
 })();
 
-// The page's CSP is read from server/Http.ps1 so the mock never drifts from the real server.
-const CSP = (() => {
+// The CSP and the fixed security headers are read from server/Http.ps1 (Get-SemSecurityHeaders), so
+// the mock never drifts from the real server. No fallback: a miss stops the mock with a message.
+const { CSP, FIXED_HEADERS } = (() => {
+  const file = path.join(repo, 'server', 'Http.ps1');
+  let text;
   try {
-    const m = /\$script:SemCsp\s*=\s*"([^"]+)"/.exec(readFileSync(path.join(repo, 'server', 'Http.ps1'), 'utf8'));
-    if (m) return m[1];
-  } catch {
-    /* fall through */
+    text = readFileSync(file, 'utf8');
+  } catch (e) {
+    console.error(`mock: cannot read ${file}: ${e.message}`);
+    process.exit(2);
   }
-  return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  const fail = (what) => {
+    console.error(`mock: ${what} in server/Http.ps1; the mock's headers come from there, so update this reader to match.`);
+    process.exit(2);
+  };
+  const csp = /^\$script:SemCsp\s*=\s*"([^"\r\n]+)"\s*$/m.exec(text)?.[1];
+  if (!csp || !/^default-src 'self'; script-src 'self';/.test(csp)) fail('could not find $script:SemCsp = "default-src ..."');
+  const permissions = /^\$script:SemPermissionsPolicy\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  if (!permissions) fail("could not find $script:SemPermissionsPolicy = '...'");
+  // The literal 'Name: value' lines of Get-SemSecurityHeaders, in the order the server sends them.
+  const fnStart = text.indexOf('function Get-SemSecurityHeaders');
+  const fnEnd = fnStart < 0 ? -1 : text.indexOf('\nfunction ', fnStart + 1);
+  const fn = fnStart < 0 ? '' : text.slice(fnStart, fnEnd < 0 ? undefined : fnEnd);
+  const fixed = [...fn.matchAll(/^\s*'([A-Za-z-]+): ([^'\r\n]+)',?\s*$/gm)].map((m) => [m[1], m[2]]);
+  if (!fixed.some(([n]) => n === 'X-Content-Type-Options') || !fixed.some(([n]) => n === 'Cross-Origin-Opener-Policy')) fail('could not read the header list of Get-SemSecurityHeaders');
+  return { CSP: csp, FIXED_HEADERS: [...fixed, ['Permissions-Policy', permissions]] };
 })();
 
 const MAX_BODY = 8388608; // 8 MB, Http.ps1 $script:SemMaxBody
@@ -85,7 +120,17 @@ const HASHED_ASSET = /[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$/; // contract 4
 const token = randomBytes(32).toString('base64url');
 const launchCodes = new Map(); // code -> expiry (ms)
 let vaultPaired = false;
-const vaultStatus = () => ({ tool: 'Semaphore', paired: vaultPaired, running: true, locked: vaultPaired ? false : null, problem: vaultPaired ? null : 'Semaphore is not paired with Lazarette.', sources: [], shared: [], notShared: [] });
+let vaultState = vaultDefault;
+// Get-SemVaultStatus (server/Vault.ps1): paired from the pairing file; running, locked and problem
+// from one request to Lazarette. The sentences are the server's.
+const NOT_PAIRED = 'Semaphore is not paired with Lazarette. In Lazarette open Settings > Tools, pair a tool named Semaphore, then paste the code in Semaphore under Settings > Lazarette (or run Semaphore-CLI.bat vault pair).';
+function vaultStatus() {
+  const out = { tool: 'Semaphore', paired: vaultPaired, running: vaultState !== 'down', locked: null, problem: vaultPaired ? null : NOT_PAIRED, sources: [], shared: [], notShared: [] };
+  if (!out.running) out.problem = 'Lazarette is not running on this computer. Start it and unlock it.' + (vaultPaired ? '' : ' ' + NOT_PAIRED);
+  else if (vaultPaired) out.locked = vaultState === 'locked';
+  if (vaultPaired && out.locked) out.problem = 'Lazarette is locked. Unlock Lazarette in its window and try again.';
+  return out;
+}
 const presence = {
   autoStop: !stay,
   timeoutMs: msEnv('SEMAPHORE_MOCK_HEARTBEAT_TIMEOUT_MS', 90_000),
@@ -117,14 +162,7 @@ function log(level, text) {
 // Responses (Get-SemSecurityHeaders, Send-SemBytes)
 // ---------------------------------------------------------------------------------------------
 function securityHeaders(cache) {
-  return {
-    'Content-Security-Policy': CSP,
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-    'X-Frame-Options': 'DENY',
-    'Cross-Origin-Resource-Policy': 'same-origin',
-    'Cache-Control': cache,
-  };
+  return { 'Content-Security-Policy': CSP, ...Object.fromEntries(FIXED_HEADERS), 'Cache-Control': cache };
 }
 function send(res, status, type, body, { cache = 'no-store', headers = {}, head = false } = {}) {
   const bytes = body === undefined || body === null ? Buffer.alloc(0) : Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
@@ -400,7 +438,9 @@ function docRoute(req, res, kind, id, query, body) {
 // API (Invoke-SemRequest, Invoke-SemRoute)
 // ---------------------------------------------------------------------------------------------
 function info() {
-  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '' };
+  // Get-SemInfo (server/Routes.ps1): `social` carries the deployment's feature switches from
+  // config/settings.json (signalBook, impact, teamLog, showAskers, bz); all on here.
+  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '', social: { signalBook: true, impact: true, teamLog: true, showAskers: true, bz: true } };
 }
 function aiStatus() {
   return {
@@ -478,8 +518,8 @@ function apiRoute(req, res, p, query, json, body) {
     return sendJson(res, 200, vaultStatus());
   }
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
-  if (p === '/api/ai/check') return m === 'POST' ? sendJson(res, 200, { ok: false, detail: 'No Fairlead key is installed for Semaphore.', code: 'no-key' }) : sendError(res, 405, 'method', 'Method not allowed.');
-  if (p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 503, 'no-key', 'AI drafting is not set up on this computer.') : sendError(res, 405, 'method', 'Method not allowed.');
+  // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
+  if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
@@ -502,7 +542,31 @@ function handle(req, res, body) {
     }
     if (p === '/__mock/state' && req.method === 'GET') {
       const now = Date.now();
-      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null })), clientLog, saves });
+      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState } });
+    }
+    if (p === '/__mock/reset' && req.method === 'POST') {
+      for (const k of KINDS) {
+        rmSync(path.join(homeDir, k), { recursive: true, force: true });
+        mkdirSync(path.join(homeDir, k), { recursive: true });
+      }
+      vaultPaired = false;
+      vaultState = vaultDefault;
+      clientLog.length = 0;
+      clientLogTimes.length = 0;
+      saves = 0;
+      log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/__mock/vault' && req.method === 'POST') {
+      let state = '';
+      try {
+        state = String(JSON.parse(body.toString('utf8') || '{}').state ?? '');
+      } catch {
+        /* refused below */
+      }
+      if (!VAULT_STATES.includes(state)) return sendError(res, 400, 'invalid', `state must be one of ${VAULT_STATES.join(', ')}.`);
+      vaultState = state;
+      return sendJson(res, 200, { ok: true, vault: { paired: vaultPaired, state: vaultState } });
     }
     return sendError(res, 404, 'not-found', 'Not found.');
   }

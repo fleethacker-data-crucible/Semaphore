@@ -115,12 +115,16 @@ function Read-SemDoc {
 
 function Test-SemDocBody {
     # Returns $null when the bytes are a JSON object with version 1 and at most 2 MB, else an error message.
-    param([byte[]]$Bytes)
+    # -Json: the object the gate already parsed from these bytes (Http.ps1), so the document is parsed once.
+    param([byte[]]$Bytes, $Json = $null)
     if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return 'The body is empty.' }
     if ($Bytes.Length -gt $script:SemDocMaxBytes) { return 'too-large' }
-    $text = (New-Object Text.UTF8Encoding $false).GetString($Bytes)
-    if (-not $text.TrimStart([char]0xFEFF, ' ', "`t", "`r", "`n").StartsWith('{')) { return 'The body must be a JSON object.' }
-    try { $j = $text | ConvertFrom-Json -ErrorAction Stop } catch { return 'The body is not valid JSON.' }
+    $j = $Json
+    if ($null -eq $j) {
+        $text = (New-Object Text.UTF8Encoding $false).GetString($Bytes)
+        if (-not $text.TrimStart([char]0xFEFF, ' ', "`t", "`r", "`n").StartsWith('{')) { return 'The body must be a JSON object.' }
+        try { $j = $text | ConvertFrom-Json -ErrorAction Stop } catch { return 'The body is not valid JSON.' }
+    }
     if ($j -isnot [Management.Automation.PSCustomObject]) { return 'The body must be a JSON object.' }
     $v = Get-SemJsonProp $j 'version'
     if (-not ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal]) -or $v -ne 1) { return 'The document must have "version": 1.' }
@@ -217,7 +221,7 @@ function Invoke-SemDocRoute {
             Send-SemBytes -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($text)) -ExtraHeaders @('ETag: "' + (Get-SemSha256Hex $bytes) + '"')
         }
         'PUT' {
-            $problem = Test-SemDocBody -Bytes $Req.Body
+            $problem = Test-SemDocBody -Bytes $Req.Body -Json $Req.Json
             if ($problem -eq 'too-large') { Send-SemError 413 'too-large' ("A $noun may be at most 2 MB."); return }
             if ($problem) { Send-SemError 400 'invalid' $problem; return }
             # Optimistic concurrency (#88): the main loop serves one request at a time, so nothing in
@@ -357,10 +361,11 @@ function Invoke-SemRoute {
         $n = 0; $refreshed = 0; $skipped = 0
         if ([int]::TryParse([string](Get-SemJsonProp $Req.Json 'refreshed'), [ref]$n)) { $refreshed = $n }
         if ([int]::TryParse([string](Get-SemJsonProp $Req.Json 'skipped'), [ref]$n)) { $skipped = $n }
+        # id, title and error come from the page: one log-safe line each, capped, before the log and the saved report (#89 rule).
         $failed = @()
         foreach ($f in @(Get-SemJsonProp $Req.Json 'failed') | Select-Object -First 200) {
             if ($f -isnot [Management.Automation.PSCustomObject]) { continue }
-            $failed += [ordered]@{ id = ([string](Get-SemJsonProp $f 'id')).Substring(0, [Math]::Min(64, ([string](Get-SemJsonProp $f 'id')).Length)); title = [string](Get-SemJsonProp $f 'title'); error = [string](Get-SemJsonProp $f 'error') }
+            $failed += [ordered]@{ id = (ConvertTo-SemLogText ([string](Get-SemJsonProp $f 'id')) 64); title = (ConvertTo-SemLogText ([string](Get-SemJsonProp $f 'title')) 200); error = (ConvertTo-SemLogText ([string](Get-SemJsonProp $f 'error')) 500) }
         }
         $report = [ordered]@{ version = 1; at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); by = [string]$env:USERNAME; computer = [string]$env:COMPUTERNAME; view = [string]$script:Sem.View; refreshed = $refreshed; skipped = $skipped; failed = $failed }
         $script:Sem.SyncBusy = $true

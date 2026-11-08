@@ -352,9 +352,31 @@ Describe 'Resolving a source''s secrets over loopback' {
     }
 }
 
+Describe 'The worker resolves the secrets, not the main loop' {
+    It 'Start-SemWorkerRequest asks Lazarette for nothing; the worker script does, and clears the request when it ends' {
+        $query = Get-Content -LiteralPath (Join-Path $server 'Query.ps1') -Raw
+        $start = [regex]::Match($query, '(?s)function Start-SemWorkerRequest \{.*?\n\}').Value
+        $start | Should -Not -Match 'Get-SemVaultForRequest'
+        $start | Should -Not -Match 'Resolve-SemVaultSecrets'
+        $script:SemWorkerScript | Should -Match 'Set-SemVaultRequest \(Get-SemVaultForRequest -Req \$Req -HomeDir \$Ctx\.Home\)'
+        $script:SemWorkerScript | Should -Match '(?s)finally \{\s*Clear-SemVaultRequest'
+    }
+    It 'Clear-SemVaultRequest overwrites the values before dropping the context' {
+        $values = @{ password = 'plainPassw0rd'; user = 'svc' }
+        Set-SemVaultRequest @{ Values = $values; Notes = @() }
+        Get-SemVaultValue 'password' | Should -Be 'plainPassw0rd'
+        Clear-SemVaultRequest
+        Get-SemVaultValue 'password' | Should -BeNullOrEmpty
+        $values.Count | Should -Be 0
+        Get-SemVaultError | Should -BeNullOrEmpty
+        Clear-SemVaultRequest   # a second call, and one with nothing installed, is harmless
+    }
+}
+
 Describe 'Status: names and states only' {
     BeforeAll { Set-Pairing }
     BeforeEach {
+        Clear-SemVaultStatusCache
         $script:Fake.State.Mode = 'ok'
         $script:Fake.State.Shares = @{ SMDATS_PASSWORD = 'S3cr}et"pw;1' }
         $env:LAZARETTE_PORT = [string]$script:Fake.Port
@@ -385,6 +407,36 @@ Describe 'Status: names and states only' {
         $st = Get-SemVaultStatus -HomeDir $script:StatusHome
         $st.running | Should -BeFalse
         $st.problem | Should -BeLike '*not running*'
+    }
+    It 'asks Lazarette once a minute: a second status check within 60 s sends no request and says when it last asked' {
+        $script:Fake.State.Requests.Clear()
+        $t0 = Get-Date
+        $first = Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0
+        $script:Fake.State.Requests.Count | Should -Be 1
+        $again = Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(30)
+        $script:Fake.State.Requests.Count | Should -Be 1
+        @($again.shared) | Should -Be @($first.shared)
+        $again.notShared[0].name | Should -Be 'SMDATS_USER'
+        $again.cachedAt | Should -Match '^\d{4}-\d\d-\d\dT'
+        (Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(61)).cachedAt | Should -BeNullOrEmpty
+        $script:Fake.State.Requests.Count | Should -Be 2
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -NoCache -Now $t0.AddSeconds(62))
+        $script:Fake.State.Requests.Count | Should -Be 3
+        # Pairing again or unpairing forgets what was cached.
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(63))
+        $script:Fake.State.Requests.Count | Should -Be 3
+        [void](Unregister-SemVaultPairing); Set-Pairing
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(64))
+        $script:Fake.State.Requests.Count | Should -Be 4
+    }
+    It 'does not serve a cached answer for another set of shares' {
+        $t0 = Get-Date
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0)
+        $n = $script:Fake.State.Requests.Count
+        Set-Content -LiteralPath (Join-Path $script:StatusHome 'sources.json') -Encoding UTF8 -Value '[{"id":"maint","provider":"odbc","connection":"DSN=x","vault":{"password":"OTHER_PASSWORD"}}]'
+        $st = Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(1)
+        $script:Fake.State.Requests.Count | Should -Be ($n + 1)
+        $st.notShared[0].name | Should -Be 'OTHER_PASSWORD'
     }
 }
 

@@ -28,10 +28,10 @@ The same list is served by the running server at `GET /api/commands` and by `com
 | `commands` | The list below, with options. |
 | `info show`, `source list` | Version, the Semaphore folder and the sources in `sources.json`: id, label, kind, provider. Never a connection string or a secret. |
 | `hoist`, `catalog`, `playbook`, `snapshot`, `question`, `team` `list` | `id`, `title`, `updated` of each saved document. |
-| (same nouns) `get --id <id>` | One document as JSON. |
+| (same nouns) `get --id <id>` | One document, as the stored text itself: with `--json` or `--out` it is spliced into `result` unchanged (no depth cut, no respelling of numbers or non-ASCII), so `get` then `put` round-trips byte for byte. |
 | (same nouns) `put --id <id> --file <json> --yes` | Save a document: a JSON object with `"version": 1`, at most 2 MB; replaces the same id. |
 | (same nouns) `delete --id <id> --yes` | Move a document to the `.trash` folder (not erased). |
-| `refresh run` | Refresh every playbook snapshot headless and stop (the same run as `Start-Semaphore.ps1 --refresh`). Refuses while Semaphore is open. Needs a machine that can reach the sources. |
+| `refresh run` | Refresh every playbook snapshot headless and stop (the same run as `Start-Semaphore.ps1 --refresh`). Refuses while Semaphore is open. When another Semaphore (one from another folder, which the refusal cannot see) already holds the port, the run exits 3 and the command reports "nothing was refreshed" instead of success. Needs a machine that can reach the sources. |
 | `refresh report` | The report of the last refresh. |
 | `vault status` | Whether Semaphore is paired with Lazarette, whether Lazarette is running and unlocked, which source reads which share, and which names Lazarette has for Semaphore. Names only, never a value. |
 | `vault pair` | Pair Semaphore with Lazarette ([VAULT.md](VAULT.md)), the same as Settings > Lazarette in the page: paste the code from Lazarette (Settings > Tools > Pair tool). This is the one command that asks for input: the code is read without echo, never printed, logged or written to a transcript, and stored DPAPI-protected for your Windows account. |

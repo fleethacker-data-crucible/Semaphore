@@ -92,6 +92,8 @@ export const PALETTES: Record<Exclude<PaletteId, 'skin' | 'custom'>, Pair & { la
 export const MAX_COLORS = 8;
 export const MAX_RADIUS = 24;
 export const MAX_CORNERS = 16;
+/** The largest target line a shared file may set, either side of zero. */
+export const MAX_TARGET = 1e15;
 
 export const FONT_STACK: Record<FontChoice, string> = {
   system: "'Segoe UI', system-ui, sans-serif",
@@ -149,7 +151,8 @@ function parseChartLook(raw: Record<string, unknown>): ChartLook {
 export function parseFlagStyle(raw: unknown): FlagStyle | undefined {
   if (!isObj(raw)) return undefined;
   const t = raw.target;
-  const value = isObj(t) && typeof t.value === 'number' && Number.isFinite(t.value) ? t.value : undefined;
+  // A target past 1e15 is no goal anyone reads; it would only stretch the axis until the bars vanish.
+  const value = isObj(t) && typeof t.value === 'number' && Number.isFinite(t.value) && Math.abs(t.value) <= MAX_TARGET ? t.value : undefined;
   const gaugeMax = typeof raw.gaugeMax === 'number' && Number.isFinite(raw.gaugeMax) && raw.gaugeMax > 0 ? raw.gaugeMax : undefined;
   const style = kept({
     ...parseChartLook(raw),

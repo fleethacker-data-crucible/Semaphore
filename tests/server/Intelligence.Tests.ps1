@@ -165,7 +165,21 @@ Context 'Key file (DPAPI)' -Skip:($env:OS -ne 'Windows_NT') {
 }
 
 Context 'Windows Credential Manager selection' {
-    It 'round-trips a synthetic credential under a unique test target' -Skip:($env:OS -ne 'Windows_NT') {
+    # The round-trip writes a real entry to this account's Credential Manager (under a throwaway
+    # target), so it is opt-in: SEMAPHORE_TEST_CREDMAN=1 (CI sets it on its disposable runner).
+    # Every other test here mocks Read-SemAiCredential and touches nothing outside TestDrive.
+    AfterAll {
+        # Sweep any Fairlead/Semaphore-test-* entry a stopped or crashed run left behind.
+        if ($env:OS -eq 'Windows_NT' -and $env:SEMAPHORE_TEST_CREDMAN -eq '1') {
+            $listing = @(& cmdkey.exe /list 2>$null)
+            foreach ($line in $listing) {
+                if ($line -match 'target=(Fairlead/Semaphore-test-[0-9a-f]{32})\s*$') {
+                    try { Remove-SemAiCredential -Target $Matches[1] } catch { Write-Warning ('Could not remove test credential ' + $Matches[1] + ': ' + $_) }
+                }
+            }
+        }
+    }
+    It 'round-trips a synthetic credential under a unique test target' -Skip:($env:OS -ne 'Windows_NT' -or $env:SEMAPHORE_TEST_CREDMAN -ne '1') {
         $target = 'Fairlead/Semaphore-test-' + [guid]::NewGuid().ToString('N')
         try {
             Save-SemAiCredential -Key (ConvertTo-SecureString $script:Key -AsPlainText -Force) -Target $target
@@ -267,6 +281,69 @@ Context 'Forwarding to Fairlead' {
 Context 'Port owner check (the key goes only to the process that holds the port)' {
     BeforeAll {
         $script:Chat = @{ model = 'local'; messages = @(@{ role = 'user'; content = 'hi' }) }
+        # The path a real Fairlead reports in its id answer, and (stubbed) what the port owner's process runs.
+        $script:FairleadPath = 'C:\Fleet\Fairlead\server\Start-Fairlead.ps1'
+        $script:IdJson = '{"tool":"fairlead","version":"0.1.0","pid":4168,"path":"C:\\Fleet\\Fairlead\\server\\Start-Fairlead.ps1"}'
+    }
+    BeforeEach {
+        Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; ScriptPath = $script:FairleadPath } }
+    }
+
+    It 'does not send the key when the id answer names no path' {
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            $j = $r.Body | ConvertFrom-Json
+            $j.code | Should -Be 'ai-not-fairlead'
+            $j.error | Should -Match 'does not say which script it runs'
+            $fake.Seen.Requests.Count | Should -Be 1
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'does not send the key when the reported path is not what the port owner runs' {
+        Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Tools\other\other.exe'; ScriptPath = 'C:\Tools\other\Start-Other.ps1' } }
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = $script:IdJson }, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            ($r.Body | ConvertFrom-Json).error | Should -Match '^Something other than Fairlead is answering on port \d+; the key was not sent\.$'
+            $fake.Seen.Requests.Count | Should -Be 1
+            [string]$fake.Seen.Requests[0] | Should -Not -Match ([regex]::Escape($script:Key))
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'accepts the path as the executable or the -File script, in any case and spelling, never as a substring' {
+        Test-SemAiProcessPath -ProcessId 4168 -Path 'c:/fleet/fairlead/server/start-fairlead.ps1' | Should -BeTrue
+        Test-SemAiProcessPath -ProcessId 4168 -Path '"C:\Fleet\Fairlead\server\Start-Fairlead.ps1"' | Should -BeTrue
+        Test-SemAiProcessPath -ProcessId 4168 -Path 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' | Should -BeTrue
+        Test-SemAiProcessPath -ProcessId 4168 -Path 'Start-Fairlead.ps1' | Should -BeFalse
+        Test-SemAiProcessPath -ProcessId 4168 -Path 'C:\Fleet\Fairlead\server' | Should -BeFalse
+        Test-SemAiProcessPath -ProcessId 4168 -Path 'C:\Fleet\Fairlead\server\Start-Fairlead.ps1\..\..\x.ps1' | Should -BeFalse
+        Test-SemAiProcessPath -ProcessId 4168 -Path '' | Should -BeFalse
+    }
+
+    It 'honours a fairleadPath pinned in settings.json and says so when Fairlead runs from elsewhere' {
+        [IO.File]::WriteAllText((Join-Path $script:Root 'config\settings.json'), '{ "fairleadPath": "D:\\Approved\\Fairlead\\server\\Start-Fairlead.ps1" }')
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = $script:IdJson }, @{ Status = 200; Body = '{}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            (Get-SemAiSettings -Root $script:Root).ExpectedPath | Should -Be 'D:\Approved\Fairlead\server\Start-Fairlead.ps1'
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 502
+            ($r.Body | ConvertFrom-Json).error | Should -Match 'fairleadPath pinned in config\\settings\.json'
+            $fake.Seen.Requests.Count | Should -Be 1
+            (Get-SemAiStatus -Settings (Get-SemAiSettings -Root $script:Root)).expectedPath | Should -Match 'Approved'
+        } finally { Stop-FakeFairlead $fake }
+        [IO.File]::WriteAllText((Join-Path $script:Root 'config\settings.json'), '{ "fairleadPath": "c:/fleet/fairlead/server/start-fairlead.ps1" }')
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = $script:IdJson }, @{ Status = 200; Body = '{"choices":[]}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            (Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root).Status | Should -Be 200
+            $fake.Seen.Requests.Count | Should -Be 2
+        } finally { Stop-FakeFairlead $fake }
     }
 
     It 'does not send the key when the id answer names another PID than the port owner' {
@@ -349,9 +426,12 @@ Context 'Port owner check (the key goes only to the process that holds the port)
     }
 
     It 'remembers a verified Fairlead process and asks again when the listener changes' {
-        # This test process stands in for Fairlead: its PID has a readable start time, so it is cached.
+        # This test process stands in for Fairlead: its PID has a readable start time, so it is cached, and its
+        # real executable path (read through Win32_Process, not the stub) is what the id answer reports.
         Mock Get-SemAiListenerPids { return $PID }
-        $id = @{ Status = 200; Body = ('{"tool":"fairlead","version":"0.1.0","pid":' + $PID + '}') }
+        $exe = (Get-Process -Id $PID).Path
+        Mock Get-SemAiProcessPaths { return @{ ExecutablePath = (Get-Process -Id $PID).Path; ScriptPath = '' } }
+        $id = @{ Status = 200; Body = ('{"tool":"fairlead","version":"0.1.0","pid":' + $PID + ',"path":' + ($exe | ConvertTo-Json) + '}') }
         $answer = @{ Status = 200; Body = '{"choices":[]}' }
         $fake = Start-FakeFairlead -Replies @($id, $answer, $answer, $id, $answer)
         try {
@@ -371,8 +451,12 @@ Context 'Port owner check (the key goes only to the process that holds the port)
 
 Context '/api/ai routes' {
     BeforeAll {
-        # Every route asks /__fleethacker/id first (port authority); a real Fairlead answers like this.
-        $script:Id = @{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }
+        # Every route asks /__fleethacker/id first (port authority); a real Fairlead answers like this, and the
+        # port owner (a stub here) runs that path.
+        $script:Id = @{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168,"path":"C:\\Fleet\\Fairlead\\server\\Start-Fairlead.ps1"}' }
+    }
+    BeforeEach {
+        Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; ScriptPath = 'C:\Fleet\Fairlead\server\Start-Fairlead.ps1' } }
     }
 
     It 'answers 409 with setup steps when no key is stored' {
@@ -478,5 +562,12 @@ Describe 'Port owner lookup on Windows (GetExtendedTcpTable)' -Skip:($env:OS -ne
             @(Get-SemAiListenerPids -Port $port) | Should -Be @($PID)
         } finally { $l.Stop() }
         @(Get-SemAiListenerPids -Port $port) | Should -BeNullOrEmpty
+    }
+    It 'reads this process''s executable and -File script from Win32_Process and matches them exactly' {
+        $paths = Get-SemAiProcessPaths -ProcessId $PID
+        $paths.ExecutablePath | Should -Be (Get-Process -Id $PID).Path
+        Test-SemAiProcessPath -ProcessId $PID -Path (Get-Process -Id $PID).Path | Should -BeTrue
+        Test-SemAiProcessPath -ProcessId $PID -Path 'C:\somewhere\else.exe' | Should -BeFalse
+        (Get-SemAiProcessPaths -ProcessId 2147483000).ExecutablePath | Should -Be ''
     }
 }

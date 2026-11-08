@@ -248,6 +248,8 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
   );
 }
 
+const drillsTable = (flag: Flag) => flag.behavior.onClick === 'drill';
+
 function Table({ flag, result, index, selections, onSelect, design }: FlagViewProps) {
   const style: FlagStyle = resolveStyle(design, flag.style);
   const plan = result.plan;
@@ -286,15 +288,33 @@ function Table({ flag, result, index, selections, onSelect, design }: FlagViewPr
             const before = k0 ? result.previous?.[i]?.[k0] : undefined;
             const now = k0 ? r.values[k0] : undefined;
             const change = typeof now === 'number' && typeof before === 'number' && before !== 0 ? (now - before) / Math.abs(before) : null;
+            const pick = clickable && first ? (additive: boolean) => onSelect(first.key, r.dims[first.key] ?? null, additive) : null;
             return (
               <tr
                 key={i}
-                onClick={clickable && first ? (e) => onSelect(first.key, r.dims[first.key] ?? null, e.ctrlKey || e.metaKey) : undefined}
+                onClick={pick ? (e) => pick(e.ctrlKey || e.metaKey) : undefined}
                 className={`${clickable ? 'cursor-pointer hover:bg-accent-soft' : ''} ${sel === false ? 'opacity-45' : ''} ${sel ? 'bg-accent-soft' : style.striped && i % 2 ? 'bg-panel-2' : ''}`}
               >
-                {dims.map((d) => (
+                {dims.map((d, di) => (
                   <td key={d.key} className="border-b border-line/60 px-2 py-1">
-                    {formatDim(r.dims[d.key] ?? null, d.grain)}
+                    {pick && di === 0 ? (
+                      // The keyboard's way to what a click on the row does: a button in the first cell
+                      // (Enter or Space; Ctrl adds to the selection), stopped so the row does not act twice.
+                      <button
+                        type="button"
+                        aria-pressed={sel === true}
+                        title={drillsTable(flag) ? 'Drill into this value' : 'Filter the page by this value'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          pick(e.ctrlKey || e.metaKey);
+                        }}
+                        className="-my-1 min-h-8 rounded px-1 text-left hover:underline"
+                      >
+                        {formatDim(r.dims[d.key] ?? null, d.grain)}
+                      </button>
+                    ) : (
+                      formatDim(r.dims[d.key] ?? null, d.grain)
+                    )}
                   </td>
                 ))}
                 {b.metrics.map((k) => {
@@ -353,7 +373,7 @@ function Picker({ flag, result, selections, onSelect }: FlagViewProps) {
               role="option"
               aria-selected={on}
               onClick={() => onSelect(d.key, v, true)}
-              className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${on ? 'border-accent bg-accent text-panel' : 'border-line bg-panel-2 text-ink hover:border-accent'}`}
+              className={`min-h-8 rounded-full border px-2 text-xs transition-colors ${on ? 'border-accent bg-accent text-panel' : 'border-line bg-panel-2 text-ink hover:border-accent'}`}
             >
               {formatDim(v, d.grain)}
             </button>

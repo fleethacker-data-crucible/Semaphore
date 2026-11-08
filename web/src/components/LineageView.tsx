@@ -63,7 +63,7 @@ export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoi
           <label className="flex items-center gap-1.5 text-xs text-ink-2">
             <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Whole catalog
           </label>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>
         </header>
@@ -108,8 +108,27 @@ export function LineageView({ catalog, hoist, onClose }: { catalog: Catalog; hoi
                 const p = layout.pos.get(n.id);
                 if (!p) return null;
                 const on = !lit || lit.has(n.id);
+                const toggle = () => setFocus(focus === n.id ? null : n.id);
+                // A keyboard stop like a button: Tab reaches each box, Enter or Space lights its connections.
                 return (
-                  <g key={n.id} transform={`translate(${p.x},${p.y})`} opacity={on ? 1 : 0.3} style={{ cursor: 'pointer' }} onClick={() => setFocus(focus === n.id ? null : n.id)}>
+                  <g
+                    key={n.id}
+                    transform={`translate(${p.x},${p.y})`}
+                    opacity={on ? 1 : 0.3}
+                    style={{ cursor: 'pointer' }}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={focus === n.id}
+                    aria-label={`${TITLES[n.kind].replace(/s$/, '')} ${n.label}${n.detail ? ` (${n.detail})` : ''}`}
+                    className="outline-none focus-visible:[&>rect]:stroke-[var(--focus)] focus-visible:[&>rect]:stroke-2"
+                    onClick={toggle}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggle();
+                      }
+                    }}
+                  >
                     <title>{`${n.label}${n.detail ? ` (${n.detail})` : ''}`}</title>
                     <rect width={BOX_W} height={BOX_H} rx={6} fill="var(--panel)" stroke={focus === n.id ? 'var(--accent)' : 'var(--line)'} strokeWidth={focus === n.id ? 2 : 1} />
                     <text x={8} y={n.detail ? 12 : 18} fontSize={11} fill="var(--ink)">

@@ -107,7 +107,7 @@ export function QlikImport({ sources, busy, onImport, onDraftAsFlag, ai, onReadW
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <FileCode2 size={16} className="text-brass" />
           <h2 className="flex-1 text-base font-semibold">Import from Qlik</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>
         </header>

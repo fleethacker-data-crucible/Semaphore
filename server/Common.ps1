@@ -60,6 +60,9 @@ function Get-SemDefaultSettings {
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 90; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
         view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30; skin = ''
+        # The Start-Fairlead.ps1 (or Fairlead executable) path the Fairlead key may be sent to; '' accepts the path the
+        # process that holds Fairlead's port runs, whatever it is (docs/INTELLIGENCE_PROVIDERS.md, "Port authority").
+        fairleadPath = ''
         # Social and motivational features (docs/PLAYBOOK.md); each can be switched off per deployment.
         signalBook = $true; impact = $true; teamLog = $true; showAskers = $true; bz = $true
     }
@@ -90,6 +93,7 @@ function Merge-SemSettingsFile {
     # Skin name (docs/SKINS.md): a built-in one (fleet, classic) or one defined in config\skin.css.
     if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
+    if ($names -contains 'fairleadPath' -and $null -ne $j.fairleadPath) { $Settings.fairleadPath = ([string]$j.fairleadPath).Trim() }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0

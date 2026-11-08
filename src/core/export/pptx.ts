@@ -24,7 +24,7 @@ import {
   packageRels,
   readableImage,
   relationships,
-  takenAtWords,
+  takenWords,
   TONE_FILL,
   validDate,
   xml,
@@ -107,9 +107,12 @@ function tableCellXml(line: Line, fill: string | null): string {
   return `<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>${paragraph(line)}</a:txBody><a:tcPr marL="68580" marR="68580" marT="34290" marB="34290" anchor="ctr">${edge}${background}</a:tcPr></a:tc>`;
 }
 
-/** Characters that fit on one line of a column at this type size, by the average letter width. */
+/**
+ * Characters that fit on one line of a column at this type size. 0.6 em a letter is on the wide
+ * side of Calibri, so a cell of capitals still fits and the row keeps its height.
+ */
 function columnCapacity(widthEmu: number, size: number): number {
-  return Math.max(4, Math.floor((widthEmu - 137160) / ((size / 100) * 12700 * 0.52)));
+  return Math.max(4, Math.floor((widthEmu - 137160) / ((size / 100) * 12700 * 0.6)));
 }
 
 function nativeTable(id: number, table: ExportTable, accent: string, y: number, room: number): { xml: string; height: number; shownRows: number; shownColumns: number } {
@@ -251,7 +254,7 @@ function flagSlide(flag: ExportFlag, doc: ExportDocument, accent: string, page: 
 }
 
 function titleSlide(doc: ExportDocument): string {
-  const details = [`Taken at: ${takenAtWords(doc.takenAt)}`, `By: ${doc.by}`, `Filters: ${clip(filtersWords(doc), 220)}`];
+  const details = [`Taken at: ${takenWords(doc)}`, `By: ${doc.by}`, `Filters: ${clip(filtersWords(doc), 220)}`];
   const body = [...(doc.brief ? [clip(doc.brief, 260)] : []), ...details, ...(doc.flags.length === 0 ? [NO_FLAGS] : [])];
   return slideXml(
     placeholder(2, 'Title', 'ctrTitle', clip(doc.title.trim() || 'Report', MAX_TITLE)) +

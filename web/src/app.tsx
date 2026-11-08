@@ -29,7 +29,7 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, describeError, listItems, loadItem, profileTable, saveItem, type StoredItem } from './lib/api.ts';
+import { api, describeError, listItems, loadItem, profileTable, type StoredItem } from './lib/api.ts';
 import { notify } from './lib/toasts.ts';
 import { confirm } from './lib/confirm.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
@@ -247,6 +247,21 @@ export function App() {
     return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
   }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
+  // "Brief me" and the quick-chart answer belong to the page they were made on (declared here so a
+  // hoist switch can clear them).
+  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
+  // What goes when another hoist takes this one's place: selections, the selected flag, an open
+  // answer and briefing.
+  const leavePage = useCallback(() => {
+    setSelections({});
+    setSelectedId(null);
+    setAsked(null);
+    setBriefing(null);
+  }, []);
+
+  // The catalog has edits the folder has not got yet: the folder's copy must not replace them.
+  const catalogDirty = useRef(false);
+
   // Save (hooks/usePersistence.ts): always to this browser; to the Semaphore folder 1.2 s after the
   // last change, with the version check, the size check, and another tab's changes noticed.
   const persistence = usePersistence({
@@ -258,14 +273,17 @@ export function App() {
     newId,
     onLoadHoist: (h) => {
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
     },
     onLoadCatalog: (c) => {
       if (c && c.version === 1 && checkCatalog(c).length === 0) {
+        catalogDirty.current = false;
         setCatalogState(c);
         writeLocal(K.catalog, c);
       }
+    },
+    onCatalogSaved: () => {
+      catalogDirty.current = false;
     },
   });
   const { flushSave } = persistence;
@@ -277,6 +295,7 @@ export function App() {
         notify(problems[0]!, { tone: 'error' });
         return;
       }
+      catalogDirty.current = true;
       setCatalogState(c);
       if (!writeLocal(K.catalog, c)) notify(server ? 'This browser could not save the catalog (storage is full or blocked). The server keeps a copy.' : 'This browser could not save the catalog (storage is full or blocked). Download the hoist to keep your work.', { tone: 'error' });
       persistence.saveCatalog(c);
@@ -285,11 +304,13 @@ export function App() {
     [persistence.saveCatalog],
   );
 
-  // A server keeps the catalog for every browser on this computer; prefer its copy.
+  // A server keeps the catalog for every browser on this computer; prefer its copy, once per server
+  // (not again after an offline spell), and never over edits made here that it has not got yet.
   useEffect(() => {
     if (!server) return;
     loadItem<Catalog>('catalogs', 'default').then(
       (c) => {
+        if (catalogDirty.current) return;
         if (c && c.version === 1 && checkCatalog(c).length === 0) {
           setCatalogState(c);
           writeLocal(K.catalog, c);
@@ -297,11 +318,18 @@ export function App() {
       },
       // Nothing in the folder yet (or it could not be read): this browser's catalog becomes the folder's.
       () => {
-        if (!oversize(catalog, 'catalog')) saveItem('catalogs', 'default', catalog).catch(() => undefined);
+        if (!oversize(catalog, 'catalog')) persistence.saveCatalog(catalog);
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [server]);
+  }, [server?.pid]);
+
+  // While a save conflict waits for a choice, the hoist stays: a switch would lose the edits it holds.
+  const conflictBlocks = useCallback((): boolean => {
+    if (!persistence.conflict) return false;
+    notify(persistence.conflict.kind === 'hoists' ? 'Choose what to keep in the save conflict bar first: Load theirs, Save mine as a copy, or Overwrite. Then open another hoist.' : 'Choose what to keep for the catalog in the save conflict bar first. Then open another hoist.', { tone: 'error' });
+    return true;
+  }, [persistence.conflict]);
 
   const selected = hoist.flags.find((f) => f.id === selectedId) ?? null;
   const updateFlag = useCallback((id: string, patch: Partial<Flag>, group?: string) => change((h) => ({ ...h, flags: h.flags.map((f) => (f.id === id ? { ...f, ...patch } : f)) }), group), [change]);
@@ -352,6 +380,9 @@ export function App() {
     [change],
   );
 
+  // The title each flag's last draft gave it, so a redraft can tell a drafted title from a typed one.
+  const draftedTitles = useRef(new Map<string, string>());
+
   // Reviewed examples ride along with a draft only when the analyst switched them on (lib/ai.ts).
   const aiExamples = useMemo(() => examplesFor(useExamples, ai, useAi, playbook.entries, user), [useExamples, ai, useAi, playbook.entries, user]);
 
@@ -367,8 +398,12 @@ export function App() {
       if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
       else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
-      // A fresh draft takes the drafted title; one the analyst typed is kept.
-      if (!selected.binding || selected.title === '' || selected.title === titleOf(selected)) next.title = draft.title || selected.title;
+      // A fresh draft takes the drafted title, and so does a redraft whose title is still the one the
+      // last draft gave it; a title the analyst typed is kept.
+      if (!selected.binding || selected.title === '' || selected.title === draftedTitles.current.get(selected.id)) {
+        next.title = draft.title || selected.title;
+        draftedTitles.current.set(selected.id, next.title);
+      }
       if (next.kind !== selected.kind && next.layout.w < DEFAULT_SIZE[next.kind].w) {
         next.layout = { ...next.layout, w: DEFAULT_SIZE[next.kind].w, h: Math.max(next.layout.h, DEFAULT_SIZE[next.kind].h) };
       }
@@ -634,8 +669,8 @@ export function App() {
   const removeSource = useCallback(
     (id: string) => {
       if (id === FILES_SOURCE) {
-        for (const name of Object.keys(files)) void deleteFile(name);
-        allFiles().then((all) => all.forEach((f) => deleteFile(f.name)));
+        // Stored files are keyed by file name (not table name): remove every one this browser keeps.
+        allFiles().then((all) => all.forEach((f) => void deleteFile(f.name)));
         setFiles({});
         void worker?.clear();
         setWorkerTables([]);
@@ -652,16 +687,20 @@ export function App() {
         hierarchies: (catalog.hierarchies ?? []).filter((h) => !h.levels.some((l) => fieldKeys.has(l))),
       });
     },
-    [catalog, files, setCatalog],
+    [catalog, setCatalog],
   );
 
   const loadExample = useCallback(() => {
     const ex = exampleCatalog as Catalog;
     setCatalog({ ...catalog, version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
+    if (conflictBlocks()) return;
     const h = parseHoist(exampleHoist, indexCatalog(ex)).hoist;
-    if (h) history.replace(h);
-    setSelections({});
-  }, [catalog, setCatalog, history]);
+    if (h) {
+      void flushSave();
+      history.replace(h);
+      leavePage();
+    }
+  }, [catalog, setCatalog, history, conflictBlocks, flushSave, leavePage]);
 
   const exportHoist = () => {
     const blob = new Blob([JSON.stringify(hoist, null, 2)], { type: 'application/json' });
@@ -673,6 +712,7 @@ export function App() {
   };
 
   const importHoist = async (file: File) => {
+    if (conflictBlocks()) return;
     // The size check comes first (#91): the folder takes 2 MB a hoist, so a bigger file is never read in.
     if (file.size > LIMITS.docBytes) {
       notify(`${file.name} is ${formatMb(file.size)}, over the ${formatMb(LIMITS.docBytes)} a hoist may be. Remove some flags from it, or split it into two hoists.`, { tone: 'error' });
@@ -689,8 +729,7 @@ export function App() {
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
       void flushSave();
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
       notify(warnings.length ? `Opened “${h.title}”. ${warnings.slice(0, 2).join(' ')}` : `Opened “${h.title}”.`, { tone: warnings.length ? 'info' : 'success' });
     } catch (e) {
       notify(`Could not open ${file.name}. ${describeError(e)}`, { tone: 'error' });
@@ -698,14 +737,14 @@ export function App() {
   };
 
   const openFromServer = async (id: string) => {
+    if (conflictBlocks()) return;
     try {
       const raw = await loadItem<unknown>('hoists', id);
       const { hoist: h, warnings } = parseHoist(raw, index);
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
       void flushSave();
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
       setOpenList(null);
       if (warnings.length) notify(warnings.slice(0, 2).join(' '));
     } catch (e) {
@@ -713,14 +752,15 @@ export function App() {
     }
   };
   const showOpenList = useCallback(() => {
+    if (conflictBlocks()) return;
     listItems('hoists').then(setOpenList, (e: unknown) => notify(`Could not list the saved hoists. ${describeError(e)}`, { tone: 'error' }));
-  }, []);
+  }, [conflictBlocks]);
   const newHoist = useCallback(() => {
+    if (conflictBlocks()) return;
     void flushSave();
     history.replace(blankHoist());
-    setSelections({});
-    setSelectedId(null);
-  }, [flushSave, history]);
+    leavePage();
+  }, [flushSave, history, conflictBlocks, leavePage]);
 
   // End session (#87): confirm, send the pending save, stop the heartbeat, then stop the server.
   const endTheSession = useCallback(async () => {
@@ -817,7 +857,6 @@ export function App() {
   }, [playbook.loaded, playbook.schedules, playbook.away, ctx]);
 
   // "Brief me": the open page's briefing, written by the AI when it is on, checked against the facts.
-  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
   const briefMe = useCallback(async () => {
     if (briefing === 'loading') return;
     setBriefing('loading');
@@ -988,8 +1027,9 @@ export function App() {
           end: () => void endTheSession(),
         },
       }),
+    // `history` is a new object every render; only its stable functions and flags matter here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [server, busy, history, hoist, theme, skin, skinFixed, ai, useAi, useExamples, newHoist, showOpenList, briefMe, draftPage, toggleAi, toggleExamples, endTheSession],
+    [server, busy, history.canUndo, history.canRedo, history.undo, history.redo, hoist, theme, skin, skinFixed, ai, useAi, useExamples, newHoist, showOpenList, briefMe, draftPage, toggleAi, toggleExamples, endTheSession],
   );
   const paletteCommands = useCommands({
     actions,
@@ -1000,7 +1040,7 @@ export function App() {
     questions: playbook.questions,
     onSelectFlag: (id) => {
       setSelectedId(id);
-      document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ block: 'center' });
+      document.querySelector(`[data-flag="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' });
     },
     onOpenHoist: (id) => void openFromServer(id),
     onInsert: (label) => change((h) => ({ ...h, brief: `${h.brief.trimEnd()}${h.brief.trim() ? ' ' : ''}${label}`.slice(0, LIMITS.briefChars) }), 'hoist-brief'),
@@ -1020,6 +1060,7 @@ export function App() {
             skin={skin}
             onSkin={skinFixed ? null : setSkin}
             hasServer={!!server}
+            server={server ? { version: server.version, port: server.port, home: server.home, pid: server.pid, ...(server.user ? { user: server.user } : {}) } : null}
             ai={ai}
             aiOn={!!ai?.configured && useAi}
             onAi={toggleAi}
@@ -1219,11 +1260,11 @@ export function App() {
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-panel px-4 py-1.5 text-xs" aria-label="Page selections">
           <span className="text-ink-3">Selected:</span>
           {selectionChips.map((c) => (
-            <button key={`${c.key}-${String(c.value)}`} type="button" onClick={() => onSelectValue(c.key, c.value, true)} className="flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 font-medium text-panel" title="Remove this selection">
+            <button key={`${c.key}-${String(c.value)}`} type="button" onClick={() => onSelectValue(c.key, c.value, true)} className="flex min-h-8 items-center gap-1 rounded-full bg-accent px-2.5 font-medium text-panel" title="Remove this selection">
               {c.text} <X size={11} />
             </button>
           ))}
-          <button type="button" onClick={() => setSelections({})} className="ml-1 text-ink-3 underline hover:text-ink">
+          <button type="button" onClick={() => setSelections({})} className="ml-1 min-h-8 px-1 text-ink-3 underline hover:text-ink">
             Clear all
           </button>
         </div>
@@ -1404,7 +1445,7 @@ export function App() {
             flags={hoist.flags}
             onFlag={(id) => {
               setSelectedId(id);
-              document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
+              document.querySelector(`[data-flag="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
             }}
             onClose={() => setBriefing(null)}
           />
@@ -1472,10 +1513,6 @@ export function App() {
       {overlays}
     </div>
   );
-}
-
-function titleOf(f: Flag): string {
-  return f.title;
 }
 
 /** Example briefs written from the catalog, so the first thing to try uses real names. */

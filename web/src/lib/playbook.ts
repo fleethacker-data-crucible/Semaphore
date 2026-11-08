@@ -66,6 +66,22 @@ function localPut(kind: Kind, doc: Doc): void {
   writeLocal(localKey(kind), all);
 }
 
+/**
+ * The documents that pass their guard. A file someone edited by hand or that was cut short is
+ * dropped with a console warning naming it, so one bad file never takes the page down.
+ */
+export function keepValid<T>(docs: readonly unknown[], what: string, ok: (raw: unknown) => raw is T): T[] {
+  const out: T[] = [];
+  for (const d of docs) {
+    if (ok(d)) out.push(d);
+    else {
+      const id = d && typeof d === 'object' && typeof (d as { id?: unknown }).id === 'string' ? ` "${(d as { id: string }).id.slice(0, 64)}"` : '';
+      console.warn(`Semaphore: skipped a ${what}${id} in the shared folder that is not in the expected shape.`);
+    }
+  }
+  return out;
+}
+
 async function serverAll(kind: Kind): Promise<unknown[]> {
   if (kind !== 'snapshots') return api<unknown[]>(`/api/${kind}?full=1`);
   const list = await api<Array<{ id: string }>>('/api/snapshots');
@@ -165,10 +181,10 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
       setUsage(t.filter((x): x is UsageLog => isUsageLog(x)));
       setSchedules(t.filter((x): x is ReportSchedule => isReportSchedule(x)));
       setEditions(t.filter((x): x is Edition => isEdition(x)));
-      setEntries(e.filter((x): x is PlaybookEntry => isEntry(x)));
-      questionsRef.current = q.filter((x): x is QuestionItem => isQuestion(x)).map(withAskers);
+      setEntries(keepValid(e, 'playbook entry', isEntry));
+      questionsRef.current = keepValid(q, 'question', isQuestion).map(withAskers);
       setQuestions(questionsRef.current);
-      setSnapshots(s.filter((x): x is Snapshot => isSnapshot(x)));
+      setSnapshots(keepValid(s, 'snapshot', isSnapshot));
       setLoaded(true);
     });
     return () => {

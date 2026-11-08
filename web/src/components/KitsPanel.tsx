@@ -7,6 +7,7 @@ import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import { applyKit, exportKit, type FlagOutcome, type FlagReport, type Kit, kitId, KIT_LIMITS, makeKit, type Mapping, parseKitText } from '../../../src/core/kits.ts';
 import type { KitStore } from '../lib/kits.ts';
+import { useModal } from '../lib/modal.ts';
 import { download } from '../lib/share.ts';
 import { recordSkill } from '../lib/skills.ts';
 import { EmptyState } from './EmptyState.tsx';
@@ -41,13 +42,9 @@ export function KitsPanel({ store, hoist, index, onApply, onClose }: KitsPanelPr
   const [message, setMessage] = useState<{ tone: 'good' | 'bad'; text: string[] } | null>(null);
   const dialog = useRef<HTMLElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-
-  // Keyboard: focus moves into the dialog and returns to the button that opened it; Escape closes.
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog.current?.focus();
-    return () => opener?.focus();
-  }, []);
+  // A modal like every other panel (lib/modal.ts): focus trapped, the page behind inert and out of
+  // reach of its shortcuts, Escape closes, focus goes back to what opened it.
+  useModal(dialog, onClose);
 
   const selected = store.kits.find((k) => k.id === selectedId) ?? store.kits[0] ?? null;
 
@@ -70,19 +67,12 @@ export function KitsPanel({ store, hoist, index, onApply, onClose }: KitsPanelPr
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-ink/20" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside
-        ref={dialog}
-        role="dialog"
-        aria-label="Flag kits"
-        tabIndex={-1}
-        onKeyDown={(e) => e.key === 'Escape' && onClose()}
-        className="flex h-full w-[600px] max-w-full flex-col border-l border-line bg-panel shadow-xl outline-none"
-      >
+      <aside ref={dialog} role="dialog" aria-modal="true" aria-label="Flag kits" tabIndex={-1} className="flex h-full w-[600px] max-w-full flex-col border-l border-line bg-panel shadow-xl outline-none">
         <header className="border-b border-line px-4 py-3">
           <div className="flex items-center gap-2">
             <Package size={16} className="text-brass" aria-hidden="true" />
             <h2 className="flex-1 text-base font-semibold">Flag kits</h2>
-            <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+            <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
               <X size={16} />
             </button>
           </div>

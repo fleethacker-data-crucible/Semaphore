@@ -9,7 +9,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "test": "node --test \"tests/**/*.test.ts\"",
+    "test": "node -e \"process.getBuiltinModule('node:sqlite') || (console.error('node:sqlite is missing: use Node 22.18 or later'), process.exit(1))\" && node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
     "build": "node web/build.mjs && node web/build-contract.mjs",
     "dev": "node web/build.mjs --watch",

@@ -13,10 +13,18 @@
 # New setup writes only to the app-prefixed Windows credential. It never reaches the browser, the
 # log, the runtime file or an error message.
 #
-# Port authority: the key is sent only after the address answers /__fleethacker/id as "fairlead" AND
-# reports the PID of the process that really listens on the port (GetExtendedTcpTable, compiled with
-# Add-Type; Test-SemAiIdentity), the rule Lazarette uses, so a tool squatting on Fairlead's port never
-# gets it. When the port check cannot be compiled, the key is never sent and /api/ai says why.
+# Port authority (Test-SemAiIdentity): the key is sent only after the address answers /__fleethacker/id as
+# "fairlead" with the PID of the process that really listens on the port (GetExtendedTcpTable, compiled with
+# Add-Type) AND a "path" that is exactly that process's executable or its -File script (Win32_Process); with
+# settings.json "fairleadPath" set, the path must also be that one. When the port check cannot be compiled,
+# the key is never sent and /api/ai says why.
+# What this is and is not: it keeps the key from an honest program that happens to hold port 8776 while
+# Fairlead is down (another Fleet tool, a dev server, a Semaphore started on the wrong port), and from a
+# Fairlead run from an unexpected folder when the path is pinned. It is not authentication: any program
+# running as this Windows account can name its own PID and path, and the same account can read the key
+# from Credential Manager directly. Hostile code in the user's own session is outside what a loopback
+# check can decide; the controls there are the workstation's application-control policy and the key's
+# scope (a Fairlead client key is revocable in Fairlead > Clients and useless outside Fairlead).
 # Semaphore only ever calls a loopback address: Fairlead decides where a prompt goes. By default the
 # request asks for Fairlead's "local" route and sends X-Fairlead-Privacy: local, so prompts stay on
 # this machine. SEMAPHORE_AI_MODEL picks another route (auto, smart, fast); SEMAPHORE_AI_PRIVACY=off
@@ -114,7 +122,10 @@ function Get-SemAiSettings {
     $problem = Test-SemAiUrl $url
     if (-not $problem -and -not $key -and $credProblem) { $problem = $credProblem }
     if (-not $problem -and $key -and -not (Test-SemAiKeyShape $key)) { $problem = 'The stored Fairlead key is not in the fl-... format. Run Set-SemaphoreAiKey.bat again.' }
-    return @{ Url = $url; Model = $model; PrivacyLocal = $privacyLocal; Key = $key; KeySource = $source; Problem = $problem }
+    # settings.json "fairleadPath": the one Start-Fairlead.ps1 (or executable) path the key may go to; '' accepts any.
+    $expected = ''
+    try { $expected = [string](Read-SemSettings -Root $Root).fairleadPath } catch { $expected = '' }
+    return @{ Url = $url; Model = $model; PrivacyLocal = $privacyLocal; Key = $key; KeySource = $source; Problem = $problem; ExpectedPath = $expected }
 }
 
 function Get-SemAiStatus {
@@ -130,6 +141,7 @@ function Get-SemAiStatus {
         model        = $Settings.Model
         privacyLocal = [bool]$Settings.PrivacyLocal
         keySource    = $Settings.KeySource
+        expectedPath = [string]$Settings.ExpectedPath
         problem      = $problem
         setup        = 'Open Fairlead > Clients and install a key for Semaphore (or run Set-SemaphoreAiKey.bat as a fallback). Until then, local rules draft every flag.'
     }
@@ -321,16 +333,55 @@ function Clear-SemAiIdentityCache {
     [AppDomain]::CurrentDomain.SetData('Semaphore.FairleadProcess', $null)
 }
 
+function Get-SemAiProcessPaths {
+    # The executable and the -File script of a process, from Win32_Process: @{ ExecutablePath; ScriptPath }, '' when
+    # unknown (the process is gone, or belongs to another account). Tests replace it with a stub (Mock).
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    $p = $null
+    try { $p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop } catch { $p = $null }
+    if (-not $p) { return @{ ExecutablePath = ''; ScriptPath = '' } }
+    $file = ''
+    $m = [regex]::Match([string]$p.CommandLine, '(?i)(?:^|\s)[-/](?:file|f)\s+(?:"([^"]+)"|(\S+))')
+    if ($m.Success) { if ($m.Groups[1].Success) { $file = $m.Groups[1].Value } else { $file = $m.Groups[2].Value } }
+    return @{ ExecutablePath = [string]$p.ExecutablePath; ScriptPath = $file }
+}
+
+function ConvertTo-SemAiNormalPath {
+    # An absolute, normalized Windows path (drive or UNC) without quotes or a trailing separator, or '' when it is not one.
+    param([string]$Path)
+    if (-not $Path) { return '' }
+    $p = $Path.Trim().Trim('"').Replace('/', '\')
+    if ($p -notmatch '^(?:[A-Za-z]:\\|\\\\[^\\?.]+\\[^\\]+)') { return '' }
+    try { return [IO.Path]::GetFullPath($p).TrimEnd('\') } catch { return '' }
+}
+
+function Test-SemAiProcessPath {
+    # $true only when $Path (what the id answer reports) is exactly the process's executable or -File script,
+    # compared as normalized absolute paths without case. Never a substring, never a bare name.
+    param([int]$ProcessId, [string]$Path)
+    $want = ConvertTo-SemAiNormalPath $Path
+    if (-not $want) { return $false }
+    $paths = Get-SemAiProcessPaths -ProcessId $ProcessId
+    foreach ($candidate in @($paths.ExecutablePath, $paths.ScriptPath)) {
+        $c = ConvertTo-SemAiNormalPath $candidate
+        if ($c -and [string]::Equals($c, $want, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Test-SemAiIdentity {
     <#
-      Port authority (edge-ops PORTS.md, the same rule Lazarette uses): before the key is sent,
+      Port authority (edge-ops PORTS.md; the rule FleetPort.psm1 applies before it stops a process): before the key is sent,
         1. the port check must be available (Initialize-SemAiPortCheck), else nothing is sent;
         2. exactly one process may listen on the port on loopback (Get-SemAiListenerPids);
-        3. the address must answer GET /__fleethacker/id as "fairlead" with that process's PID.
+        3. the address must answer GET /__fleethacker/id as "fairlead" with that process's PID and a "path";
+        4. that path must be exactly the process's executable or -File script (Test-SemAiProcessPath);
+        5. with settings.json "fairleadPath" set, the path must be that one too.
       Ports can be taken by another program when Fairlead is down (8776 is Fairlead's own port, outside
       Semaphore's block 8800-8802), and the key must never go to it. A verified process is remembered
       by PID and start time, so the id request is made again only when the listener changes.
       Returns $null when it is Fairlead, else @{ Code; Error }. The id request carries no key.
+      This tells honest programs apart; it is not authentication (see the file header).
     #>
     param($Settings, [int]$TimeoutSec = 3)
     $u = [Uri]$Settings.Url
@@ -368,6 +419,20 @@ function Test-SemAiIdentity {
         if (-not [int]::TryParse([string](Get-SemJsonProp $id 'pid'), [ref]$idPid) -or $idPid -ne $owner) {
             Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead with PID {1}, but PID {2} holds the port' -f $u.Port, $idPid, $owner)
             return @{ Code = 'ai-not-fairlead'; Error = $notFairlead }
+        }
+        $reported = Get-SemJsonProp $id 'path'
+        if ($reported -isnot [string] -or -not $reported) {
+            Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead but reports no path' -f $u.Port)
+            return @{ Code = 'ai-not-fairlead'; Error = ('The program on port ' + $u.Port + ' says it is Fairlead but does not say which script it runs, so the Fairlead key was not sent. Update Fairlead.') }
+        }
+        if (-not (Test-SemAiProcessPath -ProcessId $owner -Path $reported)) {
+            Write-SemLog 'WARN' ('AI: the program on port {0} (PID {1}) reports a path that is not what that process runs' -f $u.Port, $owner)
+            return @{ Code = 'ai-not-fairlead'; Error = $notFairlead }
+        }
+        $pin = ConvertTo-SemAiNormalPath ([string]$Settings.ExpectedPath)
+        if ($pin -and -not [string]::Equals($pin, (ConvertTo-SemAiNormalPath $reported), [StringComparison]::OrdinalIgnoreCase)) {
+            Write-SemLog 'WARN' ('AI: Fairlead on port {0} runs from another path than settings.json fairleadPath pins' -f $u.Port)
+            return @{ Code = 'ai-not-fairlead'; Error = ('Fairlead on port ' + $u.Port + ' runs from another folder than the fairleadPath pinned in config\settings.json, so the Fairlead key was not sent.') }
         }
         if ($stamp) { [AppDomain]::CurrentDomain.SetData('Semaphore.FairleadProcess', $stamp) }
         return $null

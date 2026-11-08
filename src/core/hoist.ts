@@ -1,7 +1,7 @@
 // A hoist is a dashboard; a flag is one block on it. In naval signalling a hoist is the set of
 // flags flown together to send one message, and each flag carries one part of it.
 
-import type { CatalogIndex } from './catalog.ts';
+import type { CatalogIndex, FieldType } from './catalog.ts';
 import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
 import { compact, isValidLayout } from './layout.ts';
 
@@ -350,7 +350,16 @@ export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warn
     if (metrics.includes(by) || dimensions.some((d) => dimensionKey(d) === by)) binding.sort = { by, dir: raw.sort.dir };
     else warnings.push(`${where}: sort on "${by}", which the flag does not show, removed.`);
   }
-  if (isInt(raw.limit) && raw.limit > 0) binding.limit = Math.min(raw.limit, 10000);
+  if (isInt(raw.limit) && raw.limit > 0) {
+    binding.limit = Math.min(raw.limit, 10000);
+    // A "top N" with no order would cut arbitrary rows (SQL TOP/LIMIT with no ORDER BY), so it
+    // ranks by the first measure, highest first, as the team style does (style.ts).
+    if (!binding.sort && metrics[0]) {
+      // Not a warning: a warning would mark a reviewed flag as drafted again on load. The order shows in
+      // the flag's plain-English line.
+      binding.sort = { by: metrics[0], dir: 'desc' };
+    }
+  }
   if (COMPARISONS.includes(raw.compare as Comparison)) binding.compare = raw.compare as Comparison;
   else if (raw.compare !== undefined) warnings.push(`${where}: unknown comparison "${String(raw.compare).slice(0, 40)}" removed.`);
   if (raw.share === true) binding.share = true;
@@ -382,6 +391,17 @@ export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warn
       warnings.push(`${where}: filter on "${f.field}" lists more than ${LIMITS.filterValues} values, removed.`);
       continue;
     }
+    // With a catalog, values must read as the field's type: a date as YYYY-MM-DD (longer text
+    // whose first ten characters are a date is read as that day), true/false for a yes-or-no
+    // field. Otherwise the engine would never match and SQL would fail later, with no warning.
+    // An empty text means "blank" (a drill into the blank bar) and is allowed on any type.
+    if (field && op !== 'last') {
+      const typed = values.every((v) => v === '' || readsAs(v, field.type));
+      if (!typed) {
+        warnings.push(`${where}: filter on "${f.field}" has a value that is not ${field.type === 'date' ? 'a date (YYYY-MM-DD)' : field.type === 'boolean' ? 'true or false' : 'a number'}, removed.`);
+        continue;
+      }
+    }
     const filter: Filter = { field: f.field, op, values };
     if (op === 'last') {
       const unit = TIME_GRAINS.includes(f.unit as TimeGrain) ? (f.unit as TimeGrain) : null;
@@ -395,6 +415,20 @@ export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warn
     out.push(filter);
   }
   return out;
+}
+
+/** Whether a filter value can be read as a value of the field's type. Text takes anything. */
+function readsAs(v: string | number, type: FieldType): boolean {
+  switch (type) {
+    case 'date':
+      return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) && !Number.isNaN(Date.parse(`${v.slice(0, 10)}T00:00:00Z`));
+    case 'boolean':
+      return v === 'true' || v === 'false' || v === 1 || v === 0;
+    case 'number':
+      return typeof v === 'number' || (v.trim() !== '' && Number.isFinite(Number(v)));
+    case 'string':
+      return true;
+  }
 }
 
 export function parseBehavior(raw: unknown, index: CatalogIndex | undefined, warnings: string[], where: string): Behavior {

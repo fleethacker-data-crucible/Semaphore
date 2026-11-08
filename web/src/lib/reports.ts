@@ -86,7 +86,7 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
     }
     const flags = await freezeHoist(hoist, ctx, index);
     const briefing = await briefFrozen(flags, hoist.title || schedule.title, index, provider);
-    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, flags, briefing };
+    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, ...(hoist.design ? { design: hoist.design } : {}), flags, briefing };
     try {
       await playbook.saveReportDoc(edition);
       await playbook.saveReportDoc({ ...schedule, lastEdition: date });

@@ -53,7 +53,7 @@ Expected: the install finishes with no error. `npm ci` uses `package-lock.json`.
 npm test
 ```
 
-Expected: the Node test runner ends with `# fail 0`. The test script is `node --test "tests/**/*.test.ts"` (`package.json`).
+Expected: the Node test runner ends with `# fail 0`. The test script first checks that `node:sqlite` is built in (Node 22.18 or later), then runs `node --test "tests/**/*.test.ts"` (`package.json`).
 
 **2.3 Typecheck the core and the UI**
 
@@ -116,13 +116,13 @@ Expected:
 - The server listens on `127.0.0.1` at the first free port of **8800, 8801 or 8802** (`server/FleetPorts.psd1`, `'semaphore'` block).
 - A log file appears under `logs\` named `Semaphore_yyyy_MM_dd_HHmmss.log` (`server/Common.ps1`, `Initialize-SemLog`).
 
-**3.3 Start with a visible console (needed for Lazarette)**
+**3.3 Start with a visible console**
 
 ```shell
 Launch-Semaphore.bat --console
 ```
 
-Expected: the console window stays open, and Lazarette prompts for its passphrase in that console, never in the browser (`docs/VAULT.md`).
+Expected: the console window stays open and the launcher's questions (for example whether to stop a running copy) are asked there. Lazarette is never unlocked from Semaphore: it is unlocked in its own window, and Semaphore reads shared names from it over loopback (`docs/VAULT.md`).
 
 **3.4 Other launcher options (test as needed)**
 
@@ -136,7 +136,7 @@ Expected: the console window stays open, and Lazarette prompts for its passphras
 
 **3.5 Stop**
 
-Choose **End session** in the page header, or close the tab and wait about 20 seconds (`config/settings.json`, `heartbeatTimeoutSec: 20`). To stop any leftover copy, run `server\Stop-Semaphore.ps1`.
+Choose **End session** under **Settings > Session**, or close the tab: the server stops about 5 seconds later (`config/settings.json`, `leavingGraceSec: 5`), or 90 seconds after the last heartbeat if the browser could not say goodbye (`heartbeatTimeoutSec: 90`). To stop any leftover copy, run `server\Stop-Semaphore.ps1`.
 
 ---
 
@@ -148,7 +148,7 @@ Run these before any functional test. Each one checks one dependency. Use the co
 |---|---|---|---|
 | S1 | Semaphore folder and version | `Semaphore-CLI.bat info show --json` | `ok: true`, version `0.3.0` (`VERSION`), the Semaphore folder path. |
 | S2 | `sources.json` | `Semaphore-CLI.bat source list --json` | The list of sources (id, label, kind, provider). Empty is fine if none are configured. No connection string appears. |
-| S3 | Lazarette (optional) | `Semaphore-CLI.bat vault status --json` | `lazarette` is `true` if found (`LAZARETTE_PATH`, a sibling `Lazarette` folder, or `%USERPROFILE%\Projects\Lazarette`, `server/Vault.ps1`). `unlocked` is always `false` from the command line (`docs/CLI.md`). If `false` and no source names a vault item, mark **NOT SET UP**. If `false` and a source does name one, mark **FAIL**. |
+| S3 | Lazarette (optional) | `Semaphore-CLI.bat vault status --json` | `paired` (this account holds a pairing code), `running` and `locked` (asked of the Lazarette on loopback, `server/Vault.ps1` `Get-SemVaultStatus`), `sources` with the share each one reads, and `shared` / `notShared` names; never a value. If not paired and no source has a `vault` block, mark **NOT SET UP**. If a source has a `vault` block and `paired` is `false` or a name is in `notShared`, mark **FAIL**. Pair under **Settings > Lazarette** or with `vault pair` (`docs/VAULT.md`). |
 | S4 | Fairlead (optional AI) | `Semaphore-CLI.bat ai status --json` | Shows the Fairlead address `127.0.0.1:8776` and where the key comes from. The key is never printed. If Fairlead is not running, the page drafts with local rules (`server/Intelligence.ps1`). |
 | S5 | Browser | Look at the launch | The app window opened (Edge, else Chrome; `server/Start-Semaphore.ps1`). |
 | S6 | Database driver (per ODBC or OLE DB source) | In the page, **Data**, choose the source, pick a table, press **Profile and add** | Columns and types appear. A missing driver shows a `provider-unavailable` message (`server/Query.ps1`). |
@@ -265,12 +265,12 @@ Each test lists what it proves, the steps, and the expected result. Use the **Fl
 - Note: simulated AWS tests only (`docs/VAULT.md`). Real Athena is **UNVERIFIED**.
 
 **F24. AI drafting, optional**
-- Steps: with no Fairlead key, draft a flag. Then install a key through Fairlead > Clients, or use `Set-SemaphoreAiKey.bat` as a manual fallback. Check the **AI** button in the header.
+- Steps: with no Fairlead key, draft a flag. Then install a key through Fairlead > Clients, or use `Set-SemaphoreAiKey.bat` as a manual fallback. Check **Settings > AI drafting**.
 - Expected: with no key, local rules draft every flag and say so. With a key and Fairlead running, drafts use the `local` route (`X-Fairlead-Privacy: local`, `server/Intelligence.ps1`). The key never reaches the page. Installing the key itself is **UNVERIFIED** here, because it goes through Fairlead's own UI.
 
 **F25. Session lifecycle**
 - Steps: start Semaphore. Choose **End session**. Start again, close the tab, and time how long the server takes to stop. Start again with `--stay` and close the tab. Start a second copy without `--replace`.
-- Expected: **End session** stops the server cleanly. Closing the tab stops it about 20 seconds later. `--stay` keeps it running. The second copy asks, or opens the running one (`server/Start-Semaphore.ps1` header).
+- Expected: **End session** (Settings > Session) asks first, then stops the server cleanly. Closing the tab stops it about 5 seconds later (90 seconds if the leaving beacon was lost). `--stay` keeps it running. The second copy asks, or opens the running one (`server/Start-Semaphore.ps1` header).
 
 **F26. The command line**
 - Steps: `Semaphore-CLI.bat commands --json`, `Semaphore-CLI.bat hoist list --json`, and a write with and without `--yes` and `--dry-run`.
@@ -289,8 +289,8 @@ Each test lists what it proves, the steps, and the expected result. Use the **Fl
 | The page does not load, and `web\dist\index.html` is missing | The build was not run | Run `npm run build` (Section 2.4). |
 | The browser does not open, but the console says no browser | Edge and Chrome are both missing | Install Edge or Chrome, or use `--no-browser` and open the printed link. |
 | A message says the server could not start | Ports 8800 to 8802 are busy, or PowerShell is wrong | Read the newest file under `logs\`. Try `--port` with a free port, or `--replace`. |
-| "Lazarette is locked or missing" | The vault is locked, or the `Lazarette` folder is not found | Start with `--console` and unlock there. Check `LAZARETTE_PATH`. |
-| A vault source answers `423 vault-locked` | The vault was not unlocked | Restart with `--console` (`docs/VAULT.md`). |
+| A vault source answers `501 vault-unavailable` or `424 vault-not-paired` | Lazarette is not running, or Semaphore is not paired | Start Lazarette; pair under Settings > Lazarette or with `Semaphore-CLI.bat vault pair` (`docs/VAULT.md`). |
+| A vault source answers `423 vault-locked` | Lazarette is locked | Unlock Lazarette in its own window and run the flag again (`docs/VAULT.md`). |
 | `provider-unavailable` on a database | The driver is not installed for this PowerShell's bitness | Install the driver that matches the process (`docs/CONNECTORS.md`). |
 | "Only a single SELECT statement is allowed." | A non-SELECT was typed in the SQL desk | This is correct. Use a single SELECT. |
 | "The connection string contains a password" | A `PWD=` or `Password=` was used | Use a DSN, integrated authentication, or a vault item (`server/Query.ps1`). |

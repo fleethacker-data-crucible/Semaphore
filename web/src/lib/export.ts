@@ -5,7 +5,7 @@
 // page's palette and finish, so the file matches what the analyst designed.
 
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
-import { FONT_STACK, type HoistDesign, paletteColors, resolveStyle } from '../../../src/core/design.ts';
+import { type FlagStyle, FONT_STACK, type HoistDesign, paletteColors, resolveStyle } from '../../../src/core/design.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
 import { toCsv, flagsToCsvZip } from '../../../src/core/export/csv.ts';
 import { toDocx } from '../../../src/core/export/docx.ts';
@@ -16,8 +16,9 @@ import { toPptx } from '../../../src/core/export/pptx.ts';
 import { toXlsx } from '../../../src/core/export/xlsx.ts';
 import { type Flag, toneFor } from '../../../src/core/hoist.ts';
 import type { FrozenFlag } from '../../../src/core/reports.ts';
+import { compressionSupported } from '../../../src/core/export/zip.ts';
 import { chartToSvg, paperColors } from '../components/Chart.tsx';
-import { flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
+import { chartCategories, flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
 import type { FlagResult } from './data.ts';
 
 export type FileFormat = 'pdf' | 'xlsx' | 'pptx' | 'docx' | 'csv' | 'json';
@@ -71,8 +72,12 @@ function imageHeight(flag: Flag): number {
   return Math.max(360, Math.min(620, Math.round((IMAGE_WIDTH * flag.layout.h * 56) / (flag.layout.w * 100))));
 }
 
-/** The numbers an editable chart needs, read from what the page draws. */
-function chartNumbers(flag: Flag, option: Record<string, unknown>, colors: readonly string[]): ExportChart | null {
+/**
+ * The numbers an editable chart needs, read from what the page draws. A comparison's earlier
+ * window is marked `previous` (chart-option.ts draws it second, in grey), and a 100% layout keeps
+ * the real numbers with `percent` set, so Excel stacks them to 100% itself.
+ */
+function chartNumbers(flag: Flag, result: FlagResult, option: Record<string, unknown>, colors: readonly string[], style: FlagStyle): ExportChart | null {
   const series = (option.series ?? []) as Array<Record<string, unknown>>;
   const valueOf = (d: unknown) => {
     const v = typeof d === 'object' && d !== null ? (d as { value?: unknown }).value : d;
@@ -85,13 +90,38 @@ function chartNumbers(flag: Flag, option: Record<string, unknown>, colors: reado
   const x = option.xAxis as { type?: string; data?: string[] } | Array<unknown>;
   const horizontal = Array.isArray(x);
   const axis = (horizontal ? option.yAxis : x) as { data?: string[] };
-  return {
+  const ownDims = result.plan.dimensions.filter((d) => result.plan.own.includes(d.key));
+  const splitBy = ownDims[1];
+  const isLine = flag.kind === 'line' || flag.kind === 'area';
+  const percent = !!splitBy && !isLine && style.barLayout === 'percent';
+  // Without a second field, the earlier window is the second series (chart-option.ts).
+  const previousAt = !splitBy && result.previous ? 1 : -1;
+  let paletteAt = 0;
+  const out: ExportChart = {
     type: flag.kind as ExportChart['type'],
     ...(horizontal ? { horizontal: true } : {}),
-    ...(series.some((s) => s.stack) ? { stacked: true } : {}),
+    ...(percent ? { percent: true } : series.some((s) => s.stack) ? { stacked: true } : {}),
     categories: axis.data ?? [],
-    series: series.map((s, i) => ({ name: String(s.name ?? ''), values: ((s.data ?? []) as unknown[]).map(valueOf), color: colors[i % colors.length]! })),
+    series: series.map((s, i) => {
+      const previous = i === previousAt;
+      const color = previous ? colors[0]! : colors[paletteAt++ % colors.length]!;
+      return { name: String(s.name ?? ''), values: ((s.data ?? []) as unknown[]).map(valueOf), color, ...(previous ? { previous: true } : {}) };
+    }),
   };
+  if (percent) {
+    // The page's series hold shares; the file gets the numbers behind them.
+    const k = flag.binding!.metrics[0]!;
+    const xDim = ownDims[0]!;
+    const categories = chartCategories(flag, result);
+    for (const s of out.series) {
+      s.values = categories.map((cat) => {
+        const row = result.display.rows.find((r) => String(r.dims[xDim.key]) === String(cat) && formatDim(r.dims[splitBy.key] ?? null, splitBy.grain) === s.name);
+        const v = row?.values[k];
+        return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      });
+    }
+  }
+  return out;
 }
 
 function flagTable(flag: Flag, result: FlagResult, index: CatalogIndex): ExportTable | null {
@@ -140,10 +170,12 @@ function headlines(flag: Flag, result: FlagResult, index: CatalogIndex): ExportH
     const tone = n === null ? null : toneFor(flag.behavior, k, n);
     const before = i === 0 ? result.previous?.[0]?.[k] : undefined;
     const change = n !== null && typeof before === 'number' && before !== 0 ? (n - before) / Math.abs(before) : null;
+    const format = index.metric(k)?.format;
     return {
       label: index.metric(k)?.label ?? k,
-      text: formatNumber(v, index.metric(k)?.format),
+      text: formatNumber(v, format),
       value: n,
+      ...(format ? { format } : {}),
       ...(tone ? { tone } : {}),
       ...(change === null ? {} : { change: `${change >= 0 ? '+' : ''}${Math.round(change * 100)}% vs ${flag.binding?.compare === 'previous-year' ? 'a year earlier' : 'previous period'}` }),
     };
@@ -175,7 +207,7 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
   if (isChart(flag, result)) {
     const option = flagChartOption({ flag, result, index, selections: {}, style: { ...style, zoom: false }, c, colors, ...font });
     out.image = await draw(option, IMAGE_WIDTH, imageHeight(flag));
-    out.chart = chartNumbers(flag, option, colors);
+    out.chart = chartNumbers(flag, result, option, colors, style);
     out.table = flagTable(flag, result, index);
     return out;
   }
@@ -206,7 +238,20 @@ export async function buildDocument(input: DocumentInput): Promise<ExportDocumen
   const flags: ExportFlag[] = [];
   // A picker is a control for the page, not an answer.
   for (const f of input.flags) if (f.flag.kind !== 'filter') flags.push(await exportFlagOf(f, input.index, input.design));
-  return { title: input.title || 'Semaphore report', brief: input.brief, takenAt: new Date().toISOString(), by: input.by, filters: input.filters, accent: paperColors().accent, flags };
+  const now = new Date();
+  // takenAt is the exact moment for machines (UTC); takenAtText is the same moment in the reader's own zone and format.
+  return { title: input.title || 'Semaphore report', brief: input.brief, takenAt: now.toISOString(), takenAtText: now.toLocaleString(), by: input.by, filters: input.filters, accent: paperColors().accent, flags };
+}
+
+/**
+ * A line for the person when this browser cannot compress: the files still come out, stored rather
+ * than deflated, so they are larger. Null when nothing needs saying.
+ */
+export function compressionWarning(userAgent = navigator.userAgent): string | null {
+  if (compressionSupported) return null;
+  const m = /(Edg|Chrome|Firefox)\/(\d+)/.exec(userAgent);
+  const browser = m ? `${m[1] === 'Edg' ? 'Edge' : m[1]} ${m[2]}` : 'This browser';
+  return `${browser} cannot compress files, so exports are saved uncompressed and are larger than usual. Updating the browser fixes this.`;
 }
 
 /** Writes the file and starts the download. Returns the file's name. */

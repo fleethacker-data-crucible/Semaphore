@@ -103,6 +103,22 @@ export function takenAtWords(iso: string): string {
   return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${hh}:${mm} UTC`;
 }
 
+/** When the numbers were taken, as the browser wrote it in the reader's zone, else as UTC words. */
+export function takenWords(doc: Pick<ExportDocument, 'takenAt' | 'takenAtText'>): string {
+  const text = cleanText(doc.takenAtText ?? '').trim();
+  return text || takenAtWords(doc.takenAt);
+}
+
+/** A fraction as the percentage a reader sees: 0.369 is 36.9. One decimal, as Excel's 0.0% shows. */
+export function percentValue(fraction: number): number {
+  return Math.round(fraction * 1000) / 10;
+}
+
+/** The header for a percent column whose cells hold percentages rather than fractions. */
+export function percentLabel(label: string): string {
+  return `${label} (%)`;
+}
+
 export function validDate(iso: string): Date | null {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? null : d;

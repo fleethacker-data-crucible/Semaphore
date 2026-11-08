@@ -3,6 +3,8 @@
 // previewed elsewhere) Semaphore still works on sample data and CSV files, and saves to this
 // browser only.
 
+import { readLocal, writeLocal } from './storage.ts';
+
 const TOKEN_KEY = 'semaphore.session';
 const TAB_KEY = 'semaphore.tab';
 
@@ -457,6 +459,24 @@ export const knownEtag = (kind: DocKind, id: string): string | undefined => etag
 export function rememberEtag(kind: DocKind, id: string, tag: string | null | undefined): void {
   if (tag) etags.set(tagKey(kind, id), unquote(tag));
   else etags.delete(tagKey(kind, id));
+  if (kind === 'hoists' && tag) rememberSavedEtag(id, unquote(tag));
+}
+
+// The version of the working copy's hoist that this browser last saved or loaded, kept beyond the
+// page's life (lib/save-queue.ts readVersion): on the next page load the first save can tell a
+// folder copy someone else saved since from the one this browser already knew.
+const SAVED_ETAG_KEY = 'semaphore.savedEtag';
+
+export function rememberSavedEtag(id: string, etag: string | null): void {
+  if (etag) writeLocal(SAVED_ETAG_KEY, { id, etag });
+  else if (savedEtag('hoists', id)) writeLocal(SAVED_ETAG_KEY, null);
+}
+
+/** The persisted version for this hoist, or null when this browser never saved or loaded it. */
+export function savedEtag(kind: DocKind, id: string): string | null {
+  if (kind !== 'hoists') return null;
+  const v = readLocal<{ id?: unknown; etag?: unknown }>(SAVED_ETAG_KEY);
+  return v && v.id === id && typeof v.etag === 'string' ? v.etag : null;
 }
 
 /** True for the 409 a save gets when the folder's copy changed since this page last read or wrote it. */
