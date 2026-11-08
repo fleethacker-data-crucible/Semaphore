@@ -944,6 +944,7 @@ function Update-SemWorkers {
         [void]$w.Remove($item)
     }
     if ($null -ne $script:Sem.LocalJobs) { Update-SemLocalJobs }   # import jobs (LocalDb.ps1)
+    if ($script:Sem.PipelineScheduler -and (Get-Command Invoke-SemPipelineTick -ErrorAction SilentlyContinue)) { [void](Invoke-SemPipelineTick) }   # Pipeline.ps1
 }
 
 function Close-SemWorkers {

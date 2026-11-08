@@ -216,6 +216,8 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Connectors.ps1')
 . (Join-Path $here 'LocalDb.ps1')
 . (Join-Path $here 'S3.ps1')
+. (Join-Path $here 'LocalScript.ps1')
+. (Join-Path $here 'Pipeline.ps1')
 . (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
@@ -339,6 +341,9 @@ $script:Sem.LocalShares = @($settings.localShares)
 $script:Sem.LocalMaxBytes = [long]$settings.localImportMaxGB * 1GB
 try { [void](Initialize-SemLocalDb -HomeDir $homeDir -Cleanup) } catch { Write-SemLog 'WARN' ('The local database is not available on this computer: ' + $_.Exception.Message) }
 $script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
+# Pipelines (Pipeline.ps1): the scheduler ticks in the server loop; a run missed while Semaphore was down runs once
+# now when its schedule has catch-up. A --refresh run never starts pipelines.
+if (-not $Refresh) { $script:Sem.PipelineScheduler = $true }
 # Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
 $script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):

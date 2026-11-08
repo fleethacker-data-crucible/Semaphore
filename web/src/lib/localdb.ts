@@ -62,7 +62,7 @@ export const dropLocalTable = (name: string) => api<{ ok: boolean }>(`/api/local
 export const renameLocalTable = (name: string, to: string) => api<{ ok: boolean; name: string }>(`/api/local/tables/${encodeURIComponent(name)}/rename`, { json: { name: to } });
 
 /** Sends one file as the request body; resolves with the import job once the server has all of it. */
-export function uploadLocalFile(file: File, onProgress: (sent: number, total: number) => void, signal?: AbortSignal): Promise<{ job: string }> {
+export function uploadLocalFile(file: File, onProgress: (sent: number, total: number) => void, signal?: AbortSignal, keep = false): Promise<{ job: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/local/import');
@@ -70,6 +70,8 @@ export function uploadLocalFile(file: File, onProgress: (sent: number, total: nu
     if (t) xhr.setRequestHeader('X-Semaphore-Session', t);
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    // Keep the file in <home>\local\sources after the import, for a pipeline's Import step.
+    if (keep) xhr.setRequestHeader('X-Keep', '1');
     xhr.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : file.size);
     xhr.onload = () => {
       let data: { job?: string; error?: string; code?: string } = {};

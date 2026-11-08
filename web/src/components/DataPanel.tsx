@@ -17,6 +17,8 @@ import { LOCAL_SOURCE_ID } from '../lib/localdb.ts';
 
 // Amazon S3 browser and RDS help (AwsData.tsx), loaded when the Sources tab first shows with a server.
 const AwsData = lazy(() => import('./AwsData.tsx').then((m) => ({ default: m.AwsData })));
+// Data-prep pipelines on the local database (PipelinesView.tsx), loaded when first opened.
+const PipelinesView = lazy(() => import('./PipelinesView.tsx').then((m) => ({ default: m.PipelinesView })));
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -87,6 +89,7 @@ export function DataPanel(p: DataPanelProps) {
 function Sources(p: DataPanelProps) {
   const [tables, setTables] = useState<Record<string, string[] | string>>({});
   const [pick, setPick] = useState<Record<string, string>>({});
+  const [pipelines, setPipelines] = useState(false);
   const inCatalog = new Set(p.catalog.sources.map((s) => s.id));
   // The built-in local database has its own section (LocalDbSection); the rest come from sources.json.
   const hasLocal = p.server?.sources.some((s) => s.id === LOCAL_SOURCE_ID) ?? false;
@@ -209,6 +212,17 @@ function Sources(p: DataPanelProps) {
         )}
         {p.server && remoteSources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
         {hasLocal && <LocalDbSection busy={p.busy} onProfile={p.onProfile} />}
+        {hasLocal && (
+          <button type="button" onClick={() => setPipelines(true)} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
+            <span className="font-medium">Pipelines</span>
+            <span className="block text-[11px] text-ink-3">Rebuild tidy tables in the local database step by step: import files, run saved scripts, pull from live sources, refresh what reads them. On demand or on a schedule.</span>
+          </button>
+        )}
+        {pipelines && p.server && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading pipelines…</p>}>
+            <PipelinesView sources={p.server.sources} onClose={() => setPipelines(false)} onProfile={p.onProfile} />
+          </Suspense>
+        )}
         {p.busy && <p className="text-xs text-accent">{p.busy}</p>}
       </section>
 

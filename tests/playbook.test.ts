@@ -141,6 +141,9 @@ test('snapshots: pre-split by the short lists, and they answer more than their o
   assert.equal(snap.truncated, false);
   assert.ok(!isStale(snap, bar, today));
   assert.ok(isStale(snap, bar, new Date('2026-10-27T00:00:00Z')));
+  // A pipeline's Publish step marks it (server/Pipeline.ps1): stale at once; a newer snapshot is fresh again.
+  assert.ok(isStale({ ...snap, invalidatedAt: new Date(Date.parse(snap.asOf) + 1000).toISOString() }, bar, today));
+  assert.ok(!isStale({ ...snap, invalidatedAt: new Date(Date.parse(snap.asOf) - 1000).toISOString() }, bar, today));
 
   // The snapshot's own question, its total, and a picked value all match a direct query.
   const direct = async (f: Flag) => {

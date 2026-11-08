@@ -34,6 +34,10 @@
 //   The local database (server/LocalDb.ps1) is a small in-memory table store here: uploads and path imports of CSV
 //   text are counted and listed, profiled through /api/profile { source: 'local' }, renamed and dropped; a \\host
 //   path is refused as the real server refuses a share that is not in localShares. Reset empties it.
+//   SQL scripts, exports and pipelines (server/LocalScript.ps1, server/Pipeline.ps1): a script plan runs for real on
+//   node:sqlite (tests/helpers/plan-runner.mjs) over a copy of the in-memory local tables, which are written back after
+//   a successful run; an export streams the table as CSV (or a small stand-in file for the other formats); saved
+//   scripts and pipelines are kept in memory, and a pipeline run finishes on the second status poll.
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
 //   POST /__mock/voice { talkforge, input, sttMissing, sttText }
 //                                               TalkForge as the next answers see it: "missing" (the
@@ -55,6 +59,8 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { runPlan } from '../helpers/plan-runner.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..', '..');
@@ -786,6 +792,170 @@ function localRoute(req, res, p, json, body) {
 }
 
 // ---- Amazon S3 and RDS (S3.ps1, Aws.ps1) ------------------------------------------------------
+// ---------------------------------------------------------------------------------------------
+// SQL scripts, exports and pipelines
+// ---------------------------------------------------------------------------------------------
+const mockScripts = new Map();
+const mockPipelines = new Map();
+const mockRuns = new Map(); // pipeline id -> [run], newest first
+const SCRIPT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+function localToDb() {
+  const db = new DatabaseSync(':memory:');
+  for (const [name, t] of localTables) {
+    const q = (n) => `"${String(n).replace(/"/g, '""')}"`;
+    db.exec(`CREATE TABLE ${q(name)} (${t.columns.map((c) => `${q(c.name)} ${c.type}`).join(', ')})`);
+    const ins = db.prepare(`INSERT INTO ${q(name)} VALUES (${t.columns.map(() => '?').join(',')})`);
+    for (const r of t.rows) ins.run(...t.columns.map((c, i) => (r[i] === undefined || r[i] === '' ? null : c.type === 'REAL' || c.type === 'INTEGER' ? Number(r[i]) : String(r[i]))));
+  }
+  return db;
+}
+function dbToLocal(db, source) {
+  const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((r) => r.name);
+  const before = new Map(localTables);
+  localTables.clear();
+  for (const name of names) {
+    const cols = db.prepare(`SELECT name, type FROM pragma_table_info(?)`).all(name).map((c) => ({ name: c.name, type: /INT|REAL|NUM|DEC|DOUB|FLOAT/i.test(c.type) ? 'REAL' : /DATE/i.test(c.type) ? 'DATE' : 'TEXT' }));
+    const rows = db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all().map((r) => cols.map((c) => (r[c.name] === null ? '' : String(r[c.name]))));
+    const old = before.get(name);
+    localTables.set(name, { columns: cols, rows, source: old?.source ?? source, importedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), bytes: JSON.stringify(rows).length });
+  }
+}
+function runScriptPlan(plan, params, label) {
+  const db = localToDb();
+  const t0 = Date.now();
+  const r = runPlan(db, plan, params ?? {});
+  const written = [];
+  for (const res of r.results) {
+    const m = /^\s*(?:CREATE\s+(?:TEMP\s+)?TABLE|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?([A-Za-z_][A-Za-z0-9_]*)/i.exec(res.sql ?? '');
+    if (m && !written.includes(m[1])) written.push(m[1]);
+  }
+  if (r.ok) dbToLocal(db, label);
+  db.close();
+  return { ok: r.ok, results: r.results.map((x) => ({ ...x, line: x.line ?? 0, ms: x.ms ?? 0 })), ...(r.error ? { error: r.error } : {}), ms: Date.now() - t0, tables: r.ok ? written.filter((n) => localTables.has(n)) : [], dropped: [], resultsDropped: 0 };
+}
+function scriptRoute(req, res, p, json) {
+  const m = req.method;
+  if (p === '/api/local/sources') return m === 'GET' ? sendJson(res, 200, { files: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/local/scripts') return m === 'GET' ? sendJson(res, 200, [...mockScripts.entries()].map(([id, s]) => ({ id, name: s.name, dialect: s.dialect, updated: s.updated, runnable: !!s.plan }))) : sendError(res, 405, 'method', 'Method not allowed.');
+  const sm = /^\/api\/local\/scripts\/([^/]+)$/.exec(p);
+  if (sm) {
+    const id = sm[1];
+    if (!SCRIPT_ID.test(id)) return sendError(res, 400, 'bad-id', 'A script id has lower-case letters, digits, _ and - (1 to 64).');
+    if (m === 'GET') return mockScripts.has(id) ? sendJson(res, 200, mockScripts.get(id)) : sendError(res, 404, 'not-found', `No script '${id}'.`);
+    if (m === 'PUT') {
+      if (!json || json.version !== 1 || typeof json.name !== 'string') return sendError(res, 400, 'bad-script', 'The script must have "version": 1 and a name.');
+      mockScripts.set(id, { ...json, updated: new Date().toISOString() });
+      return sendJson(res, 200, { ok: true, id });
+    }
+    if (m === 'DELETE') return mockScripts.delete(id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No script '${id}'.`);
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (p === '/api/local/script-run') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    let plan = json?.plan;
+    if (typeof json?.id === 'string') plan = mockScripts.get(json.id)?.plan;
+    if (!plan || plan.version !== 1 || !Array.isArray(plan.nodes)) return sendError(res, 400, 'bad-plan', 'The plan must have "version": 1.');
+    return sendJson(res, 200, runScriptPlan(plan, json?.params, 'SQL desk'));
+  }
+  if (p === '/api/local/export') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const t = localTables.get(String(json?.table ?? ''));
+    if (!t) return sendError(res, 404, 'export-failed', `No table named "${json?.table}" in the local database.`);
+    const fmt = String(json?.format ?? '');
+    const ext = { csv: '.csv', parquet: '.parquet', sqlite: '.sqlite', xlsx: '.xlsx', arrow: '.arrow' }[fmt];
+    if (!ext) return sendError(res, 400, 'bad-format', 'Export as csv, parquet, arrow, sqlite or xlsx.');
+    const cell = (v) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const csv = '\ufeff' + [t.columns.map((c) => cell(c.name)).join(','), ...t.rows.map((r) => r.map((v) => cell(String(v ?? ''))).join(','))].join('\r\n') + '\r\n';
+    const body = fmt === 'csv' ? csv : Buffer.from(`mock ${fmt} export of ${json.table}`);
+    return send(res, 200, fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/octet-stream', body, { headers: { 'Content-Disposition': `attachment; filename="${json.table}${ext}"`, 'X-Semaphore-Rows': String(t.rows.length) } });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+function pipelineRoute(req, res, p, json) {
+  const m = req.method;
+  if (p === '/api/pipelines') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    return sendJson(res, 200, [...mockPipelines.entries()].map(([id, pl]) => { const last = mockRuns.get(id)?.[0]; return { id, name: pl.name, steps: pl.steps.length, schedule: pl.schedule ?? null, lastRun: last ? { run: last.run, state: last.state, started: last.started, finished: last.finished, ms: last.ms, error: last.error, trigger: last.trigger } : null, running: last?.state === 'running' }; }));
+  }
+  const pm = /^\/api\/pipelines\/([^/]+)(?:\/(run|runs)(?:\/([^/]+))?)?$/.exec(p);
+  if (!pm) return sendError(res, 404, 'not-found', 'Unknown API route.');
+  const [, id, what, runId] = pm;
+  if (!SCRIPT_ID.test(id)) return sendError(res, 400, 'bad-id', 'A pipeline id has lower-case letters, digits, _ and - (1 to 64).');
+  if (!what) {
+    if (m === 'GET') {
+      const pl = mockPipelines.get(id);
+      if (!pl) return sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+      const last = mockRuns.get(id)?.find((r) => r.state !== 'running');
+      const steps = Object.fromEntries((last?.steps ?? []).map((s) => [s.id, { state: s.state, rows: s.rows, ms: s.ms, error: s.error, at: last.finished }]));
+      return sendJson(res, 200, { pipeline: pl, state: { lastRun: last ?? null, steps, running: mockRuns.get(id)?.[0]?.state === 'running' } });
+    }
+    if (m === 'PUT') {
+      if (!json || json.version !== 1 || !Array.isArray(json.steps) || json.steps.length === 0) return sendError(res, 400, 'bad-pipeline', 'A pipeline has at least one step.');
+      mockPipelines.set(id, json);
+      return sendJson(res, 200, { ok: true, id });
+    }
+    if (m === 'DELETE') return mockPipelines.delete(id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (what === 'run') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const pl = mockPipelines.get(id);
+    if (!pl) return sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+    const run = `${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 8)}-${new Date().toISOString().replace(/[-:T]/g, '').slice(8, 14)}-${randomBytes(3).toString('hex')}`;
+    const start = Date.now();
+    const record = { version: 1, run, pipeline: id, name: pl.name, trigger: 'manual', from: json?.from ?? '', force: !!json?.force, started: new Date().toISOString(), finished: null, state: 'running', error: null, ms: 0, outputs: [], polls: 0, steps: pl.steps.map((s) => ({ id: s.id, kind: s.kind, name: s.name ?? '', state: 'pending', rows: null, ms: null, warnings: [], error: null, tables: [] })) };
+    // The steps run now; the record shows "running" until the second poll, as a real run would for a moment.
+    for (let i = 0; i < pl.steps.length; i++) {
+      const s = pl.steps[i];
+      const log = record.steps[i];
+      const t0 = Date.now();
+      if (s.kind === 'script') {
+        const sc = mockScripts.get(s.script);
+        const r = sc?.plan ? runScriptPlan(sc.plan, sc.params, `pipeline ${id}`) : { ok: false, error: { message: `There is no saved script '${s.script}'.` }, results: [], tables: [] };
+        log.state = r.ok ? 'done' : 'failed';
+        log.rows = r.results.reduce((n, x) => n + (x.kind === 'changes' ? x.changes : 0), 0);
+        log.tables = r.tables;
+        log.error = r.ok ? null : r.error.message;
+        for (const t of r.tables) if (!record.outputs.includes(t)) record.outputs.push(t);
+      } else if (s.kind === 'publish') {
+        log.state = 'done';
+        log.rows = 0;
+        log.warnings = ['No saved snapshot reads these tables.'];
+      } else {
+        log.state = localTables.has(s.table) && !s.force && !json?.force ? 'skipped' : 'failed';
+        log.error = log.state === 'failed' ? 'The mock server imports only through the Data panel.' : null;
+        log.tables = [s.table];
+      }
+      log.ms = Date.now() - t0;
+      if (log.state === 'failed') {
+        record.error = `Step ${i + 1} (${s.name || s.id}) failed: ${log.error}`;
+        for (let k = i + 1; k < record.steps.length; k++) record.steps[k].state = 'not run';
+        break;
+      }
+    }
+    record.final = record.error ? 'failed' : 'done';
+    record.ms = Date.now() - start;
+    mockRuns.set(id, [record, ...(mockRuns.get(id) ?? [])].slice(0, 30));
+    return sendJson(res, 202, { run, pipeline: id });
+  }
+  if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+  const shown = (r) => {
+    const { polls, final, ...rest } = r;
+    return rest;
+  };
+  if (runId) {
+    const r = mockRuns.get(id)?.find((x) => x.run === runId);
+    if (!r) return sendError(res, 404, 'not-found', 'No such run.');
+    if (r.state === 'running' && ++r.polls >= 2) {
+      r.state = r.final;
+      r.finished = new Date().toISOString();
+    }
+    return sendJson(res, 200, shown(r));
+  }
+  return sendJson(res, 200, (mockRuns.get(id) ?? []).map(shown));
+}
+
 const S3_BUCKETS = [{ bucket: 'maint-exports', region: 'us-gov-west-1', prefix: 'semaphore/', label: 'Maintenance exports' }];
 const S3_OBJECTS = [
   { key: 'semaphore/work_orders.csv', size: 48213, lastModified: '2026-11-02T10:00:00.000Z', etag: '9b2cf535f27731c974343645a3985328' },
@@ -975,6 +1145,8 @@ function apiRoute(req, res, p, query, json, body) {
   const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
   if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
+  if (p === '/api/local/scripts' || p === '/api/local/script-run' || p === '/api/local/export' || p === '/api/local/sources' || p.startsWith('/api/local/scripts/')) return scriptRoute(req, res, p, json);
+  if (p === '/api/pipelines' || p.startsWith('/api/pipelines/')) return pipelineRoute(req, res, p, json);
   if (p.startsWith('/api/local/')) return localRoute(req, res, p, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
@@ -1014,6 +1186,9 @@ function handle(req, res, body) {
       localTables.clear();
       localJobs.clear();
       s3Jobs.clear();
+      mockScripts.clear();
+      mockPipelines.clear();
+      mockRuns.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
     }

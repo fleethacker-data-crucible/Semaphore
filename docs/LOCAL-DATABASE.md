@@ -70,7 +70,8 @@ memory.
 
 `/api/query` and `/api/profile` open the file with `SQLITE_OPEN_READONLY`, `PRAGMA query_only`, no
 `ATTACH`, and an authorizer that allows only reads (plus the schema pragmas `GetSchema` uses). The SQL guard
-(`Test-SemSqlGuard`) still applies. Writes happen only through the import, rename and drop routes.
+(`Test-SemSqlGuard`) still applies. Writes happen only through the import, rename and drop routes, and through
+SQL scripts (below), which have a write path of their own.
 
 ## Routes and commands
 
@@ -84,6 +85,10 @@ memory.
 | `POST /api/local/import-cancel { job }` | (the page's Stop button) |
 | `POST /api/local/tables/<name>/rename { name }` | `local rename --id <name> --to <new>` |
 | `DELETE /api/local/tables/<name>` | `local delete --id <name> --yes` |
+| `POST /api/local/script-run { plan, params }` or `{ id }` | `script run --id <id>` |
+| `GET /api/local/scripts`, `GET`, `PUT`, `DELETE /api/local/scripts/<id>` | `script list`, `script get`, `script put`, `script delete` |
+| `POST /api/local/export { table, format }` (the file) | `local export --id <name> --format <f> --file <path>` |
+| `POST /api/local/import` with `X-Keep: 1` (kept in `<home>\local\sources`) | `local sources` lists them |
 
 Imports run on their own runspaces (not the query pool), so a long import never holds the server or other
 queries.
@@ -95,6 +100,73 @@ Import-SemLocalFile -HomeDir $home -Path $file [-Table name] [-Sheet name] [-Sou
 # -> @{ Table; Rows; Columns; Ms; Tables; Names; Types; Warnings; Format; TotalRows; Appended }
 Export-SemLocalTable -HomeDir $home -Name orders -Path C:\out\orders.parquet -Format parquet   # or arrow
 ```
+
+## SQL scripts
+
+SQL desk > **Script** runs several statements against the local database in one transaction: `CREATE`, `DROP`
+and `ALTER TABLE`, `CREATE VIEW`, `INSERT ... SELECT`, `UPDATE` (also `UPDATE ... FROM`), `DELETE`, upserts
+(`INSERT ... ON CONFLICT`), CTEs, window functions, everything SQLite has. Analysts write in their own SQL
+language (Settings > SQL, or the picker in Script mode); the page shows the script as it will run in SQLite,
+with notes, before anything runs. An error rolls the whole script back and names the statement and its line.
+
+`src/core/script.ts` splits the script (strings, comments, `BEGIN ... END` blocks and, in T-SQL, statements
+without `;` honoured), translates each statement (`translateSql` plus what SQLite lacks) and builds a plan.
+`server/LocalScript.cs` runs the plan; the server checks the plan's shape again and SQLite's authorizer checks
+every statement as it is prepared, so the page is never trusted.
+
+| Written | Runs as |
+|---|---|
+| `MERGE` (T-SQL, Oracle; `WHEN MATCHED [AND ...] THEN UPDATE / DELETE`, `WHEN NOT MATCHED [BY TARGET] THEN INSERT`, `WHEN NOT MATCHED BY SOURCE THEN UPDATE / DELETE`, Oracle's `UPDATE ... WHERE ... DELETE WHERE`) | the unmatched source rows set aside in a temp table, then `UPDATE ... FROM`, the `DELETE`s, the `INSERT`, the by-source steps, in the script's transaction |
+| `PIVOT (agg(x) FOR c IN (...))` | `agg(CASE WHEN c = v THEN x END)` per value, grouped by the other columns (named in the SELECT, or in the pivoted subquery) |
+| `UNPIVOT (v FOR n IN (...))` | one `SELECT` per column joined with `UNION ALL` (empty values left out unless `INCLUDE NULLS`) |
+| `BEGIN TRY ... END TRY BEGIN CATCH ... END CATCH`, Oracle `BEGIN ... EXCEPTION WHEN ... THEN ... END` | the block in a `SAVEPOINT`; on an error it is rolled back to that point and the handler runs, with `ERROR_MESSAGE()`, `ERROR_NUMBER()`, `SQLERRM`, `SQLCODE` set |
+| `DECLARE @v INT = 1`, `SET @v = ...`, `SET @v += 1`, `SELECT @a = x, @b = y FROM ...`; Oracle `v NUMBER := 0;`, `v := ...;`, `SELECT x INTO v FROM ...` (exactly one row) | runner variables, bound as named parameters (`@v`) |
+| A name the script reads but never declares (`@region`, `:region`) | a parameter the page asks for before the run |
+| `IF ... ELSE`, Oracle `IF ... ELSIF ... END IF` | the runner evaluates `SELECT CASE WHEN (...) THEN 1 ELSE 0 END` |
+| `WHILE` with `BREAK` / `CONTINUE`; Oracle `WHILE ... LOOP`, `LOOP ... EXIT WHEN`, `FOR i IN a .. b LOOP` | runner loops, at most 10,000 times each (Semaphore stops them there) |
+| `SELECT ... INTO new_table FROM`, `#temp` tables, Oracle `CREATE GLOBAL TEMPORARY TABLE` | `CREATE [TEMP] TABLE ... AS SELECT` |
+| `TOP (n)` at any level, `TRUNCATE TABLE`, `IDENTITY(1,1)`, `NVARCHAR(MAX)`, `BIT`, `dbo.`, `IF OBJECT_ID('t') IS NOT NULL`, `DATEADD`, `DATEDIFF`, `GETDATE()`, `NEWID()`, `+` joining text; Oracle `FROM DUAL`, `VARCHAR2(n CHAR)`, `NVL2`, `TO_DATE(x, 'YYYY-MM-DD')`, `EXECUTE IMMEDIATE 'fixed text'`; `CREATE OR REPLACE VIEW`; MySQL `ON DUPLICATE KEY UPDATE`; `DATE '...'` literals | their SQLite forms |
+| `BEGIN TRAN`, `COMMIT`, `ROLLBACK`, `SET NOCOUNT ON`, `USE`, `GO`, Oracle `/` | left out with a note: the whole script is one transaction |
+
+Refused, with the reason, before the script runs (and again by the authorizer): `ATTACH`, `DETACH`, `PRAGMA`
+except reading `table_info`, `table_xinfo`, `index_list`, `index_info`, `index_xinfo`, `foreign_key_list`,
+`foreign_key_check`, `integrity_check`, `quick_check`, `table_list` and the page counts; `VACUUM` and
+`VACUUM INTO`; `load_extension`; triggers and virtual tables; transactions and savepoints of the script's own;
+any write to a `_semaphore*` table (insert, update, delete, drop, alter, index, or a rename onto such a name);
+stored procedures (`EXEC`), cursors, table variables, sequences, `INSERT ALL`, PostgreSQL `DO` blocks.
+
+Each statement's result has its own tab: rows (up to 500 per statement; at most 200 results are kept) or the rows
+changed, with the time. Tables a script writes get their row count in `_semaphore_tables` (source "script ...").
+
+**Live databases stay read-only.** Against another source a script may only `SELECT` (each runs through
+`/api/query`, translated into that source's SQL). To bring rows into the local database, write
+
+```sql
+IMPORT INTO erp_stock [REPLACE | APPEND] FROM SOURCE erp AS (SELECT id, qty FROM stock WHERE site = 'North')
+```
+
+at the top level of a script: the SELECT is translated into the source's SQL, runs through the guarded read path
+(`Test-SemSqlGuard`, the read-only connection, Lazarette), and its rows are swapped in with `Import-SemLocalFile`.
+What came before it in the script is committed first. Writing to a live source is refused; an administrator may
+allow it per source in a later version.
+
+**Saved scripts** live in `<home>\scripts\<id>.json` with their text, SQL language and plan, so a pipeline (and
+`Semaphore-CLI.bat script run --id <id>`) can run them without the page. Pipelines: [PIPELINES.md](PIPELINES.md).
+
+## Exports
+
+The local tables list (the download button on each table) and a Table flag on a local table (the inspector's
+"All of ...") export the whole table:
+
+| Format | File |
+|---|---|
+| CSV | UTF-8 with a byte-order mark, RFC 4180 quotes; text starting with `=`, `+`, `-` or `@` gets a leading `'` |
+| Parquet, Arrow | `server/Columnar.cs`'s writers |
+| SQLite | a new one-table `.sqlite` file with the same declared types, filled through its own connection (no `ATTACH`) |
+| Excel (.xlsx) | one sheet, a header row, numbers, dates and booleans typed; at most 1,048,576 rows, with a note when more were left out |
+
+The server writes the file to `<home>\local\temp`, streams it with `Content-Disposition: attachment` and deletes
+it. From the command line: `Semaphore-CLI.bat local export --id orders --format parquet --file C:\out\orders.parquet`.
 
 ## Parquet and Arrow
 

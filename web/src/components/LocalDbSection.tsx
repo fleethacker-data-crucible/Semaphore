@@ -5,7 +5,7 @@
 // catalog like any server source (id 'local'). Part of the Data panel's chunk, loaded on demand.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { HardDrive, Pencil, Square, Trash2, Upload } from 'lucide-react';
+import { Download, HardDrive, Pencil, Square, Trash2, Upload } from 'lucide-react';
 import { describeError } from '../lib/api.ts';
 import { confirm } from '../lib/confirm.ts';
 import {
@@ -23,6 +23,7 @@ import {
   uploadLocalFile,
   waitForImport,
 } from '../lib/localdb.ts';
+import { downloadLocalTable, EXPORT_FORMATS, type ExportFormat } from '../lib/scripts.ts';
 
 interface Job {
   key: string;
@@ -56,6 +57,8 @@ export function LocalDbSection(p: LocalDbSectionProps) {
   const [dragging, setDragging] = useState(false);
   const [renaming, setRenaming] = useState<{ name: string; to: string } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [keep, setKeep] = useState(false);
+  const [exporting, setExporting] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -107,7 +110,7 @@ export function LocalDbSection(p: LocalDbSectionProps) {
     for (const f of files.filter((x) => isLocalImportFile(x.name))) {
       const job = startJob(f.name, f.size);
       try {
-        const { job: serverJob } = await uploadLocalFile(f, (sent, total) => patch(job.key, { sent, total }), job.abort.signal);
+        const { job: serverJob } = await uploadLocalFile(f, (sent, total) => patch(job.key, { sent, total }), job.abort.signal, keep);
         void follow(job.key, serverJob, job.abort);
       } catch (e) {
         patch(job.key, { state: 'failed', error: describeError(e) });
@@ -170,6 +173,19 @@ export function LocalDbSection(p: LocalDbSectionProps) {
     }
   };
 
+  const exportTable = async (name: string, format: ExportFormat) => {
+    setExporting(`${name}.${format}`);
+    setMessage(null);
+    try {
+      const r = await downloadLocalTable(name, format);
+      setMessage(`Exported ${r.rows.toLocaleString()} rows of ${name}.${r.note ? ` ${r.note}` : ''}`);
+    } catch (e) {
+      setMessage(describeError(e));
+    } finally {
+      setExporting(null);
+    }
+  };
+
   const tables = info?.tables ?? [];
   return (
     <div className="space-y-2 rounded-lg border border-line px-3 py-2" data-testid="local-db">
@@ -211,6 +227,9 @@ export function LocalDbSection(p: LocalDbSectionProps) {
           }}
         />
       </label>
+      <label className="flex items-center gap-1.5 text-[11px] text-ink-2">
+        <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Keep for pipelines (the uploaded file stays on the server so a pipeline can import it again)
+      </label>
       <form
         className="flex gap-2"
         onSubmit={(e) => {
@@ -231,7 +250,7 @@ export function LocalDbSection(p: LocalDbSectionProps) {
       </form>
       <p className="text-[11px] text-ink-3">A path is read where it is, without copying. Network shares work only when the administrator listed the server in localShares.</p>
       {message && (
-        <p role="alert" className="text-xs text-bad">
+        <p role="alert" className={`text-xs ${message.startsWith('Exported') ? 'text-good' : 'text-bad'}`}>
           {message}
         </p>
       )}
@@ -317,6 +336,23 @@ export function LocalDbSection(p: LocalDbSectionProps) {
                   <button type="button" disabled={p.busy !== null} onClick={() => p.onProfile(LOCAL_SOURCE_ID, t.name)} className="rounded-md bg-accent px-2 py-0.5 text-[11px] font-semibold text-panel disabled:opacity-40">
                     Profile and add
                   </button>
+                  <label className="relative grid size-6 place-items-center rounded text-ink-3 hover:text-ink" title="Export the whole table">
+                    <Download size={12} aria-hidden />
+                    <select
+                      value=""
+                      disabled={exporting !== null}
+                      onChange={(e) => e.target.value && void exportTable(t.name, e.target.value as ExportFormat)}
+                      aria-label={`Export ${t.name}`}
+                      className="absolute size-6 cursor-pointer opacity-0"
+                    >
+                      <option value="">Export as…</option>
+                      {EXPORT_FORMATS.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <button type="button" onClick={() => setRenaming({ name: t.name, to: t.name })} aria-label={`Rename ${t.name}`} title="Rename" className="grid size-6 place-items-center rounded text-ink-3 hover:text-ink">
                     <Pencil size={12} />
                   </button>
