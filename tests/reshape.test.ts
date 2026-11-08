@@ -59,6 +59,7 @@ function accept(sentence: string, catalog: Catalog = base()): { catalog: Catalog
   assert.ok(r.ok, r.ok ? '' : r.error);
   const next = acceptReshape(catalog, r);
   assert.deepEqual(checkCatalog(next), [], sentence);
+  assert.deepEqual(impl.checkReshape(next), [], sentence);
   return { catalog: next, proposal: r };
 }
 
@@ -258,7 +259,11 @@ test('preview, undo, and a catalog check that refuses broken steps', () => {
   assert.deepEqual(checkCatalog(undone), []);
   // Broken steps are refused with a reason.
   const broken: Catalog = { ...first.catalog, cleaning: first.catalog.cleaning!.map((s) => ({ ...s, delimiter: '' })) };
-  assert.ok(checkCatalog(broken).some((x) => /delimiter/.test(x)));
+  assert.ok(impl.checkReshape(broken).some((x) => /delimiter/.test(x)));
+  // A catalog that does not hold together is refused when it is read, with the reason.
+  const name = first.proposal.step.into![0]!;
+  assert.throws(() => renderSql(plan(broken, { metrics: ['people'], dimensions: [{ field: name }] }), indexCatalog(broken), today), /delimiter/);
+  assert.throws(() => runPlan(plan(broken, { metrics: ['people'], dimensions: [{ field: name }] }), indexCatalog(broken), tables, today), /delimiter/);
   const orphan: Catalog = { ...first.catalog, cleaning: [] };
   assert.ok(checkCatalog(orphan).some((x) => /not in the catalog/.test(x)));
 });

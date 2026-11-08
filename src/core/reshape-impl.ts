@@ -4,7 +4,7 @@
 import type { CatalogIndex, Dialect, Field } from './catalog.ts';
 import { type CleaningStep, cleanSql, cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
 import type { Cell } from './crossfilter.ts';
-import { type Bucket, BUCKETS_MAX, inputsOf, makerOf, ReshapeError } from './reshape.ts';
+import { type Bucket, BUCKETS_MAX, checkMade, inputsOf, makerOf, ReshapeError, SPLIT_MAX, UNPIVOT_MAX } from './reshape.ts';
 
 type Rec = Record<string, Cell> | undefined;
 type Bind = (value: string | number, type: 'string' | 'number') => string;
@@ -22,6 +22,7 @@ export function fieldReader(index: CatalogIndex, key: string, raw: boolean, rows
   const f = index.field(key);
   if (!f) throw new ReshapeError(`Unknown field "${key}".`);
   if (depth > DEPTH_MAX) throw new ReshapeError(`"${f.label}" is made from fields made from fields too many times over.`);
+  if (!depth) assertSteps(index);
   const made = makerOf(index, key);
   let read: (rec: Rec) => Cell = (rec) => rec?.[f.column] ?? null;
   if (made) {
@@ -123,6 +124,7 @@ export function tileBounds(values: ReadonlyArray<{ value: Cell; count: number }>
 
 /** The rows of a reshaped table, from its stored table's rows. */
 export function unpivotRows(index: CatalogIndex, step: CleaningStep, rows: ReadonlyArray<Record<string, Cell>>): Array<Record<string, Cell>> {
+  assertSteps(index);
   const none = (): ReadonlyArray<Record<string, Cell>> => [];
   const keep = keptFields(index, step).map((k) => ({ col: index.field(k.made)!.column, get: fieldReader(index, k.from, false, none) }));
   const cols = (step.fields ?? []).map((k, i) => ({ name: step.names?.[i] ?? index.field(k)?.label ?? k, get: fieldReader(index, k, false, none) }));
@@ -276,6 +278,7 @@ export function fieldSql(index: CatalogIndex, key: string, raw: boolean, stored:
   const f = index.field(key);
   if (!f) throw new ReshapeError(`Unknown field "${key}".`);
   if (depth > DEPTH_MAX) throw new ReshapeError(`"${f.label}" is made from fields made from fields too many times over.`);
+  if (!depth) assertSteps(index);
   const made = makerOf(index, key);
   let expr: Thunk = () => stored(key);
   if (made) {
@@ -300,6 +303,7 @@ export function fieldSql(index: CatalogIndex, key: string, raw: boolean, stored:
  * `q` quotes a name; `table` is the stored table, already quoted (or deduplicated).
  */
 export function unpivotSql(index: CatalogIndex, step: CleaningStep, dialect: Dialect, bind: Bind, q: (name: string) => string, table: Thunk): string {
+  assertSteps(index);
   const keep = keptFields(index, step);
   const [nameKey, valueKey] = step.into ?? [];
   const nameCol = q(index.field(nameKey ?? '')?.column ?? 'name');
@@ -349,3 +353,65 @@ export function newField(index: CatalogIndex, base: Pick<Field, 'source' | 'tabl
 }
 
 /** Problems with the steps that make fields or tables, for checkCatalog. */
+
+/** Problems with the steps that make fields or tables, for checkCatalog. */
+export function checkReshape(catalog: { fields: Field[]; cleaning?: CleaningStep[] }): string[] {
+  const problems: string[] = [];
+  const fields = new Map(catalog.fields.map((f) => [f.key, f]));
+  problems.push(...checkMade(catalog));
+  for (const s of catalog.cleaning ?? []) {
+    if (s.kind !== 'split' && s.kind !== 'merge' && s.kind !== 'bucket' && s.kind !== 'unpivot') continue;
+    const first = fields.get(s.field);
+    const into = s.into ?? [];
+    const inputs = s.kind === 'merge' || s.kind === 'unpivot' ? (s.fields ?? []) : [s.field];
+    if (!first) continue; // reported by checkCatalog
+    for (const k of inputs) {
+      const f = fields.get(k);
+      if (!f) problems.push(`Cleaning step "${s.id}" names unknown field "${k}".`);
+      else if (f.source !== first.source || f.table !== first.table) problems.push(`Cleaning step "${s.id}" reads fields of different tables.`);
+      if (into.includes(k)) problems.push(`Cleaning step "${s.id}" reads a field it makes.`);
+    }
+    for (const k of into) {
+      const f = fields.get(k);
+      if (!f || f.derived !== s.id) problems.push(`Cleaning step "${s.id}" makes field "${k}", which is not in the catalog as its field.`);
+      else if (s.kind !== 'unpivot' && (f.source !== first.source || f.table !== first.table)) problems.push(`Field "${k}" must be in the table of the field it is made from.`);
+    }
+    if (s.kind === 'split') {
+      const n = into.length;
+      if (s.widths?.length) {
+        if (!s.widths.every((w) => Number.isInteger(w) && w > 0 && w < 4000) || s.widths.length !== n - 1) problems.push(`Cleaning step "${s.id}" splits by position with part lengths that do not fit its ${n} parts.`);
+      } else if (!s.delimiter || s.delimiter.length > 10) problems.push(`Cleaning step "${s.id}" splits on a delimiter of 1 to 10 characters.`);
+      if (n < 2 || (!s.widths?.length && n > SPLIT_MAX) || n > 8) problems.push(`Cleaning step "${s.id}" splits into ${n} parts; a split makes 2 to ${SPLIT_MAX} (8 by position).`);
+    } else if (s.kind === 'merge') {
+      if (inputs.length < 2 || inputs.length > 6 || into.length !== 1) problems.push(`Cleaning step "${s.id}" joins 2 to 6 fields into one.`);
+      if ((s.separator ?? ' ').length > 10) problems.push(`Cleaning step "${s.id}" puts more than 10 characters between values.`);
+    } else if (s.kind === 'bucket') {
+      if (into.length !== 1) problems.push(`Cleaning step "${s.id}" makes one field of groups.`);
+      if (s.tiles !== undefined) {
+        if (!Number.isInteger(s.tiles) || s.tiles < 2 || s.tiles > 10) problems.push(`Cleaning step "${s.id}" makes 2 to 10 equal-count groups.`);
+      } else if (!s.buckets?.length || s.buckets.length > BUCKETS_MAX || s.buckets.some((b) => !b.label || (b.from !== undefined && !Number.isFinite(b.from)) || (b.to !== undefined && !Number.isFinite(b.to)))) {
+        problems.push(`Cleaning step "${s.id}" needs 1 to ${BUCKETS_MAX} groups, each with a name and number bounds.`);
+      }
+    } else {
+      const names = s.names ?? [];
+      if (inputs.length < 2 || inputs.length > UNPIVOT_MAX || names.length !== inputs.length) problems.push(`Cleaning step "${s.id}" turns 2 to ${UNPIVOT_MAX} columns, each with a name, into rows.`);
+      if (!s.table || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(s.table)) problems.push(`Cleaning step "${s.id}" names its new table with letters, digits and underscores only.`);
+      else if (catalog.fields.some((f) => f.source === first.source && f.table === s.table && f.derived !== s.id)) problems.push(`Cleaning step "${s.id}" makes table "${s.table}", which already exists.`);
+      if (into.length !== 2) problems.push(`Cleaning step "${s.id}" makes a name field and a value field.`);
+    }
+  }
+  return problems;
+}
+
+
+const checked = new WeakMap<object, string | null>();
+
+/** Refuses to read a catalog whose steps do not hold together, with the first reason. */
+function assertSteps(index: CatalogIndex): void {
+  let problem = checked.get(index.catalog);
+  if (problem === undefined) {
+    problem = checkReshape(index.catalog)[0] ?? null;
+    checked.set(index.catalog, problem);
+  }
+  if (problem) throw new ReshapeError(problem);
+}

@@ -2,7 +2,7 @@
 // middle, the selected flag's inspector on the right. State lives here; the core does the
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
@@ -74,6 +74,8 @@ import { announcedByAccept, useAccept } from './lib/accept.ts';
 import { scrollBehavior } from './lib/motion.ts';
 import { withBriefFlag } from './lib/onboarding.ts';
 
+// The offer of a calculated measure a brief defines, loaded when one is offered.
+const MeasureOffer = lazy(() => import('./components/MeasureOffer.tsx').then((m) => ({ default: m.MeasureOffer })));
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
 const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view', skipWelcome: 'semaphore.skipWelcome' };
@@ -1467,27 +1469,18 @@ export function App() {
         {selected && (
           <div className="flex h-full min-h-0 w-[360px] shrink-0 flex-col">
             {measureOffer?.flagId === selected.id && measureOffer.brief === selected.brief && (
-              <section aria-label="Calculated measure" className="space-y-1.5 border-b border-l border-line bg-accent-soft p-3 text-sm">
-                <p className="font-semibold">Add a calculated measure?</p>
-                <p data-testid="measure-offer">{measureOffer.sentence}</p>
-                <p className="text-xs text-ink-2">Worked out for each row, and for the total, from their own totals; nothing shows where it would divide by zero.</p>
-                <div className="flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCatalog({ ...catalog, metrics: [...catalog.metrics, measureOffer.metric] });
-                      setMeasureOffer(null);
-                      setRedraftFor(selected.id);
-                    }}
-                    className="min-h-8 rounded-md bg-accent px-2.5 text-xs font-semibold text-panel"
-                  >
-                    Add {measureOffer.metric.label}
-                  </button>
-                  <button type="button" onClick={() => setMeasureOffer(null)} className="min-h-8 rounded-md border border-line bg-panel px-2.5 text-xs">
-                    Not now
-                  </button>
-                </div>
-              </section>
+              <Suspense fallback={null}>
+                <MeasureOffer
+                  metric={measureOffer.metric}
+                  sentence={measureOffer.sentence}
+                  onAdd={() => {
+                    setCatalog({ ...catalog, metrics: [...catalog.metrics, measureOffer.metric] });
+                    setMeasureOffer(null);
+                    setRedraftFor(selected.id);
+                  }}
+                  onDismiss={() => setMeasureOffer(null)}
+                />
+              </Suspense>
             )}
             {miss && (
               <DraftMiss

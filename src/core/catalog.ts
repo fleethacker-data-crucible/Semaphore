@@ -3,7 +3,7 @@
 
 import type { CleaningStep } from './cleaning.ts';
 import { baseInputs, checkFormulas } from './formula.ts';
-import { checkReshape } from './reshape.ts';
+import { checkMade } from './reshape.ts';
 import type { Relationship } from './joins.ts';
 
 /**
@@ -219,7 +219,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   for (const c of catalog.cleaning ?? []) {
     if (!fieldKeys.has(c.field)) problems.push(`Cleaning step "${c.id}" names unknown field "${c.field}".`);
   }
-  problems.push(...checkReshape(catalog));
+  problems.push(...checkMade(catalog));
   for (const h of catalog.hierarchies ?? []) {
     if (h.levels.length < 2) problems.push(`Drill path "${h.label}" needs at least two levels.`);
     for (const l of h.levels) if (!fieldKeys.has(l)) problems.push(`Drill path "${h.label}" names unknown field "${l}".`);
