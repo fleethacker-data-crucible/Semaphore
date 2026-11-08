@@ -1,0 +1,161 @@
+version: 2
+
+models:
+  - name: work_orders
+    description: >
+      One row per work order raised against a hull,
+      with its labour and parts cost.
+    columns:
+      - name: wo_id
+        description: The work order number.
+        data_type: integer
+      - name: hull_no
+        data_type: varchar
+      - name: region
+        data_type: varchar
+      - name: opened_on
+        data_type: date
+      - name: labor_cost
+        data_type: numeric(12,2)
+      - name: parts_cost
+        data_type: numeric(12,2)
+      - name: status
+        data_type: varchar
+  - name: dim_hulls
+    config:
+      alias: hulls
+    columns:
+      - name: hull_no
+      - name: ship_class
+      - name: home_yard
+
+semantic_models:
+  - name: work_orders
+    description: |
+      Work orders as the maintenance office counts them.
+      Costs are in dollars.
+    model: ref('work_orders')
+    defaults:
+      agg_time_dimension: opened_on
+    entities:
+      - name: work_order
+        type: primary
+        expr: wo_id
+      - name: hull
+        type: foreign
+        expr: hull_no
+    dimensions:
+      - name: opened_on
+        label: Opened date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: region
+        type: categorical
+      - name: work_status
+        type: categorical
+        expr: status
+      - name: is_big_job
+        type: categorical
+        expr: "case when labor_cost > 10000 then true else false end"
+    measures:
+      - name: labor_cost
+        description: Labour cost in dollars.
+        agg: sum
+      - name: parts_cost
+        agg: sum
+      - name: work_order_count
+        agg: sum
+        expr: 1
+      - name: hulls_affected
+        agg: count_distinct
+        expr: hull_no
+      - name: avg_labor
+        agg: average
+        expr: labor_cost
+      - name: median_labor
+        agg: median
+        expr: labor_cost
+      - name: big_jobs
+        agg: sum_boolean
+        expr: is_big
+      - name: weighted_cost
+        agg: sum
+        expr: labor_cost * 1.1
+
+  - name: hulls
+    model: "{{ ref('dim_hulls') }}"
+    entities:
+      - {name: hull, type: primary, expr: hull_no}
+    dimensions:
+      - name: ship_class
+        type: categorical
+        label: Ship class
+      - name: home_yard
+        type: categorical
+
+metrics:
+  - name: labor
+    label: Labor cost
+    description: Total labour cost.
+    type: simple
+    type_params:
+      measure: labor_cost
+  - name: parts
+    label: Parts cost
+    type: simple
+    type_params: {measure: parts_cost}
+  - name: work_orders
+    label: Work orders
+    type: simple
+    type_params:
+      measure:
+        name: work_order_count
+  - name: cost_per_order
+    label: Cost per work order
+    type: ratio
+    type_params:
+      numerator: labor
+      denominator: work_orders
+  - name: total_cost
+    label: Total cost
+    type: derived
+    type_params:
+      expr: labor + p
+      metrics:
+        - name: labor
+        - name: parts
+          alias: p
+  - name: parts_share
+    label: Parts share
+    type: derived
+    type_params:
+      expr: parts / (labor + parts)
+      metrics: [labor, parts]
+  - name: labor_growth
+    label: Labor growth
+    type: derived
+    type_params:
+      expr: (labor - labor_prior) / labor_prior
+      metrics:
+        - name: labor
+        - name: labor
+          alias: labor_prior
+          offset_window: 1 month
+  - name: open_labor
+    label: Open labor
+    type: simple
+    type_params:
+      measure: labor_cost
+    filter: |
+      {{ Dimension('work_order__work_status') }} = 'open'
+  - name: cumulative_labor
+    type: cumulative
+    type_params:
+      measure: labor_cost
+      window: 7 days
+  - name: rounded_cost
+    type: derived
+    type_params:
+      expr: round(labor, 0)
+      metrics: [labor]

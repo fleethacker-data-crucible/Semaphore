@@ -20,34 +20,28 @@ export type FormulaNode =
   | { t: 'neg'; x: FormulaNode }
   | { t: 'bin'; op: FormulaOp; l: FormulaNode; r: FormulaNode };
 
-/** Longest formula text accepted. */
-export const FORMULA_MAX_CHARS = 500;
+/** Longest formula text accepted (the importers' limit too). */
+export const FORMULA_MAX_CHARS = 2000;
 /** How deep formulas may build on formulas (cost per hull per day: 2). */
 export const FORMULA_MAX_DEPTH = 6;
 /** How deep parentheses and minus signs may nest inside one formula. */
-const MAX_NESTING = 24;
+const MAX_NESTING = 64;
 
 export type FormulaParse = { ok: true; node: FormulaNode } | { ok: false; error: string };
 
-const TOKEN = /\s*(?:([A-Za-z_][A-Za-z0-9_.]*)|(\d+(?:\.\d+)?|\.\d+)|([-+*/()]))/y;
+const NOT_PART = (t: string) => `"${t}" is not part of a calculated measure (only + - * /, parentheses, numbers and measures)`;
 
-export function parseFormula(text: string): FormulaParse {
-  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'The formula is empty.' };
-  if (text.length > FORMULA_MAX_CHARS) return { ok: false, error: `The formula is longer than ${FORMULA_MAX_CHARS} characters.` };
-  const tokens: Array<{ id?: string; num?: number; op?: string; at: number }> = [];
-  TOKEN.lastIndex = 0;
-  let at = 0;
-  while (at < text.length) {
-    if (!text.slice(at).trim()) break;
-    TOKEN.lastIndex = at;
-    const m = TOKEN.exec(text);
-    if (!m) {
-      const bad = text.slice(at).trim()[0];
-      return { ok: false, error: `“${bad}” cannot be used in a formula: use measure keys, numbers, + - * / and parentheses.` };
-    }
-    tokens.push(m[1] ? { id: m[1], at } : m[2] ? { num: Number(m[2]), at } : { op: m[3]!, at });
-    at = TOKEN.lastIndex;
-  }
+/**
+ * The one grammar for calculated measures, used by the catalog, the planner and the model importers
+ * (model-import.ts). `name` says which words are measures and may rename them (a dbt alias to its
+ * metric key); a word it refuses, a function call or any other character makes the formula unreadable.
+ */
+export function parseFormula(text: string, name: (word: string) => string | null = (w) => w): FormulaParse {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'The expression is empty' };
+  if (text.length > FORMULA_MAX_CHARS) return { ok: false, error: 'The expression is too long to read' };
+  const tokens: string[] = [];
+  const re = /\s*(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+|[A-Za-z_][A-Za-z0-9_.]*|[-+*/()]|\S)/gy;
+  for (let m = re.exec(text); m; m = re.exec(text)) tokens.push(m[1]!);
   let i = 0;
   let depth = 0;
   const fail = (why: string): never => {
@@ -55,28 +49,28 @@ export function parseFormula(text: string): FormulaParse {
   };
   const expr = (): FormulaNode => {
     let l = term();
-    while (tokens[i]?.op === '+' || tokens[i]?.op === '-') {
-      const op = tokens[i++]!.op as FormulaOp;
+    while (tokens[i] === '+' || tokens[i] === '-') {
+      const op = tokens[i++] as FormulaOp;
       l = { t: 'bin', op, l, r: term() };
     }
     return l;
   };
   const term = (): FormulaNode => {
     let l = unary();
-    while (tokens[i]?.op === '*' || tokens[i]?.op === '/') {
-      const op = tokens[i++]!.op as FormulaOp;
+    while (tokens[i] === '*' || tokens[i] === '/') {
+      const op = tokens[i++] as FormulaOp;
       l = { t: 'bin', op, l, r: unary() };
     }
     return l;
   };
   const unary = (): FormulaNode => {
-    if (++depth > MAX_NESTING) fail('The formula nests too deeply.');
+    if (++depth > MAX_NESTING) fail('The expression is nested too deeply');
     try {
-      if (tokens[i]?.op === '-') {
+      if (tokens[i] === '-') {
         i++;
         return { t: 'neg', x: unary() };
       }
-      if (tokens[i]?.op === '+') {
+      if (tokens[i] === '+') {
         i++;
         return unary();
       }
@@ -86,22 +80,31 @@ export function parseFormula(text: string): FormulaParse {
     }
   };
   const primary = (): FormulaNode => {
-    const tk = tokens[i];
-    if (!tk) return fail('The formula ends too soon.');
-    i++;
-    if (tk.id !== undefined) return { t: 'ref', key: tk.id };
-    if (tk.num !== undefined) return { t: 'num', v: tk.num };
-    if (tk.op === '(') {
+    const t = tokens[i];
+    if (t === undefined) return fail('The expression ends too soon');
+    if (t === '(') {
+      i++;
       const inner = expr();
-      if (tokens[i]?.op !== ')') fail('A “(” is not closed.');
+      if (tokens[i] !== ')') fail('Unbalanced parentheses');
       i++;
       return inner;
     }
-    return fail(`“${tk.op}” is in the wrong place.`);
+    if (/^[\d.]/.test(t)) {
+      i++;
+      return { t: 'num', v: Number(t) };
+    }
+    if (/^[A-Za-z_]/.test(t)) {
+      if (tokens[i + 1] === '(') fail(`Uses the function ${t}(), which a calculated measure cannot`);
+      const key = name(t);
+      if (key === null) fail(`"${t}" is not a measure in this model`);
+      i++;
+      return { t: 'ref', key: key! };
+    }
+    return fail(t === ')' ? 'Unbalanced parentheses' : NOT_PART(t));
   };
   try {
     const node = expr();
-    if (i < tokens.length) fail(`“${tokens[i]!.id ?? tokens[i]!.num ?? tokens[i]!.op}” is in the wrong place.`);
+    if (i < tokens.length) fail(tokens[i] === ')' ? 'Unbalanced parentheses' : NOT_PART(tokens[i]!));
     return { ok: true, node };
   } catch (e) {
     if (e instanceof FormulaSyntax) return { ok: false, error: e.message };
@@ -130,7 +133,11 @@ export function checkFormulas(catalog: Catalog): string[] {
   const parsed = new Map<string, FormulaNode>();
   for (const m of catalog.metrics) {
     if (m.agg !== 'formula') continue;
-    const p = parseFormula(m.formula ?? '');
+    if (!m.formula?.trim()) {
+      problems.push(`Metric "${m.key}" is calculated but has no formula.`);
+      continue;
+    }
+    const p = parseFormula(m.formula);
     if (!p.ok) {
       problems.push(`Measure "${m.key}" has a formula Semaphore cannot read: ${p.error}`);
       continue;

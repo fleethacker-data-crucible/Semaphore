@@ -130,6 +130,7 @@ test('every overlay uses the shared helper with a name, aria-modal and a way to 
     ['DataPanel.tsx', 'Data and catalog'],
     ['LineageView.tsx', 'Lineage'],
     ['QlikImport.tsx', 'Import from Qlik'],
+    ['ModelImport.tsx', 'Import a model'],
     ['PlaybookPanel.tsx', 'Playbook'],
     ['Reports.tsx', 'edition.title'],
   ];

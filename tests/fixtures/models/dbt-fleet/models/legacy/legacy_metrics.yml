@@ -1,0 +1,42 @@
+# Metrics written for dbt 1.3 (before the Semantic Layer), still in the project.
+version: 2
+
+metrics:
+  - name: hull_count
+    label: Hulls in service
+    model: ref('dim_hulls')
+    calculation_method: count_distinct
+    expression: hull_no
+    timestamp: commissioned_on
+    time_grains: [month, year]
+    dimensions:
+      - ship_class
+      - home_yard
+
+  - name: legacy_parts
+    label: Parts spend (legacy)
+    model: ref('work_orders')
+    calculation_method: sum
+    expression: parts_cost
+    timestamp: opened_on
+    time_grains: [day, week, month]
+
+  - name: parts_per_hull
+    label: Parts per hull
+    calculation_method: derived
+    expression: "{{ metric('legacy_parts') }} / {{metric('hull_count')}}"
+
+  - name: gulf_parts
+    label: Gulf parts
+    model: ref('work_orders')
+    calculation_method: sum
+    expression: parts_cost
+    filters:
+      - field: region
+        operator: '='
+        value: "'Gulf'"
+
+  - name: p90_labor
+    model: ref('work_orders')
+    calculation_method: percentile
+    expression: labor_cost

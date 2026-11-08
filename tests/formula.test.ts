@@ -3,7 +3,10 @@
 // share and in pivot totals, all through the in-page engine. Ratios are never added up.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { type Catalog, checkCatalog, indexCatalog, metricTable } from '../src/core/catalog.ts';
 import { applySelections, lineUp } from '../src/core/crossfilter.ts';
 import { describeFlag } from '../src/core/describe.ts';
@@ -15,6 +18,9 @@ import { buildPivot, levelKey, neededLevels } from '../src/core/pivot.ts';
 import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from '../src/core/planner.ts';
 import { renderSql } from '../src/core/sql.ts';
 import { proposeMeasure } from '../src/core/formula-words.ts';
+import { applyModelImport } from '../src/core/model-import.ts';
+import { mapPowerBi, readBim } from '../src/core/powerbi.ts';
+import { proposeCatalog } from '../src/core/profile.ts';
 
 const base: Catalog = {
   version: 1,
@@ -84,11 +90,12 @@ test('the grammar: keys, numbers, + - * /, unary minus and parentheses, and noth
   assert.equal(printFormula(tree('a - (b - c)')), 'a - (b - c)');
   assert.equal(printFormula(tree('(a - b) - c')), 'a - b - c');
   assert.equal(printFormula(tree('a / b * c'), (k) => k.toUpperCase()), 'A ÷ B × C');
-  for (const bad of ['', 'a +', 'sum(a)', 'a % b', 'a ^ 2', '(a', 'a b', "a + 'x'", 'a; drop table', 'a'.repeat(501), `${'('.repeat(30)}a${')'.repeat(30)}`]) {
+  for (const bad of ['', 'a +', 'sum(a)', 'a % b', 'a ^ 2', '(a', 'a b', "a + 'x'", 'a; drop table', 'a'.repeat(2001), `${'('.repeat(70)}a${')'.repeat(70)}`]) {
     const r = parseFormula(bad);
     assert.equal(r.ok, false, bad.slice(0, 40));
   }
-  assert.match((parseFormula('a % b') as { error: string }).error, /“%” cannot be used/);
+  assert.match((parseFormula('a % b') as { error: string }).error, /"%" is not part of a calculated measure/);
+  assert.match((parseFormula('sum(a)') as { error: string }).error, /Uses the function sum\(\)/);
 });
 
 test('catalog checks: unknown inputs, another source, cycles and depth, with clear messages', () => {
@@ -240,4 +247,35 @@ test('a sentence proposes a formula measure: "=", "divided by", "difference betw
   assert.ok(!no.ok && /widgets/.test(no.error));
   // The proposed measure passes the catalog's own checks.
   assert.deepEqual(checkCatalog({ ...plainIndex.catalog, metrics: [...plainIndex.catalog.metrics, a.metric] }), []);
+});
+
+test('an imported Power BI model: its calculated measures compute on a flag, per group and in total', () => {
+  const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'models');
+  const read = mapPowerBi(readBim(readFileSync(path.join(fixtures, 'model.bim'), 'utf8')));
+  const profile = proposeCatalog(
+    {
+      source: { id: 'wh', label: 'Warehouse', kind: 'csv', dialect: 'sqlite' },
+      tables: [{ name: 'work_orders', rows: 4, columns: [{ name: 'wo_id', type: 'number' }, { name: 'hull_no', type: 'string', distinct: 2 }, { name: 'region', type: 'string', distinct: 2 }, { name: 'labor_cost', type: 'number' }, { name: 'parts_cost', type: 'number' }] }],
+    },
+    { version: 1, sources: [], fields: [], metrics: [] },
+  ).catalog;
+  const imported = applyModelImport(profile, read, [{ model: 'Work Orders', source: 'wh', table: 'work_orders' }]).catalog;
+  assert.deepEqual(checkCatalog(imported), []);
+  const margin = imported.metrics.find((m) => m.label === 'Labor Margin')!;
+  assert.equal(margin.formula, '(labor_cost - parts_cost) / labor_cost');
+  const wo = [
+    { wo_id: 1, hull_no: 'h1', region: 'East', labor_cost: 100, parts_cost: 20 },
+    { wo_id: 2, hull_no: 'h1', region: 'East', labor_cost: 100, parts_cost: 60 },
+    { wo_id: 3, hull_no: 'h2', region: 'West', labor_cost: 50, parts_cost: 0 },
+    { wo_id: 4, hull_no: 'h2', region: 'West', labor_cost: 0, parts_cost: 10 },
+  ];
+  const ix = indexCatalog(imported);
+  const region = imported.fields.find((f) => f.column === 'region')!.key;
+  const flag: Flag = { id: 'f', kind: 'table', title: 'T', brief: '', layout: { x: 0, y: 0, w: 4, h: 3 }, status: 'ready', notes: [], behavior: { onClick: 'none', ignore: [], thresholds: [] }, binding: { metrics: [margin.key], dimensions: [{ field: region }], filters: [] } };
+  const p = planFlag({ version: 1, id: 'h', title: '', brief: '', grid: { cols: 12 }, filters: [], flags: [flag], updated: '' }, flag, ix);
+  assert.ok(p.ok, p.ok ? '' : p.error);
+  const r = applySelections(p.plan, runPlan(p.plan, ix, { work_orders: wo }, today).rows, {}, flag.behavior);
+  near(r.rows.find((x) => x.dims[region] === 'East')!.values[margin.key], (200 - 80) / 200);
+  near(r.rows.find((x) => x.dims[region] === 'West')!.values[margin.key], (50 - 10) / 50);
+  near(r.totals[margin.key], (250 - 90) / 250);
 });

@@ -1,0 +1,81 @@
+/// One row per work order raised against a hull.
+table 'Work Orders'
+	lineageTag: 0b1f6c4e-1111-4a3e-9d1e-2f0c3a1b2c3d
+
+	/// Labour cost in dollars.
+	measure 'Labor Cost' = SUM('Work Orders'[Labor])
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		displayFolder: Costs
+		lineageTag: 5d1c0e2a-0001-4a3e-9d1e-2f0c3a1b2c3d
+
+	measure 'Parts Cost' = SUM('Work Orders'[parts_cost])
+		formatString: \$#,0
+		displayFolder: Costs
+
+	measure 'Work Orders' = COUNTROWS('Work Orders')
+		formatString: 0
+
+	measure 'Hulls Affected' = DISTINCTCOUNT('Work Orders'[Hull])
+
+	measure 'Cost per Order' =
+			DIVIDE(
+			    [Labor Cost],   // labour only
+			    [Work Orders]
+			)
+		formatString: \$#,0.00
+
+	measure 'Total Cost' = [Labor Cost] + [Parts Cost]
+		formatString: \$#,0
+
+	measure 'Parts Share' = DIVIDE(SUM('Work Orders'[parts_cost]), SUM('Work Orders'[Labor]) + [Parts Cost])
+		formatString: 0.0%
+
+	measure 'Gulf Labor' = CALCULATE([Labor Cost], 'Work Orders'[Region] = "Gulf")
+
+	measure 'Labor YTD' = TOTALYTD([Labor Cost], 'Work Orders'[Opened])
+
+	measure 'Labor LY' = CALCULATE([Labor Cost], SAMEPERIODLASTYEAR('Work Orders'[Opened]))
+
+	measure 'Weighted Labor' = SUMX('Work Orders', 'Work Orders'[Labor] * 1.1)
+
+	measure 'Safe Ratio' = DIVIDE([Labor Cost], [Parts Cost], 0)
+
+	column 'Work Order'
+		dataType: int64
+		formatString: 0
+		sourceColumn: wo_id
+		summarizeBy: none
+
+	column Hull
+		dataType: string
+		sourceColumn: hull_no
+
+	column Region
+		dataType: string
+		sourceColumn: region
+
+	column Opened
+		dataType: dateTime
+		sourceColumn: opened_on
+
+	column Labor
+		dataType: double
+		sourceColumn: labor_cost
+		displayFolder: Costs
+
+	column parts_cost
+		dataType: double
+		sourceColumn: parts_cost
+
+	column 'Big Job' = 'Work Orders'[Labor] > 10000
+		dataType: boolean
+
+	partition 'Work Orders' = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("fleet-sql01", "Maintenance"),
+				    ops_work_orders = Source{[Schema="ops",Item="work_orders"]}[Data]
+				in
+				    ops_work_orders
+

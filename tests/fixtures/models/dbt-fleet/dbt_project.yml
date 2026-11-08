@@ -1,0 +1,13 @@
+# The fleet maintenance dbt project (a fixture for tests/model-import.test.ts).
+name: 'fleet_maintenance'
+version: '1.0.0'
+config-version: 2
+profile: 'fleet'
+
+model-paths: ["models"]
+target-path: "target"
+
+models:
+  fleet_maintenance:
+    marts:
+      +materialized: table
