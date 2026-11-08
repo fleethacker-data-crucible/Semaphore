@@ -12,6 +12,7 @@
     { "key": "jobs.hull", "label": "Hull number", "source": "maint", "table": "ops.work_orders", "column": "hull_no", "type": "string", "cardinality": 180, "synonyms": ["hull", "ship"] },
     { "key": "jobs.cost", "label": "Labor cost", "source": "maint", "table": "ops.work_orders", "column": "labor_cost", "type": "number" },
     { "key": "jobs.days_open", "label": "Days open", "source": "maint", "table": "ops.work_orders", "column": "days_open", "type": "number" },
+    { "key": "jobs.home_state", "label": "Home state", "source": "maint", "table": "ops.work_orders", "column": "home_state", "type": "string", "synonyms": ["state", "home port state"] },
     { "key": "parts.item", "label": "Part", "source": "parts", "table": "Parts", "column": "Item Name", "type": "string", "cardinality": 900 },
     { "key": "parts.on_hand", "label": "On hand", "source": "parts", "table": "Parts", "column": "QtyOnHand", "type": "number" }
   ],

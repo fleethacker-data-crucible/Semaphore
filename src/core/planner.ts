@@ -5,8 +5,9 @@
 // lets a click elsewhere filter this flag locally with no round trip. Slices that would make
 // the result too large are dropped; selections on those fields go back to the source instead.
 
-import { type Aggregate, type CatalogIndex, metricTable } from './catalog.ts';
+import { type Aggregate, type CatalogIndex, type Metric, metricTable } from './catalog.ts';
 import { dayStart } from './dates.ts';
+import { baseInputs, type FormulaNode, type FormulaOp, parseFormula } from './formula.ts';
 import { type Comparison, type DimensionRef, type Filter, type Flag, type Hoist, type TimeGrain, dimensionKey } from './hoist.ts';
 import { type PlannedJoin, planJoins } from './joins.ts';
 import { type ManyJoin, ManyScope, buildManyJoin } from './manyjoin.ts';
@@ -30,11 +31,35 @@ export interface PlannedAggregate {
   field: string | null;
 }
 
+export type MetricParts = { sum?: string; count?: string; min?: string; max?: string; distinct?: string };
+
 export interface PlannedMetric {
   key: string;
   agg: Aggregate;
   /** Partial aliases the displayed value is rebuilt from. avg uses sum and count. */
-  parts: { sum?: string; count?: string; min?: string; max?: string; distinct?: string };
+  parts: MetricParts;
+  /** For a formula: its tree, with every input measure (through nested formulas) as a leaf of partials. */
+  expr?: PlannedExpr;
+}
+
+/** A formula as planned: numbers, operators and plain measures read from the query's partials. */
+export type PlannedExpr =
+  | { t: 'num'; v: number }
+  | { t: 'neg'; x: PlannedExpr }
+  | { t: 'bin'; op: FormulaOp; l: PlannedExpr; r: PlannedExpr }
+  | { t: 'leaf'; key: string; agg: Exclude<Aggregate, 'formula'>; parts: MetricParts; seen?: string };
+
+/** Every plain measure a planned metric reads: itself, or the leaves of its formula. */
+export function planLeaves(m: PlannedMetric): Array<{ agg: Aggregate; parts: MetricParts }> {
+  if (!m.expr) return [m];
+  const out: Array<{ agg: Aggregate; parts: MetricParts }> = [];
+  const walk = (e: PlannedExpr): void => {
+    if (e.t === 'leaf') out.push(e);
+    else if (e.t === 'neg') walk(e.x);
+    else if (e.t === 'bin') (walk(e.l), walk(e.r));
+  };
+  walk(m.expr);
+  return out;
 }
 
 export interface QueryPlan {
@@ -76,14 +101,64 @@ export interface QueryPlan {
   selfFilter: boolean;
   estimatedRows: number;
   notes: string[];
+  /**
+   * Set when the measures come from several tables (across.ts, a drill-across): one query per table,
+   * each grouped and filtered the same way, their rows lined up by the group values. The plan's own
+   * table, joins and many side are then the parts'; dimensions, filters and aggregates are shared.
+   */
+  across?: AcrossPart[];
   /** Set when the flag compares with an earlier window: which "last" filter gets shifted. */
   compare?: { kind: Comparison; filter: number };
   /** Show values as a share of the total. */
   share?: boolean;
 }
 
-/** `reason` is set when the refusal is about a one-to-many join (ambiguous path, unsafe share). */
-export type PlanResult = { ok: true; plan: QueryPlan } | { ok: false; error: string; reason?: 'many-side' };
+/** One table of a drill-across plan: what it reads its measures through, and which aggregates it gives. */
+export interface AcrossPart {
+  table: string;
+  joins?: PlannedJoin[];
+  many?: ManyJoin;
+  /** The plan's aggregates computed on this table. */
+  aggregates: PlannedAggregate[];
+  /** Its COUNT(*): null in a lined-up row when the group has no rows in this table. */
+  seen: string;
+}
+
+/** The query one table of a drill-across plan runs: the plan's groups and filters over that table. */
+export function acrossPart(plan: QueryPlan, part: AcrossPart): QueryPlan {
+  const { across: _a, joins: _j, many: _m, sort: _s, displayLimit: _d, ...rest } = plan;
+  return { ...rest, table: part.table, aggregates: part.aggregates, metrics: [], limit: plan.rowCap, ...(part.joins ? { joins: part.joins } : {}), ...(part.many ? { many: part.many } : {}) };
+}
+
+/** Every table a plan reads (its parts', for a drill-across). */
+export function planTables(plan: QueryPlan): string[] {
+  return (plan.across ?? [plan]).flatMap((p) => [p.table, ...(p.joins ?? []).map((j) => j.table), ...(p.many?.tables ?? [])]);
+}
+
+/** Whether a row can sit in several groups (a split by a many-side field), so groups do not add up. */
+export function overlaps(plan: QueryPlan): boolean {
+  return (plan.across ?? [plan]).some((p) => !!p.many?.overlap);
+}
+
+/**
+ * `reason` is set when the refusal is about a one-to-many join (ambiguous path, unsafe share), or
+ * when the planning of measures from several tables is still loading (loadAcross, then plan again).
+ */
+export type PlanResult = { ok: true; plan: QueryPlan } | { ok: false; error: string; reason?: 'many-side' | 'loading' };
+
+// Planning measures from several tables (across.ts) loads on first use, to keep the start small.
+type Across = typeof import('./across.ts');
+let across: Across | null = null;
+const ACROSS_LOADING = 'Measures from several tables are still loading; try again in a moment.';
+
+export function registerAcross(impl: Across): void {
+  across = impl;
+}
+
+/** Loads the planning of measures from several tables; planFlag starts it itself when a flag needs it. */
+export async function loadAcross(): Promise<void> {
+  across ??= await import('./across.ts');
+}
 
 export interface PlanOptions {
   rowCap?: number;
@@ -107,19 +182,33 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
   const notes: string[] = [];
 
   // One source per query. Measures come from one table, the base; fields to group or filter by
-  // may come from tables the base reaches through the catalog's relationships (joins.ts).
+  // may come from tables the base reaches through the catalog's relationships (joins.ts). Measures
+  // (or a formula's inputs) from several tables are read one query per table (across.ts).
   let source: string | undefined;
-  let table: string | undefined;
+  const tables: string[] = [];
   for (const key of b.metrics) {
     const m = index.metric(key);
     if (!m) return { ok: false, error: `Unknown metric "${key}".` };
-    const t = metricTable(index, m);
-    if (!t) return { ok: false, error: `Metric "${key}" has no table.` };
-    if (source && source !== m.source) return { ok: false, error: `Metric "${m.label}" is in a different source; a flag reads from one source.` };
-    if (table && table !== t) return { ok: false, error: `Metric "${m.label}" is in another table; a flag's measures come from one table.` };
-    source = m.source;
-    table = t;
+    const inputs = m.agg === 'formula' ? baseInputs(key, index.metric) : [m];
+    if (!inputs.length) return { ok: false, error: `Metric "${key}" has no table.` };
+    for (const x of inputs) {
+      const t = metricTable(index, x);
+      if (!t) return { ok: false, error: `Metric "${x.key}" has no table.` };
+      if (source && source !== x.source) {
+        return { ok: false, error: x === m ? `Metric "${m.label}" is in a different source; a flag reads from one source.` : `"${m.label}" reads "${x.label}" from a different source; a flag, and a formula's inputs, read one source.` };
+      }
+      source = x.source;
+      if (!tables.includes(t)) tables.push(t);
+    }
   }
+  if (tables.length > 1) {
+    if (!across) {
+      void loadAcross().catch(() => undefined);
+      return { ok: false, error: ACROSS_LOADING, reason: 'loading' };
+    }
+    return across.planAcross(hoist, flag, index, options, tables, { plan: planFlag, metrics: planMetrics });
+  }
+  let table = tables[0];
   for (const d of b.dimensions) {
     const f = index.field(d.field);
     if (!f) return { ok: false, error: `Unknown field "${d.field}".` };
@@ -184,32 +273,17 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
 
   // Aggregates, as re-aggregable partials.
   const aggregates: PlannedAggregate[] = [];
-  const metrics: PlannedMetric[] = [];
-  const partial = (fn: Partial, field: string | null): string => {
+  const partial = (fn: Partial, m: Metric): string => {
+    const field = m.field ?? null;
     const found = aggregates.find((a) => a.fn === fn && a.field === field);
     if (found) return found.alias;
     const alias = `a${aggregates.length}`;
     aggregates.push({ alias, fn, field });
     return alias;
   };
-  let reaggregable = true;
-  for (const key of b.metrics) {
-    const m = index.metric(key)!;
-    const field = m.field ?? null;
-    const pm: PlannedMetric = { key, agg: m.agg, parts: {} };
-    if (m.agg === 'sum') pm.parts.sum = partial('sum', field);
-    else if (m.agg === 'count') pm.parts.count = partial('count', field);
-    else if (m.agg === 'min') pm.parts.min = partial('min', field);
-    else if (m.agg === 'max') pm.parts.max = partial('max', field);
-    else if (m.agg === 'avg') {
-      pm.parts.sum = partial('sum', field);
-      pm.parts.count = partial('count', field);
-    } else {
-      pm.parts.distinct = partial('count_distinct', field);
-      reaggregable = false;
-    }
-    metrics.push(pm);
-  }
+  const metrics = planMetrics(index, b.metrics, partial);
+  if (typeof metrics === 'string') return { ok: false, error: metrics };
+  const reaggregable = !aggregates.some((a) => a.fn === 'count_distinct');
 
   // Own dimensions, then candidate slices.
   const dimensions: PlannedDimension[] = b.dimensions.map((d, i) => ({ alias: `d${i}`, key: dimensionKey(d), ...d }));
@@ -325,8 +399,9 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     // A "top N" is cut at the source only when nothing is re-aggregated locally, not when it
     // ranks by an average (SQL would rank by the sum the average is rebuilt from), and not when
     // values are shown as a share of the total (the total is taken across every row, before the cut).
+    // A formula is computed locally too, so it is ranked there.
     const sortAgg = b.sort ? index.metric(b.sort.by)?.agg : undefined;
-    if (chosen.length === 0 && sortAgg !== 'avg' && !b.share) {
+    if (chosen.length === 0 && sortAgg !== 'avg' && sortAgg !== 'formula' && !b.share) {
       plan.limit = Math.min(b.limit, rowCap);
       // The cut result holds only the top N, so selecting a value outside it needs the source.
       const selectable = new Set(selectableKeys(hoist).map(dimensionKey));
@@ -334,6 +409,50 @@ export function planFlag(hoist: Hoist, flag: Flag, index: CatalogIndex, options:
     }
   }
   return { ok: true, plan };
+}
+
+class PlanRefusal extends Error {}
+
+/**
+ * The flag's measures as planned: each plain measure as its partials (`partial` names one), a
+ * formula as a tree whose leaves are its plain inputs, nested formulas folded in. `seen` gives each
+ * leaf the alias that says its table has rows in a group (a drill-across). A message when a formula
+ * cannot be read.
+ */
+export function planMetrics(index: CatalogIndex, keys: readonly string[], partial: (fn: Partial, m: Metric) => string, seen?: (m: Metric) => string): PlannedMetric[] | string {
+  const plain = (m: Metric): MetricParts => {
+    const parts: MetricParts = {};
+    if (m.agg === 'sum') parts.sum = partial('sum', m);
+    else if (m.agg === 'count') parts.count = partial('count', m);
+    else if (m.agg === 'min') parts.min = partial('min', m);
+    else if (m.agg === 'max') parts.max = partial('max', m);
+    else if (m.agg === 'avg') {
+      parts.sum = partial('sum', m);
+      parts.count = partial('count', m);
+    } else parts.distinct = partial('count_distinct', m);
+    return parts;
+  };
+  // A formula's inputs become hidden partials; nested formulas are folded into one tree.
+  const expand = (node: FormulaNode, path: string[]): PlannedExpr => {
+    if (node.t === 'num') return node;
+    if (node.t === 'neg') return { t: 'neg', x: expand(node.x, path) };
+    if (node.t === 'bin') return { t: 'bin', op: node.op, l: expand(node.l, path), r: expand(node.r, path) };
+    const m = index.metric(node.key);
+    if (!m || path.includes(node.key)) throw new PlanRefusal(`The formula of "${index.metric(path[0]!)?.label ?? path[0]}" cannot be read: check its measures under Data > Measures.`);
+    if (m.agg !== 'formula') return { t: 'leaf', key: m.key, agg: m.agg, parts: plain(m), ...(seen ? { seen: seen(m) } : {}) };
+    const p = parseFormula(m.formula ?? '');
+    if (!p.ok) throw new PlanRefusal(`The formula of "${m.label}" cannot be read: ${p.error}`);
+    return expand(p.node, [...path, node.key]);
+  };
+  try {
+    return keys.map((key): PlannedMetric => {
+      const m = index.metric(key)!;
+      return m.agg === 'formula' ? { key, agg: 'formula', parts: {}, expr: expand({ t: 'ref', key }, []) } : { key, agg: m.agg, parts: plain(m) };
+    });
+  } catch (e) {
+    if (e instanceof PlanRefusal) return e.message;
+    throw e;
+  }
 }
 
 const GRAIN_DEFAULT: Record<TimeGrain, number> = { year: 10, quarter: 40, month: 120, week: 520, day: 3650 };

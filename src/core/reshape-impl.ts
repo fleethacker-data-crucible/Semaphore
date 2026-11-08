@@ -1,0 +1,435 @@
+// The readers and SQL of the steps that make fields or a table (reshape.ts says what they are).
+// Loaded only for a catalog that has such steps.
+
+import type { CatalogIndex, Dialect, Field } from './catalog.ts';
+import { type CleaningStep, cleanSql, cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
+import type { Cell } from './crossfilter.ts';
+import { type Bucket, BUCKETS_MAX, checkMade, inputsOf, makerOf, ReshapeError, SPLIT_MAX, UNPIVOT_MAX } from './reshape.ts';
+
+type Rec = Record<string, Cell> | undefined;
+type Bind = (value: string | number, type: 'string' | 'number') => string;
+export type Thunk = () => string;
+const DEPTH_MAX = 6;
+
+// In the page.
+
+/**
+ * A reader for one field over a record of its table: the stored column, or a made field computed
+ * from its inputs, then the field's own cleaning steps (unless `raw`). `rowsOf` gives a table's rows
+ * for equal-count buckets, which rank every row of their table.
+ */
+export function fieldReader(index: CatalogIndex, key: string, raw: boolean, rowsOf: (table: string) => ReadonlyArray<Record<string, Cell>>, depth = 0): (rec: Rec) => Cell {
+  const f = index.field(key);
+  if (!f) throw new ReshapeError(`Unknown field "${key}".`);
+  if (depth > DEPTH_MAX) throw new ReshapeError(`"${f.label}" is made from fields made from fields too many times over.`);
+  if (!depth) assertSteps(index);
+  const made = makerOf(index, key);
+  let read: (rec: Rec) => Cell = (rec) => rec?.[f.column] ?? null;
+  if (made) {
+    const { step, part } = made;
+    const ins = inputsOf(step).map((k) => fieldReader(index, k, raw, rowsOf, depth + 1));
+    const one = ins[0]!;
+    switch (step.kind) {
+      case 'split':
+        read = (rec) => splitPart(one(rec), step, part);
+        break;
+      case 'merge':
+        read = (rec) => mergeValues(ins.map((g) => g(rec)), step.separator ?? ' ');
+        break;
+      case 'bucket':
+        if (step.tiles) {
+          let rank: ((v: number) => number) | null = null;
+          read = (rec) => {
+            const v = toNum(one(rec));
+            if (v === null) return null;
+            rank ??= tileRanker(rowsOf(f.table).map((r) => toNum(one(r))), step.tiles!);
+            return tileLabel(rank(v), step.tiles!);
+          };
+        } else read = (rec) => bucketOf(toNum(one(rec)), step.buckets ?? []);
+        break;
+      default:
+        break;
+    }
+  }
+  const steps = raw ? [] : stepsFor(index, key);
+  return steps.length ? (rec) => cleanValue(steps, read(rec)) : read;
+}
+
+export function splitPart(v: Cell, step: CleaningStep, part: number): Cell {
+  if (v === null) return null;
+  const s = String(v);
+  let piece: string | undefined;
+  if (step.widths?.length) {
+    const start = step.widths.slice(0, part).reduce((n, w) => n + w, 0);
+    piece = part < step.widths.length ? s.slice(start, start + step.widths[part]!) : s.slice(start);
+  } else piece = s.split(step.delimiter ?? ',')[part];
+  const t = piece?.trim();
+  return t ? t : null;
+}
+
+export function mergeValues(values: readonly Cell[], separator: string): Cell {
+  const parts = values.map((v) => (v === null ? '' : String(v).trim())).filter(Boolean);
+  return parts.length ? parts.join(separator) : null;
+}
+
+export function bucketOf(v: number | null, buckets: readonly Bucket[]): Cell {
+  if (v === null) return null;
+  for (const b of buckets) if ((b.from === undefined || v >= b.from) && (b.to === undefined || v < b.to)) return b.label;
+  return null;
+}
+
+/** Labels of equal-count groups: Q1…Q4 for quartiles, "1 of 5"… otherwise. */
+export function tileLabel(tile: number, tiles: number): string {
+  return tiles === 4 ? `Q${tile}` : `${tile} of ${tiles}`;
+}
+
+/**
+ * The one rule for equal-count groups, in the page, the worker, every SQL dialect and Access's bounds:
+ *
+ *   group = floor((rank - 1) * k / n) + 1
+ *
+ * where rank is the value's RANK() among the non-blank values in ascending order (equal values share
+ * the lowest rank: one more than the number of values below it) and n is how many values are not
+ * blank. Blanks stay blank. Equal values always share a group, so groups can differ in size.
+ */
+export function tileOf(below: number, n: number, k: number): number {
+  return n > 0 ? Math.min(k, Math.floor((below * k) / n) + 1) : 1;
+}
+
+/** The group of a value among `values` (blanks ignored), by tileOf. */
+export function tileRanker(values: ReadonlyArray<number | null>, k: number): (v: number) => number {
+  const sorted = values.filter((v): v is number => v !== null).sort((a, b) => a - b);
+  const n = sorted.length;
+  return (v) => {
+    // How many values are below v: its rank less one.
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid]! < v) lo = mid + 1;
+      else hi = mid;
+    }
+    return tileOf(lo, n, k);
+  };
+}
+
+/**
+ * Upper bounds of each group but the last, from the values and their counts, by the same rule (for
+ * Access, which has no window functions). A group no value falls in takes the bound before it.
+ */
+export function tileBounds(values: ReadonlyArray<{ value: Cell; count: number }>, k: number): number[] {
+  const counts = new Map<number, number>();
+  for (const v of values) {
+    const x = toNum(v.value);
+    const c = Number.isFinite(v.count) ? Math.max(0, Math.floor(v.count)) : 0;
+    if (x !== null && c > 0) counts.set(x, (counts.get(x) ?? 0) + c);
+  }
+  const n = [...counts.values()].reduce((a, b) => a + b, 0);
+  const bounds: number[] = [];
+  let below = 0;
+  for (const [v, c] of [...counts].sort((a, b) => a[0] - b[0])) {
+    const t = tileOf(below, n, k);
+    if (t < k) bounds[t - 1] = v;
+    below += c;
+  }
+  for (let i = 0; i < k - 1; i++) bounds[i] ??= i ? bounds[i - 1]! : -Infinity;
+  return bounds.slice(0, k - 1).map((b) => (Number.isFinite(b) ? b : 0));
+}
+
+/** The rows of a reshaped table, from its stored table's rows. */
+export function unpivotRows(index: CatalogIndex, step: CleaningStep, rows: ReadonlyArray<Record<string, Cell>>): Array<Record<string, Cell>> {
+  assertSteps(index);
+  const none = (): ReadonlyArray<Record<string, Cell>> => [];
+  const keep = keptFields(index, step).map((k) => ({ col: index.field(k.made)!.column, get: fieldReader(index, k.from, false, none) }));
+  const cols = (step.fields ?? []).map((k, i) => ({ name: step.names?.[i] ?? index.field(k)?.label ?? k, get: fieldReader(index, k, false, none) }));
+  const [nameKey, valueKey] = step.into ?? [];
+  const nameCol = index.field(nameKey ?? '')?.column ?? 'name';
+  const valueCol = index.field(valueKey ?? '')?.column ?? 'value';
+  const out: Array<Record<string, Cell>> = [];
+  for (const c of cols) {
+    for (const r of rows) {
+      const row: Record<string, Cell> = {};
+      for (const k of keep) row[k.col] = k.get(r);
+      row[nameCol] = c.name;
+      row[valueCol] = c.get(r);
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+/** The fields a reshaped table carries over from its stored table: (made key, original key). */
+export function keptFields(index: CatalogIndex, step: CleaningStep): Array<{ made: string; from: string }> {
+  const into = new Set(step.into ?? []);
+  const out: Array<{ made: string; from: string }> = [];
+  for (const f of index.catalog.fields) {
+    if (f.derived !== step.id || into.has(f.key)) continue;
+    const from = index.catalog.fields.find((o) => o.source === f.source && o.table === index.field(step.field)?.table && o.column === f.column && !o.derived);
+    if (from) out.push({ made: f.key, from: from.key });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// SQL. Values (delimiters, separators, bounds, labels) are bound parameters; part positions and
+// lengths are whole numbers Semaphore works out itself. Every expression is a thunk, so a value
+// written twice is bound twice, in the order the "?" dialects read the text.
+
+/** A text expression of a column of any type. */
+export function textSql(x: Thunk, type: string, dialect: Dialect): Thunk {
+  if (type === 'string') return x;
+  if (dialect === 'access') return () => `IIf(${x()} Is Null, Null, CStr(${x()}))`;
+  if (dialect === 'oracle') return () => `TO_CHAR(${x()})`;
+  const as = { postgres: 'TEXT', sqlite: 'TEXT', tsql: 'NVARCHAR(4000)', synapse: 'NVARCHAR(4000)', spark: 'STRING', mysql: 'CHAR', ansi: 'VARCHAR' }[dialect];
+  // These write a whole double as "30.0"; the page (and the other dialects) write "30".
+  if (type === 'number' && (dialect === 'sqlite' || dialect === 'spark' || dialect === 'ansi')) {
+    const int = dialect === 'sqlite' ? 'INTEGER' : 'BIGINT';
+    return () => `CASE WHEN ${x()} = CAST(${x()} AS ${int}) THEN CAST(CAST(${x()} AS ${int}) AS ${as}) ELSE CAST(${x()} AS ${as}) END`;
+  }
+  return () => `CAST(${x()} AS ${as})`;
+}
+
+/** Trimmed, and null when blank. */
+function blankNull(x: Thunk, dialect: Dialect): string {
+  return dialect === 'access' ? `IIf(Trim(${x()}) = '', Null, Trim(${x()}))` : `NULLIF(TRIM(${x()}), '')`;
+}
+
+function substr(x: string, start: string | number, length: string | number | null, dialect: Dialect): string {
+  if (dialect === 'access') return length === null ? `Mid(${x}, ${start})` : `Mid(${x}, ${start}, ${length})`;
+  if (dialect === 'tsql' || dialect === 'synapse') return `SUBSTRING(${x}, ${start}, ${length ?? 4000})`;
+  if (dialect === 'mysql') return length === null ? `SUBSTRING(${x}, ${start})` : `SUBSTRING(${x}, ${start}, ${length})`;
+  return length === null ? `SUBSTR(${x}, ${start})` : `SUBSTR(${x}, ${start}, ${length})`;
+}
+
+export function splitSql(step: CleaningStep, part: number, x: Thunk, dialect: Dialect, bind: Bind): string {
+  if (step.widths?.length) {
+    const start = 1 + step.widths.slice(0, part).reduce((n, w) => n + w, 0);
+    const len = part < step.widths.length ? step.widths[part]! : null;
+    return blankNull(() => substr(x(), start, len, dialect), dialect);
+  }
+  const delim = step.delimiter ?? ',';
+  const d = () => bind(delim, 'string');
+  const L = delim.length;
+  const n = part + 1;
+  switch (dialect) {
+    case 'postgres':
+    case 'spark':
+    case 'ansi':
+      return blankNull(() => `SPLIT_PART(${x()}, ${d()}, ${n})`, dialect);
+    case 'mysql':
+      return `CASE WHEN (CHAR_LENGTH(${x()}) - CHAR_LENGTH(REPLACE(${x()}, ${d()}, ''))) / ${L} >= ${n - 1} THEN ${blankNull(() => `SUBSTRING_INDEX(SUBSTRING_INDEX(${x()}, ${d()}, ${n}), ${d()}, -1)`, dialect)} END`;
+    case 'oracle': {
+      const at = (k: number) => `INSTR(${x()}, ${d()}, 1, ${k})`;
+      const start = () => (n === 1 ? '1' : `${at(n - 1)} + ${L}`);
+      const body = () => `TRIM(SUBSTR(${x()}, ${start()}, CASE WHEN ${at(n)} = 0 THEN LENGTH(${x()}) + 1 ELSE ${at(n)} END - (${start()})))`;
+      return n === 1 ? body() : `CASE WHEN ${at(n - 1)} > 0 THEN ${body()} END`;
+    }
+    default: {
+      // T-SQL, Synapse, SQLite and Access: the text after each delimiter in turn, then what comes before the next.
+      // Each piece is written left to right, so values are bound in the order they appear.
+      const find = (r: Thunk, needle: Thunk): string => (dialect === 'sqlite' ? `instr(${r()}, ${needle()})` : dialect === 'access' ? `InStr(${r()}, ${needle()})` : `CHARINDEX(${needle()}, ${r()})`);
+      const cat = (a: Thunk, b: Thunk): Thunk => () => (dialect === 'access' ? `${a()} & ${b()}` : dialect === 'sqlite' ? `${a()} || ${b()}` : `${a()} + ${b()}`);
+      const rest = (r: Thunk): Thunk =>
+        dialect === 'access' ? () => `IIf(${find(r, d)} = 0, Null, Mid(${r()}, ${find(r, d)} + ${L}))` : () => substr(r(), `NULLIF(${find(r, d)}, 0) + ${L}`, null, dialect);
+      let r: Thunk = x;
+      for (let i = 1; i < n; i++) r = rest(r);
+      const at = r;
+      const head = () => (dialect === 'sqlite' ? `substr(${at()}, 1, ${find(cat(at, d), d)} - 1)` : `LEFT(${at()}, ${find(cat(at, d), d)} - 1)`);
+      return blankNull(head, dialect);
+    }
+  }
+}
+
+export function mergeSql(inputs: readonly Thunk[], separator: string, dialect: Dialect, bind: Bind): string {
+  // Each present value with the separator in front, then the first separator cut off.
+  const s = () => bind(separator, 'string');
+  const piece = (v: Thunk): string => {
+    if (dialect === 'access') return `IIf(${blankNull(v, dialect)} Is Null, '', ${s()} & ${blankNull(v, dialect)})`;
+    if (dialect === 'oracle') return `NVL2(${blankNull(v, dialect)}, ${s()} || ${blankNull(v, dialect)}, '')`;
+    if (dialect === 'mysql' || dialect === 'spark') return `COALESCE(CONCAT(${s()}, ${blankNull(v, dialect)}), '')`;
+    if (dialect === 'tsql' || dialect === 'synapse') return `COALESCE(${s()} + ${blankNull(v, dialect)}, '')`;
+    return `COALESCE(${s()} || ${blankNull(v, dialect)}, '')`;
+  };
+  const joined = (): string => {
+    const ps = inputs.map(piece);
+    if (dialect === 'access') return ps.join(' & ');
+    if (dialect === 'mysql' || dialect === 'spark') return `CONCAT(${ps.join(', ')})`;
+    if (dialect === 'tsql' || dialect === 'synapse') return ps.join(' + ');
+    return ps.join(' || ');
+  };
+  const cut = () => substr(joined(), separator.length + 1, null, dialect);
+  return dialect === 'access' ? `IIf(${cut()} = '', Null, ${cut()})` : `NULLIF(${cut()}, '')`;
+}
+
+export function bucketSql(step: CleaningStep, x: Thunk, dialect: Dialect, bind: Bind): string {
+  if (step.tiles) {
+    const k = step.tiles;
+    const labels = Array.from({ length: k }, (_, i) => tileLabel(i + 1, k));
+    if (dialect === 'access') {
+      // No window functions: the group bounds read from the data when the step was accepted (tileBounds).
+      const bounds = step.bounds ?? [];
+      const arms = () => [...bounds.map((b, i) => `${x()} <= ${bind(b, 'number')}, ${bind(labels[i]!, 'string')}`), `True, ${bind(labels[k - 1]!, 'string')}`].join(', ');
+      return `IIf(${x()} Is Null, Null, Switch(${arms()}))`;
+    }
+    // tileOf in SQL: group g holds the values with (g - 1) * n <= (rank - 1) * k < g * n. Written with
+    // whole-number products and comparisons only, so no dialect's division or FLOOR can differ.
+    const below = () => `(RANK() OVER (PARTITION BY CASE WHEN ${x()} IS NULL THEN 1 ELSE 0 END ORDER BY ${x()}) - 1) * ${k}`;
+    const n = () => `COUNT(${x()}) OVER ()`;
+    const arms = labels.slice(0, -1).map((l, i) => `WHEN ${below()} < ${n()} * ${i + 1} THEN ${bind(l, 'string')}`);
+    return `CASE WHEN ${x()} IS NULL THEN NULL ${arms.join(' ')} ELSE ${bind(labels[k - 1]!, 'string')} END`;
+  }
+  const buckets = (step.buckets ?? []).slice(0, BUCKETS_MAX);
+  if (!buckets.length) return 'NULL';
+  const cond = (b: Bucket): string => {
+    const parts = [...(b.from !== undefined ? [`${x()} >= ${bind(b.from, 'number')}`] : []), ...(b.to !== undefined ? [`${x()} < ${bind(b.to, 'number')}`] : [])];
+    return parts.length ? parts.join(dialect === 'access' ? ' And ' : ' AND ') : dialect === 'access' ? 'True' : '1 = 1';
+  };
+  if (dialect === 'access') return `Switch(${buckets.map((b) => `${cond(b)}, ${bind(b.label, 'string')}`).join(', ')})`;
+  return `CASE ${buckets.map((b) => `WHEN ${cond(b)} THEN ${bind(b.label, 'string')}`).join(' ')} END`;
+}
+
+/**
+ * A field's expression for a query: the stored column (`stored`), or a made field built from its
+ * inputs, then its own cleaning steps (unless `raw`).
+ */
+export function fieldSql(index: CatalogIndex, key: string, raw: boolean, stored: (key: string) => string, dialect: Dialect, bind: Bind, depth = 0): Thunk {
+  const f = index.field(key);
+  if (!f) throw new ReshapeError(`Unknown field "${key}".`);
+  if (depth > DEPTH_MAX) throw new ReshapeError(`"${f.label}" is made from fields made from fields too many times over.`);
+  if (!depth) assertSteps(index);
+  const made = makerOf(index, key);
+  let expr: Thunk = () => stored(key);
+  if (made) {
+    const { step, part } = made;
+    const ins = inputsOf(step).map((k) => fieldSql(index, k, raw, stored, dialect, bind, depth + 1));
+    const type = (k: string) => (raw ? (index.field(k)?.type ?? 'string') : cleanType(index, k));
+    if (step.kind === 'split') {
+      const x = textSql(ins[0]!, type(step.field), dialect);
+      expr = () => splitSql(step, part, x, dialect, bind);
+    } else if (step.kind === 'merge') {
+      const xs = inputsOf(step).map((k, i) => textSql(ins[i]!, type(k), dialect));
+      expr = () => mergeSql(xs, step.separator ?? ' ', dialect, bind);
+    } else if (step.kind === 'bucket') expr = () => bucketSql(step, ins[0]!, dialect, bind);
+  }
+  const steps = raw ? [] : stepsFor(index, key);
+  if (!steps.length) return expr;
+  return () => cleanSql(steps, expr, dialect, bind);
+}
+
+/**
+ * A reshaped table as a derived table: one SELECT per column turned into rows, joined with UNION ALL.
+ * `q` quotes a name; `table` is the stored table, already quoted (or deduplicated).
+ */
+export function unpivotSql(index: CatalogIndex, step: CleaningStep, dialect: Dialect, bind: Bind, q: (name: string) => string, table: Thunk): string {
+  assertSteps(index);
+  const keep = keptFields(index, step);
+  const [nameKey, valueKey] = step.into ?? [];
+  const nameCol = q(index.field(nameKey ?? '')?.column ?? 'name');
+  const valueCol = q(index.field(valueKey ?? '')?.column ?? 'value');
+  const stored = (k: string) => q(index.field(k)!.column);
+  const text = (i: number): string => {
+    const p = bind(step.names?.[i] ?? index.field(step.fields?.[i] ?? '')?.label ?? '', 'string');
+    if (dialect === 'access' || dialect === 'sqlite' || dialect === 'mysql') return p;
+    return `CAST(${p} AS ${dialect === 'oracle' ? 'VARCHAR2(200)' : dialect === 'spark' ? 'STRING' : dialect === 'tsql' || dialect === 'synapse' ? 'NVARCHAR(200)' : 'VARCHAR(200)'})`;
+  };
+  const selects = (step.fields ?? []).map((k, i) => () => {
+    const cols = keep.map((x) => `${fieldSql(index, x.from, false, stored, dialect, bind)()} AS ${q(index.field(x.made)!.column)}`);
+    return `SELECT ${[...cols, `${text(i)} AS ${nameCol}`, `${fieldSql(index, k, false, stored, dialect, bind)()} AS ${valueCol}`].join(', ')} FROM ${table()}`;
+  });
+  return `(${selects.map((s) => s()).join(' UNION ALL ')})`;
+}
+
+/** Whether a field is, or is made from, an equal-count bucket (ranked over every row of its table). */
+export function usesTiles(index: CatalogIndex, key: string, depth = 0): boolean {
+  const made = makerOf(index, key);
+  if (!made || depth > DEPTH_MAX) return false;
+  return (made.step.kind === 'bucket' && !!made.step.tiles) || inputsOf(made.step).some((k) => usesTiles(index, k, depth + 1));
+}
+
+/** Whether a table's rows are deduplicated first (the reshaped table follows its stored table). */
+export function dedupesStored(index: CatalogIndex, step: CleaningStep): boolean {
+  const f = index.field(step.field);
+  return !!f && dedupes(index, f.source, f.table);
+}
+
+function toNum(v: Cell): number | null {
+  if (v === null || typeof v === 'boolean' || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** New field names for made fields: unique keys in the table and safe column names. */
+export function newField(index: CatalogIndex, base: Pick<Field, 'source' | 'table'>, label: string, type: Field['type'], derived: string, taken: Set<string>): Field {
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'part';
+  const columns = new Set(index.catalog.fields.filter((f) => f.source === base.source && f.table === base.table).map((f) => f.column));
+  let column = /^[a-z_]/.test(slug) ? slug : `f_${slug}`;
+  for (let i = 2; columns.has(column) || taken.has(`${base.table}.${column}`); i++) column = `${column.replace(/_\d+$/, '')}_${i}`;
+  taken.add(`${base.table}.${column}`);
+  let key = `${base.table}.${column}`;
+  for (let i = 2; index.field(key) || index.metric(key); i++) key = `${base.table}.${column}_${i}`;
+  return { key, label, source: base.source, table: base.table, column, type, derived };
+}
+
+/** Problems with the steps that make fields or tables, for checkCatalog. */
+
+/** Problems with the steps that make fields or tables, for checkCatalog. */
+export function checkReshape(catalog: { fields: Field[]; cleaning?: CleaningStep[] }): string[] {
+  const problems: string[] = [];
+  const fields = new Map(catalog.fields.map((f) => [f.key, f]));
+  problems.push(...checkMade(catalog));
+  for (const s of catalog.cleaning ?? []) {
+    if (s.kind !== 'split' && s.kind !== 'merge' && s.kind !== 'bucket' && s.kind !== 'unpivot') continue;
+    const first = fields.get(s.field);
+    const into = s.into ?? [];
+    const inputs = s.kind === 'merge' || s.kind === 'unpivot' ? (s.fields ?? []) : [s.field];
+    if (!first) continue; // reported by checkCatalog
+    for (const k of inputs) {
+      const f = fields.get(k);
+      if (!f) problems.push(`Cleaning step "${s.id}" names unknown field "${k}".`);
+      else if (f.source !== first.source || f.table !== first.table) problems.push(`Cleaning step "${s.id}" reads fields of different tables.`);
+      if (into.includes(k)) problems.push(`Cleaning step "${s.id}" reads a field it makes.`);
+    }
+    for (const k of into) {
+      const f = fields.get(k);
+      if (!f || f.derived !== s.id) problems.push(`Cleaning step "${s.id}" makes field "${k}", which is not in the catalog as its field.`);
+      else if (s.kind !== 'unpivot' && (f.source !== first.source || f.table !== first.table)) problems.push(`Field "${k}" must be in the table of the field it is made from.`);
+    }
+    if (s.kind === 'split') {
+      const n = into.length;
+      if (s.widths?.length) {
+        if (!s.widths.every((w) => Number.isInteger(w) && w > 0 && w < 4000) || s.widths.length !== n - 1) problems.push(`Cleaning step "${s.id}" splits by position with part lengths that do not fit its ${n} parts.`);
+      } else if (!s.delimiter || s.delimiter.length > 10) problems.push(`Cleaning step "${s.id}" splits on a delimiter of 1 to 10 characters.`);
+      if (n < 2 || (!s.widths?.length && n > SPLIT_MAX) || n > 8) problems.push(`Cleaning step "${s.id}" splits into ${n} parts; a split makes 2 to ${SPLIT_MAX} (8 by position).`);
+    } else if (s.kind === 'merge') {
+      if (inputs.length < 2 || inputs.length > 6 || into.length !== 1) problems.push(`Cleaning step "${s.id}" joins 2 to 6 fields into one.`);
+      if ((s.separator ?? ' ').length > 10) problems.push(`Cleaning step "${s.id}" puts more than 10 characters between values.`);
+    } else if (s.kind === 'bucket') {
+      if (into.length !== 1) problems.push(`Cleaning step "${s.id}" makes one field of groups.`);
+      if (s.tiles !== undefined) {
+        if (!Number.isInteger(s.tiles) || s.tiles < 2 || s.tiles > 10) problems.push(`Cleaning step "${s.id}" makes 2 to 10 equal-count groups.`);
+      } else if (!s.buckets?.length || s.buckets.length > BUCKETS_MAX || s.buckets.some((b) => !b.label || (b.from !== undefined && !Number.isFinite(b.from)) || (b.to !== undefined && !Number.isFinite(b.to)))) {
+        problems.push(`Cleaning step "${s.id}" needs 1 to ${BUCKETS_MAX} groups, each with a name and number bounds.`);
+      }
+    } else {
+      const names = s.names ?? [];
+      if (inputs.length < 2 || inputs.length > UNPIVOT_MAX || names.length !== inputs.length) problems.push(`Cleaning step "${s.id}" turns 2 to ${UNPIVOT_MAX} columns, each with a name, into rows.`);
+      if (!s.table || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(s.table)) problems.push(`Cleaning step "${s.id}" names its new table with letters, digits and underscores only.`);
+      else if (catalog.fields.some((f) => f.source === first.source && f.table === s.table && f.derived !== s.id)) problems.push(`Cleaning step "${s.id}" makes table "${s.table}", which already exists.`);
+      if (into.length !== 2) problems.push(`Cleaning step "${s.id}" makes a name field and a value field.`);
+    }
+  }
+  return problems;
+}
+
+
+const checked = new WeakMap<object, string | null>();
+
+/** Refuses to read a catalog whose steps do not hold together, with the first reason. */
+function assertSteps(index: CatalogIndex): void {
+  let problem = checked.get(index.catalog);
+  if (problem === undefined) {
+    problem = checkReshape(index.catalog)[0] ?? null;
+    checked.set(index.catalog, problem);
+  }
+  if (problem) throw new ReshapeError(problem);
+}

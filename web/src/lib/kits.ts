@@ -3,9 +3,12 @@
 // deletes move to .trash) and needs no new route. Without a server it lives in this browser's
 // localStorage, in the same place the playbook keeps team notes. Either way an unreadable or
 // invalid kit is skipped, never trusted.
+//
+// The kit reader (src/core/kits.ts) loads with the first read, not with the page's start: kits are
+// opened rarely and the reader is large (web/size-budget.json).
 
 import { useCallback, useEffect, useState } from 'react';
-import { isKitDocument, type Kit, KIT_LIMITS, parseKit } from '../../../src/core/kits.ts';
+import type { Kit } from '../../../src/core/kits.ts';
 import { api, type ServerInfo } from './api.ts';
 import { readLocal, writeLocal } from './storage.ts';
 
@@ -24,7 +27,10 @@ function localDocs(): Record<string, unknown> {
   return readLocal<Record<string, unknown>>(LOCAL_KEY) ?? {};
 }
 
-function toKits(docs: unknown[]): Kit[] {
+const reader = () => import('../../../src/core/kits.ts');
+
+async function toKits(docs: unknown[]): Promise<Kit[]> {
+  const { isKitDocument, parseKit } = await reader();
   return docs
     .filter(isKitDocument)
     .map((d) => parseKit(d).kit)
@@ -40,11 +46,14 @@ export function useKits(server: ServerInfo | null, serverChecked: boolean): KitS
     if (!serverChecked) return;
     let live = true;
     const read = server ? api<unknown[]>('/api/team?full=1').catch((): unknown[] => []) : Promise.resolve(Object.values(localDocs()));
-    read.then((docs) => {
-      if (!live) return;
-      setKits(toKits(docs));
-      setLoaded(true);
-    });
+    read.then(toKits).then(
+      (list) => {
+        if (!live) return;
+        setKits(list);
+        setLoaded(true);
+      },
+      () => live && setLoaded(true),
+    );
     return () => {
       live = false;
     };
@@ -52,6 +61,7 @@ export function useKits(server: ServerInfo | null, serverChecked: boolean): KitS
 
   const save = useCallback(
     async (kit: Kit) => {
+      const { KIT_LIMITS } = await reader();
       if (!kits.some((k) => k.id === kit.id) && kits.length >= KIT_LIMITS.stored) throw new Error(`Semaphore keeps at most ${KIT_LIMITS.stored} kits. Delete one first.`);
       if (server) await api(`/api/team/${encodeURIComponent(kit.id)}`, { method: 'PUT', json: kit });
       else if (!writeLocal(LOCAL_KEY, { ...localDocs(), [kit.id]: kit })) throw new Error('This browser would not store the kit (storage is blocked or full). Export it to a file instead.');

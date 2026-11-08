@@ -6,7 +6,7 @@ import type { Binding, FlagKind } from './hoist.ts';
 import type { CatalogIndex } from './catalog.ts';
 
 /** The kinds added beside bar, line, area and pie. All draw with ECharts. */
-export const RICH_KINDS = ['radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream'] as const;
+export const RICH_KINDS = ['radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'combo', 'map'] as const;
 export type RichKind = (typeof RICH_KINDS)[number];
 
 export const isRichKind = (k: string): k is RichKind => (RICH_KINDS as readonly string[]).includes(k);
@@ -24,7 +24,29 @@ export const KIND_NEEDS: Record<RichKind, string> = {
   sankey: 'two fields (from and to) and one measure',
   sunburst: 'two fields (inner and outer ring) and one measure',
   stream: 'a date field, a second field and one measure',
+  combo: 'one field along the axis and two or more measures (bars, then a line)',
+  map: 'one field (states, regions or latitude and longitude) and one measure',
 };
+
+/** "Latitude", "lat", "Longitude", "lng": which half of a position a field holds, by its name. */
+export function latLonRole(name: string): 'lat' | 'lon' | null {
+  const s = name.toLowerCase();
+  if (/(^|[^a-z])(lat|latitude)([^a-z]|$)/.test(s)) return 'lat';
+  if (/(^|[^a-z])(lon|lng|long|longitude)([^a-z]|$)/.test(s)) return 'lon';
+  return null;
+}
+
+/** Where the binding's latitude and longitude fields are (two fields named so), or null. */
+export function latLonFields(b: Binding, index: CatalogIndex | undefined): { lat: number; lon: number } | null {
+  if (b.dimensions.length !== 2) return null;
+  const roles = b.dimensions.map((d) => {
+    const f = index?.field(d.field);
+    return latLonRole(f?.column ?? '') ?? latLonRole(f?.label ?? '') ?? latLonRole(d.field.split('.').pop() ?? '');
+  });
+  const lat = roles.indexOf('lat');
+  const lon = roles.indexOf('lon');
+  return lat >= 0 && lon >= 0 ? { lat, lon } : null;
+}
 
 /**
  * The kind a binding can be drawn as, starting from the one asked for. Returns the kind and, when it
@@ -56,6 +78,10 @@ export function fitRichKind(kind: RichKind, b: Binding, index: CatalogIndex | un
         return dims === 1 && metrics >= 1;
       case 'stream':
         return dims === 2 && metrics >= 1 && (isDate(0) || isDate(1));
+      case 'combo':
+        return dims === 1 && metrics >= 2;
+      case 'map':
+        return metrics >= 1 && (dims === 1 || !!latLonFields(b, index));
     }
   })();
   if (ok) return { kind };
@@ -92,6 +118,8 @@ export const KIND_LABEL: Record<RichKind, string> = {
   sankey: 'Sankey',
   sunburst: 'Sunburst',
   stream: 'Stream',
+  combo: 'Combo',
+  map: 'Map',
 };
 
 /** Words in a brief that ask for each kind (local-rules.ts reads them before its own). */
@@ -105,4 +133,6 @@ export const KIND_WORDS: Array<[RegExp, RichKind]> = [
   [/\b(sankey|flows? from|flow chart of)\b/, 'sankey'],
   [/\b(sunburst|rings? of)\b/, 'sunburst'],
   [/\b(stream ?graph|streamgraph|theme ?river|stream chart)\b/, 'stream'],
+  [/\b(combo|combination chart|bars? and an? line|bars? with an? line|with an? line for)\b|\bas bars?\b[^.;]{0,60}\bas an? line\b/, 'combo'],
+  [/\b(on an? map|map of|mapped by|by state|choropleth|tile map)\b/, 'map'],
 ];

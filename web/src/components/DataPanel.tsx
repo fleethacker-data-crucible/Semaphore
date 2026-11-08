@@ -4,7 +4,9 @@
 
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Database, FileSpreadsheet, Network, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react';
-import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
+import { type Catalog, type Field, indexCatalog, type Metric } from '../../../src/core/catalog.ts';
+import { describeFormula } from '../../../src/core/describe.ts';
+import { dropBrokenFormulas, proposeMeasure } from '../../../src/core/formula-words.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { profileTables, type ServerInfo } from '../lib/api.ts';
 import type { DataContext } from '../lib/data.ts';
@@ -32,8 +34,8 @@ export interface DataPanelProps {
   onRemoveSource: (id: string) => void;
   onProfile: (source: string, table: string) => void;
   onLoadExample: () => void;
-  /** Opens the Import from Qlik screen. */
-  onImportQlik: () => void;
+  /** Opens Import a model (Qlik, dbt or Power BI). */
+  onImportModel: () => void;
   /** For checking data quality and relationships against the data. */
   ctx: DataContext;
   /** The AI, when it is on, for cleaning suggestions. */
@@ -162,9 +164,9 @@ function Sources(p: DataPanelProps) {
           </span>
           <input type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" multiple className="sr-only" onChange={(e) => e.target.files?.length && addFiles(e.target.files)} />
         </label>
-        <button type="button" onClick={p.onImportQlik} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
-          <span className="font-medium">Import from Qlik</span>
-          <span className="block text-[11px] text-ink-3">Paste a load script and chart expressions: tables, field names and measures come across for you to check.</span>
+        <button type="button" onClick={p.onImportModel} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
+          <span className="font-medium">Import a model</span>
+          <span className="block text-[11px] text-ink-3">From Qlik, dbt or Power BI: tables, field names, measures, links and drill paths come across for you to check.</span>
         </button>
         {!inCatalog.has('maint') && p.catalog.sources.length > 0 && (
           <button type="button" onClick={p.onLoadExample} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
@@ -253,9 +255,60 @@ function words(s: string): string[] {
     .filter((w) => /^[a-z][a-z0-9 '-]{1,39}$/.test(w));
 }
 
+/**
+ * A calculated measure in words: the sentence proposes it, Semaphore says it back, and nothing is
+ * added until the analyst accepts (src/core/formula-words.ts).
+ */
+function DefineMeasure({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Catalog) => void }) {
+  const [text, setText] = useState('');
+  const [offer, setOffer] = useState<{ metric: Metric; sentence: string; words: string | null } | { error: string } | null>(null);
+  const propose = () => {
+    const index = indexCatalog(catalog);
+    const p = proposeMeasure(text, index);
+    if (!p.ok) return setOffer({ error: p.error });
+    const next = indexCatalog({ ...catalog, metrics: [...catalog.metrics, p.metric] });
+    setOffer({ metric: p.metric, sentence: p.sentence, words: describeFormula(p.metric.key, next) });
+  };
+  return (
+    <section className="space-y-1.5 rounded-lg border border-dashed border-line p-2">
+      <form
+        className="flex gap-1.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          propose();
+        }}
+      >
+        <input value={text} maxLength={300} onChange={(e) => (setText(e.target.value), setOffer(null))} aria-label="Define a measure in words" placeholder="cost per hull = labor cost / hulls" className="min-w-0 flex-1 rounded-md border border-line bg-panel px-2 py-1 text-xs" />
+        <button type="submit" disabled={!text.trim()} className="rounded-md border border-line px-2 py-1 text-xs disabled:opacity-40">
+          Propose
+        </button>
+      </form>
+      <p className="text-[11px] text-ink-3">Combine measures with = + − × ÷, “divided by”, “the difference between … and …” or “… as a percent of …”.</p>
+      {offer && 'error' in offer && <p className="text-xs text-bad">{offer.error}</p>}
+      {offer && 'metric' in offer && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium" data-testid="measure-proposal">{offer.sentence}</p>
+          {offer.words && <p className="text-[11px] text-ink-2">{offer.words}</p>}
+          <div className="flex gap-1.5">
+            <button type="button" onClick={() => (onCatalog({ ...catalog, metrics: [...catalog.metrics, offer.metric] }), setOffer(null), setText(''))} className="min-h-8 rounded-md bg-accent px-2.5 text-xs font-semibold text-panel">
+              Accept
+            </button>
+            <button type="button" onClick={() => setOffer(null)} className="min-h-8 rounded-md border border-line px-2.5 text-xs">
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Measures({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Catalog) => void }) {
   const set = (key: string, patch: Partial<Metric>) => onCatalog({ ...catalog, metrics: catalog.metrics.map((m) => (m.key === key ? { ...m, ...patch } : m)) });
+  const index = indexCatalog(catalog);
   return (
+    <div className="space-y-3">
+    <DefineMeasure catalog={catalog} onCatalog={onCatalog} />
     <ul className="space-y-2">
       {catalog.metrics.map((m) => (
         <li key={m.key} className="space-y-1 rounded-lg border border-line p-2">
@@ -268,10 +321,17 @@ function Measures({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Cat
               <option value="percent">percent</option>
             </select>
           </div>
+          {m.agg === 'formula' && <p className="px-1 text-[11px] text-ink-2">{describeFormula(m.key, index)}</p>}
           <SynonymInput value={m.synonyms ?? []} onChange={(s) => set(m.key, { synonyms: s })} />
+          {m.agg === 'formula' && (
+            <button type="button" onClick={() => onCatalog({ ...catalog, metrics: dropBrokenFormulas(catalog.metrics.filter((x) => x.key !== m.key)) })} className="px-1 text-[11px] text-ink-3 hover:text-bad">
+              Remove this calculated measure
+            </button>
+          )}
         </li>
       ))}
     </ul>
+    </div>
   );
 }
 

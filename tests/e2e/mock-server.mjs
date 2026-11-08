@@ -216,7 +216,7 @@ let saves = 0;
 let port = 0;
 let stopping = false;
 
-for (const k of [...KINDS, 'widgets']) mkdirSync(path.join(homeDir, k), { recursive: true });
+for (const k of [...KINDS, 'widgets', 'maps']) mkdirSync(path.join(homeDir, k), { recursive: true });
 const logFile = path.join(homeDir, 'semaphore-mock.log');
 function log(level, text) {
   const line = `${new Date().toISOString()} [${level}] ${text}`;
@@ -531,6 +531,104 @@ function docRoute(req, res, kind, id, query, body) {
   }
 }
 
+// Alerts (server/Alerts.ps1): one file per alert in <home>/alerts; the check applies the same rules as
+// Update-SemAlertState (fires once per change into red, optionally once back to normal, older readings ignored).
+function alertList() {
+  const dir = docDir('alerts');
+  const out = [];
+  for (const n of readdirSync(dir).filter((x) => x.endsWith('.json') && !x.startsWith('.')).sort()) {
+    try {
+      const a = JSON.parse(readFileSync(path.join(dir, n), 'utf8'));
+      if (a && a.version === 1 && a.kind === 'alert' && Array.isArray(a.events)) out.push({ ...a, id: n.slice(0, -5) });
+    } catch {
+      /* skipped, as the server skips it */
+    }
+  }
+  return out;
+}
+function alertStep(a, value, asOf, source, now = new Date()) {
+  if (a.lastAsOf && asOf < a.lastAsOf) return null;
+  const at = now.toISOString();
+  delete a.pending;
+  a.lastChecked = at;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const r = a.rule;
+  const red = r.op === 'lt' ? value < r.value : r.op === 'lte' ? value <= r.value : r.op === 'gt' ? value > r.value : value >= r.value;
+  const next = red ? 'red' : 'normal';
+  const stamp = at.replace(/[^0-9]/g, '').slice(0, 17);
+  let fired = null;
+  if (next === 'red' && a.state !== 'red') fired = { id: `${stamp}-r`, kind: 'red', at, value, asOf, source };
+  else if (next === 'normal' && a.state === 'red' && a.notifyClear === true) fired = { id: `${stamp}-c`, kind: 'clear', at, value, asOf, source };
+  a.state = next;
+  a.lastValue = value;
+  a.lastAsOf = asOf;
+  if (fired) {
+    a.events = [...a.events, fired].slice(-50);
+    a.updated = at;
+  }
+  return fired;
+}
+function alertRoute(req, res, id, json, body) {
+  const dir = docDir('alerts');
+  if (id === null) return req.method === 'GET' ? sendJsonText(res, 200, JSON.stringify(alertList())) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (id === 'check') {
+    if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const source = json.source === 'refresh' ? 'refresh' : 'page';
+    const alerts = alertList();
+    const fired = [];
+    for (const r of (Array.isArray(json.readings) ? json.readings : []).slice(0, 500)) {
+      if (!r || typeof r.entryId !== 'string' || typeof r.metric !== 'string' || !/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$/.test(String(r.asOf))) continue;
+      for (const a of alerts) {
+        if (a.entryId !== r.entryId || a.metric !== r.metric) continue;
+        const before = JSON.stringify(a);
+        const event = alertStep(a, r.value, r.asOf, source);
+        if (JSON.stringify(a) !== before) saveDoc(dir, a.id, Buffer.from(JSON.stringify(a)));
+        if (event) fired.push({ alertId: a.id, event });
+      }
+    }
+    return sendJson(res, 200, { fired, alerts });
+  }
+  if (!validId(id)) return sendError(res, 400, 'bad-id', 'Invalid alert id: use 1 to 64 letters, digits, _ or -.');
+  const file = path.join(dir, `${id}.json`);
+  if (req.method === 'GET') return existsSync(file) ? sendJsonText(res, 200, readFileSync(file, 'utf8')) : sendError(res, 404, 'not-found', `No alert '${id}'.`);
+  if (req.method === 'PUT') {
+    const r = json && json.rule;
+    if (!json || json.version !== 1 || json.kind !== 'alert' || !r || !['lt', 'lte', 'gt', 'gte'].includes(r.op) || typeof r.value !== 'number' || !Array.isArray(json.events)) return sendError(res, 400, 'invalid', 'An alert has its red rule.');
+    saveDoc(dir, id, body);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (req.method === 'DELETE') return removeDoc(dir, id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No alert '${id}'.`);
+  return sendError(res, 405, 'method', 'Method not allowed.');
+}
+
+// Briefing delivery (server/Mail.ps1). The mock has no Outlook: GET /api/mail says so, and a draft request is
+// answered as the server answers on a computer without Outlook. Nothing is ever sent.
+const NO_OUTLOOK = { available: false, code: 'outlook-missing', reason: 'Outlook is not installed on this computer (there is no Outlook.Application), so no draft can be made. Save the briefing as an email file instead.' };
+function mailRoute(req, res, p, json) {
+  const dir = docDir('mail');
+  const settings = readJsonObject(path.join(dir, 'user-mock.json'))?.j ?? { version: 1, recipients: [], schedule: { enabled: false, weekday: 1, time: '08:00', open: false }, lastScheduled: '', lastResult: '' };
+  if (p === '/api/mail') {
+    if (req.method !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const latest = readJsonObject(path.join(dir, 'latest-briefing.json'))?.j;
+    return sendJson(res, 200, { outlook: NO_OUTLOOK, settings, latest: latest ? { at: latest.at, subject: latest.subject } : null, outbox: path.join(dir, 'outbox') });
+  }
+  if (p === '/api/mail/settings' && req.method === 'PUT') {
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const recipients = (Array.isArray(json.recipients) ? json.recipients : []).filter((x) => typeof x === 'string' && /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/.test(x.trim())).map((x) => x.trim()).slice(0, 50);
+    const next = { ...settings, recipients, ...(json.schedule ? { schedule: json.schedule } : {}) };
+    saveDoc(dir, 'user-mock', Buffer.from(JSON.stringify(next)));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/mail/briefing' && req.method === 'PUT') {
+    if (!json || !json.subject || !json.html) return sendError(res, 400, 'invalid', 'A briefing has a subject and an HTML body.');
+    saveDoc(dir, 'latest-briefing', Buffer.from(JSON.stringify({ version: 1, at: new Date().toISOString(), ...json })));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/mail/outlook-draft' && req.method === 'POST') return sendJson(res, 200, { ok: false, code: NO_OUTLOOK.code, error: NO_OUTLOOK.reason });
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
 // Page snapshots (Invoke-SemSnapRoute, server/Routes.ps1): <home>/snapshots/<hoistId>/<snapId>.json (what
 // it is) and <snapId>.hoist.json (the page, verbatim). One automatic snapshot per 10 minutes, the last 30
 // automatic ones kept with every named one (200 at most).
@@ -690,6 +788,108 @@ function widgetRoute(req, res, id, json) {
   if (req.method === 'DELETE') {
     if (!removeDoc(dir, id)) return sendError(res, 404, 'not-found', `No library widget '${id}'.`);
     log('INFO', `Moved library widget ${id} to .trash`);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendError(res, 405, 'method', 'Method not allowed.');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Region maps (Invoke-SemMapRoute): <home>/maps/<id>.json says what the map is, <home>/maps/shapes/<id>.json its GeoJSON
+// ---------------------------------------------------------------------------------------------
+const MAP_MAX_BYTES = 2097152; // Routes.ps1 $script:SemMapMaxBytes
+const MAP_MAX_REGIONS = 2000;
+const MAP_MAX_COUNT = 50;
+const MAP_MAX_ALIASES = 500;
+const mapId = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48).replace(/-+$/g, '') || 'map';
+function mapAliases(v) {
+  const out = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [k, r] of Object.entries(v)) {
+    if (Object.keys(out).length >= MAP_MAX_ALIASES) break;
+    const a = widgetText(k, 80);
+    const t = widgetText(r, 80);
+    if (a && t && a !== '__proto__' && !Object.keys(out).some((x) => x.toLowerCase() === a.toLowerCase())) out[a] = t;
+  }
+  return out;
+}
+/** Test-SemMapShapes: the region names, or [status, code, error]. */
+function mapShapes(text) {
+  if (typeof text !== 'string' || text.trim() === '') return [400, 'invalid', 'The map has no shapes: send its GeoJSON as text.'];
+  if (Buffer.byteLength(text, 'utf8') > MAP_MAX_BYTES) return [413, 'too-large', 'A region map may be at most 2 MB of GeoJSON. Simplify the shapes or split the file.'];
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    return [400, 'invalid', 'The shapes are not valid JSON.'];
+  }
+  if (!j || typeof j !== 'object' || Array.isArray(j) || j.type !== 'FeatureCollection') return [400, 'invalid', 'The shapes must be a GeoJSON FeatureCollection.'];
+  if (!Array.isArray(j.features) || !j.features.length) return [400, 'invalid', 'The map has no regions.'];
+  if (j.features.length > MAP_MAX_REGIONS) return [413, 'too-large', `A region map may have at most ${MAP_MAX_REGIONS} regions.`];
+  const names = [];
+  for (const [i, f] of j.features.entries()) {
+    const g = f?.geometry;
+    const name = f?.properties?.name;
+    if (f?.type !== 'Feature' || !g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon') || !Array.isArray(g.coordinates) || !g.coordinates.length || typeof name !== 'string' || !name || widgetText(name, 80) !== name) {
+      return [400, 'invalid', `Region ${i + 1} is not a named polygon (a Feature with a Polygon or MultiPolygon geometry and properties.name).`];
+    }
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+function mapRoute(req, res, id, json) {
+  const dir = docDir('maps');
+  const shapes = docDir(path.join('maps', 'shapes'));
+  if (id === null) {
+    if (req.method === 'GET') {
+      const out = [];
+      for (const name of docFiles(dir).slice(0, MAP_MAX_COUNT)) {
+        const doc = readJsonObject(path.join(dir, name));
+        if (!doc) continue;
+        const mid = name.slice(0, -5);
+        out.push({ id: mid, name: widgetText(doc.j.name, 80) || mid, regions: Number.isInteger(doc.j.regions) ? doc.j.regions : 0, aliases: mapAliases(doc.j.aliases), lonLat: doc.j.lonLat !== false, bytes: Number.isInteger(doc.j.bytes) ? doc.j.bytes : 0, by: widgetText(doc.j.by, 64), updated: typeof doc.j.updated === 'string' ? doc.j.updated : '' });
+      }
+      out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return sendJson(res, 200, out);
+    }
+    if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const name = widgetText(json.name, 80);
+    if (!name) return sendError(res, 400, 'invalid', 'Give the map a name (at most 80 characters).');
+    let mid = json.id;
+    if (mid !== undefined && mid !== null && (typeof mid !== 'string' || !validId(mid))) return sendError(res, 400, 'bad-id', 'Invalid map id: use 1 to 64 letters, digits, _ or -.');
+    let old = null;
+    if (typeof mid === 'string') {
+      old = readJsonObject(path.join(dir, `${mid}.json`))?.j ?? null;
+      if (!existsSync(path.join(dir, `${mid}.json`))) return sendError(res, 404, 'not-found', `No region map '${mid}'.`);
+    } else if (json.geojson === undefined || json.geojson === null) return sendError(res, 400, 'invalid', 'The map has no shapes: send its GeoJSON as text.');
+    let regions = null;
+    if (json.geojson !== undefined && json.geojson !== null) {
+      const check = mapShapes(json.geojson);
+      if (!Array.isArray(check) || typeof check[0] === 'number') return sendError(res, check[0], check[1], check[2]);
+      regions = check;
+    }
+    if (typeof mid !== 'string') {
+      if (docFiles(dir).length >= MAP_MAX_COUNT) return sendError(res, 409, 'full', `The Semaphore folder holds ${MAP_MAX_COUNT} region maps at most. Remove some first.`);
+      const stem = mapId(name);
+      mid = stem;
+      for (let n = 2; existsSync(path.join(dir, `${mid}.json`)); n++) mid = `${stem}-${n}`;
+    }
+    const lonLat = typeof json.lonLat === 'boolean' ? json.lonLat : old?.lonLat !== false;
+    const meta = { version: 1, id: mid, name, regions: regions ? regions.length : (old?.regions ?? 0), aliases: mapAliases(json.aliases), lonLat, bytes: regions ? Buffer.byteLength(json.geojson, 'utf8') : (old?.bytes ?? 0), by: widgetText(info().user, 64), updated: new Date().toISOString() };
+    if (regions) saveDoc(shapes, mid, Buffer.from(json.geojson, 'utf8'));
+    saveDoc(dir, mid, Buffer.from(JSON.stringify(meta), 'utf8'));
+    log('INFO', `Saved region map ${mid} (${meta.regions} regions)`);
+    return sendJson(res, 200, { ok: true, map: meta });
+  }
+  if (!validId(id)) return sendError(res, 400, 'bad-id', 'Invalid map id: use 1 to 64 letters, digits, _ or -.');
+  if (req.method === 'GET') {
+    const file = path.join(shapes, `${id}.json`);
+    return existsSync(file) && existsSync(path.join(dir, `${id}.json`)) ? sendJsonText(res, 200, stripBom(readFileSync(file, 'utf8'))) : sendError(res, 404, 'not-found', `No region map '${id}'.`);
+  }
+  if (req.method === 'DELETE') {
+    if (!removeDoc(dir, id)) return sendError(res, 404, 'not-found', `No region map '${id}'.`);
+    removeDoc(shapes, id);
+    log('INFO', `Moved region map ${id} to .trash`);
     return sendJson(res, 200, { ok: true });
   }
   return sendError(res, 405, 'method', 'Method not allowed.');
@@ -1081,6 +1281,8 @@ function apiRoute(req, res, p, query, json, body) {
   }
   const doc = /^\/api\/(hoists|catalogs|playbook|snapshots|questions|team)(?:\/([^/]*))?$/.exec(p);
   if (doc) return docRoute(req, res, doc[1], p === `/api/${doc[1]}` ? null : (doc[2] ?? ''), query, body);
+  if (p === '/api/alerts' || p.startsWith('/api/alerts/')) return alertRoute(req, res, p === '/api/alerts' ? null : p.slice('/api/alerts/'.length), json, body);
+  if (p === '/api/mail' || p.startsWith('/api/mail/')) return mailRoute(req, res, p, json);
   if (p === '/api/refresh-report') {
     const file = path.join(docDir('snapshots'), '.last-refresh.json');
     if (m === 'GET') return existsSync(file) ? sendJsonText(res, 200, readFileSync(file, 'utf8')) : sendError(res, 404, 'not-found', 'No refresh has run yet.');
@@ -1154,6 +1356,11 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
   const widget = /^\/api\/widgets(?:\/([^/]*))?$/.exec(p);
   if (widget) return widgetRoute(req, res, p === '/api/widgets' ? null : (widget[1] ?? ''), json);
+  const maps = /^\/api\/maps(?:\/([^/]*))?$/.exec(p);
+  if (maps) {
+    if (body.length > 3145728) return sendError(res, 413, 'too-large', 'A region map may be at most 3 MB as sent (its GeoJSON at most 2 MB).');
+    return mapRoute(req, res, p === '/api/maps' ? null : (maps[1] ?? ''), json);
+  }
   const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
   if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
@@ -1184,7 +1391,7 @@ function handle(req, res, body) {
       return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
-      for (const k of [...KINDS, 'widgets']) {
+      for (const k of [...KINDS, 'widgets', 'maps', 'alerts', 'mail']) {
         rmSync(path.join(homeDir, k), { recursive: true, force: true });
         mkdirSync(path.join(homeDir, k), { recursive: true });
       }

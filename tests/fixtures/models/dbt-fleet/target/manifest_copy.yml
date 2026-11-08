@@ -1,0 +1,3 @@
+semantic_models:
+  - name: should_not_be_read
+    model: ref('nothing')

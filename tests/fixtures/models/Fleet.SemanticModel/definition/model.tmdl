@@ -1,0 +1,8 @@
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	discourageImplicitMeasures
+
+ref table 'Work Orders'
+ref table Hulls
+ref table LocalDateTable_6f1c

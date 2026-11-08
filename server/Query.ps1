@@ -945,6 +945,7 @@ function Update-SemWorkers {
     }
     if ($null -ne $script:Sem.LocalJobs) { Update-SemLocalJobs }   # import jobs (LocalDb.ps1)
     if ($script:Sem.PipelineScheduler -and (Get-Command Invoke-SemPipelineTick -ErrorAction SilentlyContinue)) { [void](Invoke-SemPipelineTick) }   # Pipeline.ps1
+    if ($script:Sem.PipelineScheduler -and (Get-Command Invoke-SemMailTick -ErrorAction SilentlyContinue)) { try { [void](Invoke-SemMailTick) } catch { Write-SemLog 'WARN' ('Weekly briefing: ' + $_.Exception.Message) } }   # Mail.ps1
 }
 
 function Close-SemWorkers {

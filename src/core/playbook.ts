@@ -74,7 +74,35 @@ export interface QuestionItem {
   notes: string[];
   status: 'open' | 'answered' | 'dismissed';
   entryId?: string;
+  /** When it was answered with a reviewed entry (review.ts, resolveQuestions); older files have only `updated`. */
+  answeredAt?: string;
+  /** The answer Semaphore drafted live for the asker, when they pressed "Ask for review" (review.ts). */
+  draft?: DraftedAnswer;
+  /** When someone asked for the drafted answer to be reviewed. */
+  reviewRequested?: string;
+  /** The analyst who accepted the draft, edited it or rejected it. */
+  reviewedBy?: string;
+  /** An analyst looked at the draft and did not accept it. */
+  rejected?: { by: string; at: string; reason: string };
   updated: string;
+}
+
+/**
+ * A drafted answer as the asker saw it: what an analyst reviews. Kept with the question, never in
+ * the playbook: only an analyst's accept turns it into an entry (review.ts acceptDraft).
+ */
+export interface DraftedAnswer {
+  kind: FlagKind;
+  title: string;
+  binding: Binding;
+  /** The window it ran under. */
+  filters: Filter[];
+  thresholds: Threshold[];
+  /** "local rules" or the model's label. */
+  by: string;
+  draftedAt: string;
+  /** Where its numbers came from when it was shown. */
+  from: 'snapshot' | 'live';
 }
 
 /** Entries not used for this long are flagged for review. */
@@ -174,7 +202,7 @@ function healthProblem(e: PlaybookEntry, index: CatalogIndex, now: Date): string
   parseFilters(e.pageFilters, index, warnings, 'Entry');
   if (!b || warnings.length) return `It uses something the catalog no longer has (${warnings[0] ?? 'its binding'}).`;
   const plan = planFlag(entryHoist(e), entryFlag(e), index);
-  if (!plan.ok) return `It no longer runs: ${plan.error}`;
+  if (!plan.ok && plan.reason !== 'loading') return `It no longer runs: ${plan.error}`;
   const last = Date.parse(e.lastUsed ?? e.acceptedAt);
   if (Number.isFinite(last) && now.getTime() - last > STALE_DAYS * 86_400_000) return `Nobody has used it for ${STALE_DAYS / 30} months.`;
   return null;
@@ -366,7 +394,7 @@ export function resolveQuestions(questions: readonly QuestionItem[], entries: re
     if (item.status !== 'open') continue;
     const asked = normalizeQuestion(item.title);
     const e = entries.find((x) => x.status !== 'retired' && (normalizeQuestion(x.question) === asked || x.phrasings.some((p) => normalizeQuestion(p) === asked)));
-    if (e) out.push({ ...item, status: 'answered', entryId: e.id, updated: now.toISOString() });
+    if (e) out.push({ ...item, status: 'answered', entryId: e.id, answeredAt: now.toISOString(), updated: now.toISOString() });
   }
   return out;
 }

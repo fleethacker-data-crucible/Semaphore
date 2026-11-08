@@ -16,9 +16,16 @@
 // drafted again) instead of being guessed. The remapped hoist is run through parseHoist against
 // the target catalog before it is returned.
 //
+// A calculated measure (agg 'formula') travels with its definition: the kit keeps its label,
+// format and formula, and describes each measure the formula names like any other metric. Applying
+// the kit matches every input by the same tiers; when all match, in one source, the measure is made
+// again over the matched keys (or an identical one already there is used), and the flag binds to it.
+// One input with no match leaves the flag unbound, with the input named in the reason.
+//
 // Pure functions: no I/O, no clock unless passed in. The UI stores kits (web/src/lib/kits.ts).
 
-import type { Aggregate, CatalogIndex, Field, FieldType, Metric } from './catalog.ts';
+import { type Aggregate, type Catalog, type CatalogIndex, checkCatalog, type Field, type FieldType, indexCatalog, type Metric } from './catalog.ts';
+import { FORMULA_MAX_CHARS, FORMULA_MAX_DEPTH, type FormulaNode, formulaRefs, parseFormula, printFormula } from './formula.ts';
 import {
   type Binding,
   type Comparison,
@@ -60,6 +67,10 @@ export const KIT_LIMITS = {
   synonymChars: 80,
   textChars: 20000,
   errors: 20,
+  /** Calculated measures a kit may define. */
+  formulas: 100,
+  /** Measures one formula may name. */
+  formulaInputs: 30,
   /** Kits kept at once by the web app. */
   stored: 100,
 } as const;
@@ -77,9 +88,24 @@ export interface KitField {
 export interface KitMetric {
   key: string;
   label: string;
+  /** 'formula' for a calculated measure; its definition is in Kit.formulas under the same key. */
   agg: Aggregate;
   format?: 'number' | 'currency' | 'percent';
   synonyms: string[];
+  /** On a formula's input: the field the input aggregates, described like any field. Not used to match. */
+  field?: KitField;
+}
+
+/** A calculated measure the kit's flags use, directly or through another formula. */
+export interface KitFormula {
+  key: string;
+  label: string;
+  format?: 'number' | 'currency' | 'percent';
+  synonyms: string[];
+  /** The formula over the source catalog's keys (src/core/formula.ts). */
+  formula: string;
+  /** Every measure the formula names, once each; a formula input has agg 'formula' and its own entry. */
+  inputs: KitMetric[];
 }
 
 export interface KitDimension {
@@ -141,6 +167,8 @@ export interface Kit {
   /** The page's fixed filters, if they were saved with the kit. */
   filters: KitFilter[];
   flags: KitFlag[];
+  /** Definitions of the calculated measures the flags use. Absent when there are none (and in older kits). */
+  formulas?: KitFormula[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -197,8 +225,56 @@ export function makeKit(hoist: Hoist, index: CatalogIndex, options: MakeKitOptio
     filters,
     flags,
   };
+  const formulas = kitFormulas(flags, index, warnings);
+  if (formulas === null) return { kit: null, warnings };
+  if (formulas.length) kit.formulas = formulas;
   return { kit, warnings };
 }
+
+/** The definitions of every calculated measure the flags name, and of the formulas those build on. */
+function kitFormulas(flags: readonly KitFlag[], index: CatalogIndex, warnings: string[]): KitFormula[] | null {
+  const out: KitFormula[] = [];
+  const seen = new Set<string>();
+  const todo: string[] = [];
+  for (const f of flags) {
+    for (const m of f.binding?.metrics ?? []) if (m.agg === 'formula') todo.push(m.key);
+    for (const t of f.behavior.thresholds) if (t.metric.agg === 'formula') todo.push(t.metric.key);
+  }
+  while (todo.length) {
+    const key = todo.shift() as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const m = index.metric(key);
+    const p = m?.agg === 'formula' ? parseFormula(m.formula ?? '') : null;
+    if (!m || !p?.ok) {
+      warnings.push(`The calculated measure "${m?.label ?? key}" has no formula Semaphore can read, so the kit cannot carry it.`);
+      return null;
+    }
+    const inputs: KitMetric[] = [];
+    for (const ref of formulaRefs(p.node)) {
+      const input = kitMetric(ref, index);
+      if (!input) {
+        warnings.push(`The calculated measure "${m.label}" uses "${ref}", which is not in the catalog, so the kit cannot carry it.`);
+        return null;
+      }
+      const im = index.metric(ref) as Metric;
+      if (im.field) {
+        const field = kitField(im.field, index);
+        if (field) input.field = field;
+      }
+      inputs.push(input);
+      if (input.agg === 'formula') todo.push(ref);
+    }
+    out.push({ key: m.key, label: m.label, ...(m.format ? { format: m.format } : {}), synonyms: synonymsOf(m), formula: printFormula(p.node), inputs });
+  }
+  if (out.length > KIT_LIMITS.formulas) {
+    warnings.push(`A kit carries at most ${KIT_LIMITS.formulas} calculated measures.`);
+    return null;
+  }
+  return out;
+}
+
+const synonymsOf = (m: { synonyms?: string[] }) => (m.synonyms ?? []).slice(0, KIT_LIMITS.synonyms).map((s) => s.slice(0, KIT_LIMITS.synonymChars));
 
 /** A storage id for a kit name that is not in `taken`: "kit-labor-cost", then "kit-labor-cost-2". */
 export function kitId(name: string, taken: Iterable<string>): string {
@@ -357,6 +433,13 @@ export function parseKit(raw: unknown): KitParse {
   const rawFlags = list(raw.flags, KIT_LIMITS.flags, 'flags', bad);
   if (rawFlags.length === 0) bad('A kit needs at least one flag.');
   const flags = rawFlags.map((f, i) => parseKitFlag(f, `Flag ${i + 1}`, bad));
+  const formulas = raw.formulas === undefined ? [] : list(raw.formulas, KIT_LIMITS.formulas, 'calculated measures', bad).map((f, i) => parseKitFormula(f, `Calculated measure ${i + 1}`, bad));
+  const defined = new Set<string>();
+  for (const f of formulas) {
+    if (!f) continue;
+    if (defined.has(f.key)) bad(`The calculated measure "${f.key.slice(0, 40)}" is defined twice.`);
+    defined.add(f.key);
+  }
   if (errors.length) return { kit: null, errors };
   const kit: Kit = {
     version: 1,
@@ -369,6 +452,7 @@ export function parseKit(raw: unknown): KitParse {
     cols: cols as number,
     filters: filters as KitFilter[],
     flags: flags as KitFlag[],
+    ...(formulas.length ? { formulas: formulas as KitFormula[] } : {}),
   };
   return { kit, errors: [] };
 }
@@ -400,12 +484,42 @@ function parseKitMetric(raw: unknown, where: string, bad: Bad): KitMetric | null
   const label = text(raw.label ?? '', KIT_LIMITS.labelChars, `${where}: metric label`, bad, false);
   if (!AGGREGATES.includes(raw.agg as Aggregate)) bad(`${where}: metric "${key.slice(0, 40)}" has an unknown aggregate.`);
   if (raw.format !== undefined && !FORMATS.includes(raw.format as 'number')) bad(`${where}: metric "${key.slice(0, 40)}" has an unknown format.`);
-  return {
+  const out: KitMetric = {
     key,
     label: label || key,
     agg: raw.agg as Aggregate,
     ...(raw.format !== undefined ? { format: raw.format as KitMetric['format'] & string } : {}),
     synonyms: parseSynonyms(raw.synonyms, where, bad),
+  };
+  if (raw.field !== undefined) {
+    const field = parseKitField(raw.field, where, bad);
+    if (field) out.field = field;
+  }
+  return out;
+}
+
+function parseKitFormula(raw: unknown, where: string, bad: Bad): KitFormula | null {
+  if (!isObject(raw)) {
+    bad(`${where}: not an object.`);
+    return null;
+  }
+  const key = text(raw.key, KIT_LIMITS.keyChars, `${where}: key`, bad, true);
+  const label = text(raw.label ?? '', KIT_LIMITS.labelChars, `${where}: label`, bad, false);
+  if (raw.format !== undefined && !FORMATS.includes(raw.format as 'number')) bad(`${where}: unknown format.`);
+  const formula = text(raw.formula, FORMULA_MAX_CHARS, `${where}: formula`, bad, true);
+  const inputs = list(raw.inputs, KIT_LIMITS.formulaInputs, `${where}: inputs`, bad).map((m) => parseKitMetric(m, where, bad));
+  const keys = new Set(inputs.map((m) => m?.key));
+  if (formula) {
+    const p = parseFormula(formula, (w) => (keys.has(w) ? w : null));
+    if (!p.ok) bad(`${where}: the formula cannot be read: ${p.error}.`);
+  }
+  return {
+    key,
+    label: label || key,
+    ...(raw.format !== undefined ? { format: raw.format as KitFormula['format'] & string } : {}),
+    synonyms: parseSynonyms(raw.synonyms, where, bad),
+    formula,
+    inputs: inputs as KitMetric[],
   };
 }
 
@@ -534,7 +648,7 @@ function parseKitFlag(raw: unknown, where: string, bad: Bad): KitFlag | null {
 }
 
 const FIELD_TYPES: readonly FieldType[] = ['number', 'string', 'date', 'boolean'];
-const AGGREGATES: readonly Aggregate[] = ['sum', 'avg', 'min', 'max', 'count', 'count_distinct'];
+const AGGREGATES: readonly Aggregate[] = ['sum', 'avg', 'min', 'max', 'count', 'count_distinct', 'formula'];
 const FORMATS = ['number', 'currency', 'percent'];
 
 function text(v: unknown, max: number, what: string, bad: Bad, required: boolean): string {
@@ -583,6 +697,12 @@ export interface Mapping {
   reason?: string;
   /** Close candidates that were not used, best first. */
   suggestions: Suggestion[];
+  /**
+   * For a calculated measure carried by the kit: 'made' when it is added to this catalog, 'reused'
+   * when an identical one was already here. Its inputs' own mappings are in `inputs`.
+   */
+  formula?: 'made' | 'reused';
+  inputs?: Mapping[];
 }
 
 export interface KitApplyOptions {
@@ -710,16 +830,27 @@ class Resolver {
   private metricList: readonly Metric[];
   private fieldList: readonly Field[];
   private closeMatches: boolean;
+  private formulas: Map<string, KitFormula>;
+  private open = new Set<string>();
+  /** Calculated measures made for the kit, in the order they were made (inputs first). */
+  readonly made: Metric[] = [];
 
-  constructor(index: CatalogIndex, closeMatches: boolean) {
+  constructor(index: CatalogIndex, closeMatches: boolean, formulas: readonly KitFormula[] = []) {
     this.closeMatches = closeMatches;
     this.metricList = index.catalog.metrics;
     this.fieldList = index.catalog.fields;
+    this.formulas = new Map(formulas.map((f) => [f.key, f]));
   }
 
   metric(ref: KitMetric): Mapping {
     const hit = this.metrics.get(ref.key);
     if (hit) return hit;
+    const def = ref.agg === 'formula' ? this.formulas.get(ref.key) : undefined;
+    if (def) {
+      const m = this.formula(def);
+      this.metrics.set(ref.key, m);
+      return m;
+    }
     const compat = (t: Metric) => t.agg === ref.agg && (!ref.format || !t.format || t.format === ref.format);
     const why = (t: Metric) =>
       t.agg !== ref.agg ? `"${t.label}" exists but is a ${aggName(t.agg)}; the kit needs a ${aggName(ref.agg)}.` : `"${t.label}" exists but is shown as ${t.format}; the kit needs ${ref.format}.`;
@@ -727,6 +858,82 @@ class Resolver {
     const m = mapping('metric', ref, r);
     this.metrics.set(ref.key, m);
     return m;
+  }
+
+  /**
+   * A calculated measure from its definition: every input matched like any metric (a formula input
+   * in turn from its own definition), then an identical formula over the matched keys reused, or a
+   * new measure made under a key no field or metric has.
+   */
+  private formula(def: KitFormula): Mapping {
+    const out: Mapping = { role: 'metric', from: { key: def.key, label: def.label }, suggestions: [] };
+    if (this.open.has(def.key) || this.open.size >= FORMULA_MAX_DEPTH) {
+      out.reason = this.open.has(def.key) ? 'The kit defines it in a circle.' : `It builds on calculated measures more than ${FORMULA_MAX_DEPTH} deep.`;
+      return out;
+    }
+    this.open.add(def.key);
+    try {
+      const inputs = def.inputs.map((i) => this.metric(i));
+      const missing = inputs.find((m) => !m.to);
+      if (missing) {
+        out.reason = `A calculated measure whose input "${missing.from.label}" has no match: ${missing.reason ?? 'no match.'}`;
+        return out;
+      }
+      out.inputs = inputs;
+      const to = new Map(def.inputs.map((input, i) => [input.key, (inputs[i] as Mapping).to?.key as string]));
+      const p = parseFormula(def.formula, (w) => to.get(w) ?? null);
+      if (!p.ok) {
+        out.reason = `Its formula cannot be read: ${p.error}.`;
+        return out;
+      }
+      const all = [...this.metricList, ...this.made];
+      const targets = inputs.map((m) => all.find((t) => t.key === m.to?.key) as Metric);
+      // Inputs in different tables of one source are fine: the planner reads each table on its own and
+      // lines them up (across.ts). Inputs in different sources cannot be.
+      const sources = [...new Set(targets.map((t) => t.source))];
+      if (sources.length !== 1) {
+        out.reason = sources.length
+          ? `Its inputs are in different sources here (${sources.map((s) => `"${s}"`).join(', ')}); a calculated measure reads one source.`
+          : 'Its formula names no measure.';
+        return out;
+      }
+      const source = sources[0] as string;
+      const tiers = inputs.map((m) => m.tier as MatchTier);
+      const worst = tiers.reduce<MatchTier>((w, t) => (CONFIDENCE[t] < CONFIDENCE[w] ? t : w), 'exact');
+      const same = all.filter((t) => t.agg === 'formula' && t.source === source && sameFormula(t.formula, p.node));
+      const reuse = same.find((t) => t.key === def.key) ?? same.find((t) => phrase(t.label) === phrase(def.label)) ?? same[0];
+      out.tier = worst;
+      if (reuse) {
+        out.to = { key: reuse.key, label: reuse.label };
+        out.formula = 'reused';
+        return out;
+      }
+      const metric: Metric = {
+        key: this.freeKey(def.key),
+        label: def.label,
+        agg: 'formula',
+        formula: printFormula(p.node),
+        source,
+        ...(def.format ? { format: def.format } : {}),
+        ...(def.synonyms.length ? { synonyms: [...def.synonyms] } : {}),
+      };
+      this.made.push(metric);
+      out.to = { key: metric.key, label: metric.label };
+      out.formula = 'made';
+      return out;
+    } finally {
+      this.open.delete(def.key);
+    }
+  }
+
+  /** The kit's key when nothing here has it (and a formula can name it), else the first free "key_2". */
+  private freeKey(want: string): string {
+    const taken = (k: string) => this.fieldList.some((f) => f.key === k) || this.metricList.some((m) => m.key === k) || this.made.some((m) => m.key === k);
+    let base = /^[A-Za-z_][A-Za-z0-9_.]*$/.test(want) ? want : want.replace(/[^A-Za-z0-9_.]+/g, '_').replace(/^([^A-Za-z_])/, '_$1');
+    base = base.slice(0, KIT_LIMITS.keyChars - 4) || 'measure';
+    let key = base;
+    for (let n = 2; taken(key); n++) key = `${base}_${n}`;
+    return key;
   }
 
   field(ref: KitField): Mapping {
@@ -741,7 +948,13 @@ class Resolver {
   }
 }
 
-const aggName = (a: Aggregate) => (a === 'count_distinct' ? 'distinct count' : a === 'avg' ? 'average' : a);
+const aggName = (a: Aggregate) => (a === 'count_distinct' ? 'distinct count' : a === 'avg' ? 'average' : a === 'formula' ? 'calculated measure' : a);
+
+/** Whether a catalog formula is the same calculation as `node` (same measures, numbers and operators). */
+function sameFormula(text: string | undefined, node: FormulaNode): boolean {
+  const p = parseFormula(text ?? '');
+  return p.ok && printFormula(p.node) === printFormula(node);
+}
 
 function mapping(role: Mapping['role'], ref: Ref, r: MatchResult<Ref>): Mapping {
   const out: Mapping = { role, from: { key: ref.key, label: ref.label }, suggestions: r.suggestions };
@@ -786,11 +999,18 @@ export interface KitReport {
   /** The page filters, when asked for. */
   pageFilters: Mapping[];
   pageFiltersAdded: number;
+  /** Calculated measures the kit adds to this catalog, with their formulas over this catalog's keys. */
+  measures: Array<{ key: string; label: string; formula: string }>;
 }
 
 export interface KitApplied {
   hoist: Hoist;
   report: KitReport;
+  /**
+   * Calculated measures to add to the catalog with the hoist (the flags bind to them). Empty when
+   * the kit carries none or each was already here. The hoist was checked against the catalog with them.
+   */
+  metrics: Metric[];
 }
 
 const CONFIDENCE: Record<MatchTier, number> = { exact: 1, label: 0.9, synonym: 0.8, similar: 0.5 };
@@ -800,11 +1020,11 @@ const CONFIDENCE: Record<MatchTier, number> = { exact: 1, label: 0.9, synonym: 0
  * `hoist` itself is not changed. The result passes parseHoist against the same catalog.
  */
 export function applyKit(kit: Kit, hoist: Hoist, index: CatalogIndex, options: KitApplyOptions = {}): KitApplied {
-  const resolver = new Resolver(index, options.closeMatches === true);
-  const report: KitReport = { applied: false, problems: [], flags: [], counts: { kept: 0, remapped: 0, partial: 0, unbound: 0 }, pageFilters: [], pageFiltersAdded: 0 };
+  const resolver = new Resolver(index, options.closeMatches === true, kit.formulas);
+  const report: KitReport = { applied: false, problems: [], flags: [], counts: { kept: 0, remapped: 0, partial: 0, unbound: 0 }, pageFilters: [], pageFiltersAdded: 0, measures: [] };
   if (hoist.flags.length + kit.flags.length > LIMITS.flags) {
     report.problems.push(`A hoist holds at most ${LIMITS.flags} flags; this kit would make ${hoist.flags.length + kit.flags.length}.`);
-    return { hoist, report };
+    return { hoist, report, metrics: [] };
   }
 
   // Page filters first: a flag's comparison needs a "last" filter on the flag or the page.
@@ -873,15 +1093,49 @@ export function applyKit(kit: Kit, hoist: Hoist, index: CatalogIndex, options: K
     next = { ...next, flags: next.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
   }
 
+  // Calculated measures made for the kit go into the catalog only when a bound flag uses them.
+  const metrics = neededMeasures(resolver.made, flags);
+  let target = index;
+  if (metrics.length) {
+    const catalog: Catalog = { ...index.catalog, metrics: [...index.catalog.metrics, ...metrics] };
+    const before = new Set(checkCatalog(index.catalog));
+    const problems = checkCatalog(catalog).filter((p) => !before.has(p));
+    if (problems.length) {
+      report.problems.push(...problems);
+      return { hoist, report, metrics: [] };
+    }
+    target = indexCatalog(catalog);
+    report.measures = metrics.map((m) => ({ key: m.key, label: m.label, formula: m.formula as string }));
+  }
+
   // The check that matters: the result must be a valid hoist for this catalog, with no repairs.
-  const checked = parseHoist(JSON.parse(JSON.stringify(next)), index);
+  const checked = parseHoist(JSON.parse(JSON.stringify(next)), target);
   if (!checked.hoist) {
     report.problems.push(...checked.warnings);
-    return { hoist, report };
+    return { hoist, report, metrics: [] };
   }
   report.problems.push(...checked.warnings);
   report.applied = true;
-  return { hoist: checked.hoist, report };
+  return { hoist: checked.hoist, report, metrics };
+}
+
+/** The made measures the bound flags use, and the made measures those build on, in the order made. */
+function neededMeasures(made: readonly Metric[], flags: readonly Flag[]): Metric[] {
+  if (!made.length) return [];
+  const byKey = new Map(made.map((m) => [m.key, m]));
+  const need = new Set<string>();
+  const add = (key: string) => {
+    const m = byKey.get(key);
+    if (!m || need.has(key)) return;
+    need.add(key);
+    const p = parseFormula(m.formula ?? '');
+    if (p.ok) for (const r of formulaRefs(p.node)) add(r);
+  };
+  for (const f of flags) {
+    for (const k of f.binding?.metrics ?? []) add(k);
+    for (const t of f.behavior.thresholds) add(t.metric);
+  }
+  return made.filter((m) => need.has(m.key));
 }
 
 function remapFlag(kf: KitFlag, id: string, resolver: Resolver, pageHasLast: boolean, kitName: string): { flag: Flag; flagReport: FlagReport } {
@@ -963,10 +1217,15 @@ function remapFlag(kf: KitFlag, id: string, resolver: Resolver, pageHasLast: boo
     else dropped.push(`the colour rule on "${t.metric.label}": ${m.reason ?? 'no match'}`);
   }
   base.binding = binding;
+  // The inputs of the calculated measures it uses are part of what was matched.
+  for (const m of withInputs(mappings.filter((x) => x.role === 'metric' && x.to))) if (!mappings.includes(m)) mappings.push(m);
 
   const tiers = mappings.filter((m) => m.to).map((m) => m.tier as MatchTier);
   const changed = mappings.filter((m) => m.to && m.from.key !== m.to.key);
-  const kept = dropped.length === 0 && tiers.every((t) => t === 'exact');
+  // A measure made in this catalog for the kit is new here: the flag is a draft to check.
+  const madeHere = mappings.filter((m) => m.formula === 'made');
+  const kept = dropped.length === 0 && tiers.every((t) => t === 'exact') && madeHere.length === 0;
+  for (const m of madeHere) base.notes.push(`From kit "${kitName}": added the calculated measure "${m.to?.label}" to the catalog.`);
   for (const m of changed) base.notes.push(`From kit "${kitName}": "${m.from.label}" became "${m.to?.label}" (${m.tier} match).`);
   for (const d of dropped) base.notes.push(`From kit "${kitName}": left out ${d}.`);
   base.notes = base.notes.slice(0, 20);
@@ -975,9 +1234,23 @@ function remapFlag(kf: KitFlag, id: string, resolver: Resolver, pageHasLast: boo
     return finish('kept');
   }
   base.status = 'drafted';
-  const worst = tiers.reduce((c, t) => Math.min(c, CONFIDENCE[t]), 1);
+  const worst = Math.min(tiers.reduce((c, t) => Math.min(c, CONFIDENCE[t]), 1), madeHere.length ? CONFIDENCE.label : 1);
   base.confidence = dropped.length ? Math.min(worst, 0.6) : worst;
   return finish(dropped.length ? 'partial' : 'remapped');
+}
+
+/** The mappings of calculated measures' inputs, all the way down, each once. */
+function withInputs(maps: readonly Mapping[]): Mapping[] {
+  const out: Mapping[] = [];
+  const walk = (m: Mapping) => {
+    for (const i of m.inputs ?? []) {
+      if (out.includes(i)) continue;
+      out.push(i);
+      walk(i);
+    }
+  };
+  maps.forEach(walk);
+  return out;
 }
 
 /** One line for each flag of a report, for logs and tests. */

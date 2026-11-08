@@ -2,7 +2,7 @@
 // middle, the selected flag's inspector on the right. State lives here; the core does the
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
@@ -23,10 +23,10 @@ import type { QlikImported } from '../../src/core/qlik.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
-import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
+import { isStale, type Snapshot, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, describeError, listItems, loadItem, profileTable, type StoredItem } from './lib/api.ts';
+import { api, describeError, listItems, loadItem, type ProfileTable, profileTable, type ServerSource, type StoredItem } from './lib/api.ts';
 import { notify } from './lib/toasts.ts';
 import { confirm } from './lib/confirm.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
@@ -39,7 +39,7 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, ModelImport, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
@@ -59,6 +59,7 @@ import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { LayoutBar } from './components/LayoutBar.tsx';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
+import type { ModelImportPlan } from './components/ModelImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
 import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
 import { applyReduceMotionChoice } from './lib/motion.ts';
@@ -73,6 +74,8 @@ import { announcedByAccept, useAccept } from './lib/accept.ts';
 import { scrollBehavior } from './lib/motion.ts';
 import { withBriefFlag } from './lib/onboarding.ts';
 
+// The offer of a calculated measure a brief defines, loaded when one is offered.
+const MeasureOffer = lazy(() => import('./components/MeasureOffer.tsx').then((m) => ({ default: m.MeasureOffer })));
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
 const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view', skipWelcome: 'semaphore.skipWelcome' };
@@ -101,6 +104,13 @@ function newId(prefix = 'f'): string {
 
 function blankHoist(): Hoist {
   return { version: 1, id: newId('h'), title: 'Untitled hoist', brief: '', grid: { cols: GRID_COLS }, filters: [], flags: [], updated: new Date().toISOString() };
+}
+
+/** One profiled server table into the catalog: Semaphore's proposal of its fields and measures. */
+function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
+  const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
+  const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+  return proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
 }
 
 function initialCatalog(): Catalog {
@@ -152,8 +162,11 @@ export function App() {
   const [browserNoteHidden, setBrowserNoteHidden] = useState(false);
   // "Why it didn't draft" (#69): kept until the flag's brief changes.
   const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
+  // A brief that defines a measure ("cost per hull = labor cost / hulls") offers it, to accept or leave.
+  const [measureOffer, setMeasureOffer] = useState<{ flagId: string; brief: string; metric: Metric; sentence: string } | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -426,6 +439,11 @@ export function App() {
 
   const draftSelected = useCallback(async () => {
     if (!selected) return;
+    if (/=|\bdivided by\b|\bdifference between\b|\bas an? (?:percent|share)/i.test(selected.brief)) {
+      const p = (await import('../../src/core/formula-words.ts')).proposeMeasure(selected.brief, index);
+      const known = p.ok && index.catalog.metrics.some((m) => m.label.toLowerCase() === p.metric.label.toLowerCase());
+      setMeasureOffer(p.ok && !known ? { flagId: selected.id, brief: selected.brief, metric: p.metric, sentence: p.sentence } : null);
+    }
     const provider = draftingProvider(index, ai, useAi);
     await runBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`, async () => {
       const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
@@ -606,11 +624,7 @@ export function App() {
     (source: string, table: string) =>
       runBusy(`Profiling ${table}…`, async () => {
       try {
-        const p = await profileTable(source, table);
-        const s = server?.sources.find((x) => x.id === source);
-        const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
-        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
+        const proposal = profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -635,10 +649,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            const s = server?.sources.find((x) => x.id === t.source);
-            const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
-            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
+            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
@@ -689,6 +700,37 @@ export function App() {
       return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
     },
     [catalog, server, setCatalog, ctx, runBusy, sayBusy],
+  );
+
+  // Import a dbt project or Power BI model (ModelImport.tsx): profile each picked table, then carry the
+  // model's names, measures, links and drill paths across (src/core/model-import.ts, loaded here).
+  const importModel = useCallback(
+    async (plan: ModelImportPlan): Promise<string[]> => {
+      const { applyModelImport } = await import('../../src/core/model-import.ts');
+      const out: string[] = [];
+      const placed: Array<{ model: string; source: string; table: string }> = [];
+      let cat = catalog;
+      const ran = await runBusy('Importing the model…', async () => {
+        for (const t of plan.tables) {
+          sayBusy(`Profiling ${t.table}…`);
+          try {
+            const p = await profileTable(t.source, t.table);
+            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            placed.push({ model: t.model, source: t.source, table: p.table });
+            out.push(`${t.model}: ${p.table} profiled, ${p.columns.length} columns.`);
+          } catch (e) {
+            out.push(`${t.model}: ${t.table} could not be profiled. ${describeError(e)}`);
+          }
+        }
+        const r = applyModelImport(cat, plan.read, placed);
+        setCatalog(r.catalog);
+        notify('Model import done: check the new measures and fields under Data.', { tone: 'success' });
+        out.push(...r.lines);
+        return true;
+      });
+      return ran ? out : ['Another import or draft is still running. Try again when it has finished.'];
+    },
+    [catalog, server, setCatalog, runBusy, sayBusy],
   );
 
   // The model's smaller jobs (tasks.ts) load when one is first asked for, not with the page.
@@ -872,6 +914,19 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playbook.loaded, playbook.entries, ctx]);
 
+  // Alerts (lib/alerts.ts, loaded on first use): checked when the page opens and whenever a snapshot is
+  // refreshed here; a firing is a toast, and is read aloud when the alert asks for it.
+  useEffect(() => {
+    if (!playbook.loaded || currentView === 'refresh' || !playbook.snapshots.length) return;
+    const timer = window.setTimeout(() => {
+      void import('./lib/alerts.ts')
+        .then((m) => m.checkAndTell({ server: !!server, user, entries: playbook.entries, snapshots: playbook.snapshots, source: 'page' }, (t) => notify(t, { tone: 'error' })))
+        .catch(() => undefined);
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbook.loaded, playbook.snapshots, currentView]);
+
   // Recurring reports: note the days this analyst opens the page (once a day), offer a schedule
   // when there is a rhythm, and produce any edition that is due while its owner is away.
   const [offerTick, setOfferTick] = useState(0);
@@ -925,6 +980,7 @@ export function App() {
       let refreshed = 0;
       let skipped = 0;
       const failed: Array<{ id: string; title: string; error: string }> = [];
+      const taken: Snapshot[] = [];
       for (const e of playbook.entries.filter((x) => x.status !== 'retired')) {
         if (!canReach(e.source, ctx)) {
           skipped++;
@@ -935,6 +991,7 @@ export function App() {
           const snap = await takeSnapshot(e, index, (plan) => runAnywhere(plan, ctx));
           if (!snap) throw new Error('It no longer plans against the catalog.');
           await playbook.saveSnapshot(snap);
+          taken.push(snap);
           refreshed++;
           say(`Refreshed ${e.title}.`);
         } catch (err) {
@@ -943,6 +1000,17 @@ export function App() {
         }
       }
       say(`Done: ${refreshed} refreshed, ${skipped} skipped, ${failed.length} failed.`);
+      // Alerts on the refreshed flags, applied by the server (lib/alerts.ts), and this run's briefing for the weekly draft.
+      if (taken.length) {
+        const snaps = [...playbook.snapshots.filter((s) => !taken.some((t) => t.id === s.id)), ...taken];
+        const alerts = await import('./lib/alerts.ts');
+        await alerts.checkAndTell({ server: !!server, user, entries: playbook.entries, snapshots: snaps, source: 'refresh' }, (t) => say(`Alert: ${t}`)).catch(() => 0);
+        if (server) {
+          const { buildBriefingPackage } = await import('./lib/briefing-package.ts');
+          const p = await buildBriefingPackage({ entries: playbook.entries, snapshots: snaps, index, user, alerts: [], theme }).catch(() => null);
+          if (p) await api('/api/mail/briefing', { method: 'PUT', json: { subject: p.subject, html: p.html, text: p.text, attachment: p.report } }).catch(() => undefined);
+        }
+      }
       // Regular reports due while their analyst is away.
       for (const line of await produceDueEditions(playbook, ctx, index, user, null, draftingProvider(index, ai, useAi)).catch((e: Error) => [`Regular reports: ${e.message}`])) say(line);
       if (server) {
@@ -958,10 +1026,32 @@ export function App() {
     api<{ at: string; computer: string; refreshed: number; failed: unknown[] }>('/api/refresh-report').then(setLastRefresh, () => setLastRefresh(null));
   }, [server, currentView]);
 
+  // A leader's question no reviewed answer or local rule could read: Fairlead drafts it when it is on (shown as drafted).
+  const draftLive = useCallback(
+    async (question: string) => {
+      const provider = draftingProvider(index, ai, useAi);
+      if (provider.local) return null;
+      const size = DEFAULT_SIZE.bar;
+      const blank: Flag = { id: 'answer', kind: 'bar', title: '', brief: question, layout: { x: 0, y: 0, w: size.w, h: size.h }, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
+      const out = await draftFlag(provider, { ...blankHoist(), flags: [blank] }, blank, index, { auto: true });
+      if (out.fallbackReason || !out.draft.binding) return null;
+      return { flag: { ...applyFlagDraft(blank, out.draft), title: out.draft.title || question, status: 'drafted' as const }, by: provider.label };
+    },
+    [index, ai, useAi],
+  );
+
   const answerQuestionItem = useCallback(
     (q: QuestionItem) => {
       setPlaybookOpen(false);
       const id = newId();
+      // A question with a draft the asker wants reviewed: the draft itself, to check, change and accept (src/core/review.ts, loaded on use).
+      if (q.draft && q.reviewRequested) {
+        void import('../../src/core/review.ts').then((m) => {
+          change((h) => ({ ...h, flags: [...h.flags, m.draftFlag(q, id, findSlot(h.flags, 4, 4, h.grid.cols))] }));
+          setSelectedId(id);
+        });
+        return;
+      }
       change((h) => {
         const layout = findSlot(h.flags, 4, 4, h.grid.cols);
         return { ...h, flags: [...h.flags, { id, kind: 'bar', title: '', brief: q.title, layout, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [`Asked by ${q.askedBy}. Draft it, check it, and accept it to answer them.`] }] };
@@ -1053,7 +1143,7 @@ export function App() {
           signals: () => setSignalOpen(true),
           sql: () => setSqlOpen(true),
           lineage: () => setLineageOpen(true),
-          qlik: () => setQlikOpen(true),
+          models: () => setModelOpen(true),
           playbook: () => setPlaybookOpen(true),
           data: () => setDataOpen(true),
           leadership: () => setView('ask'),
@@ -1137,7 +1227,7 @@ export function App() {
       <>
         <PanelBoundary name="leadership view">
           <Suspense fallback={<PanelSkeleton label="leadership view" />}>
-            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onSettings={() => setSettingsOpen(true)} onBuilder={() => setView('builder')} />
+            <AskView index={index} ctx={ctx} playbook={playbook} user={user} theme={theme} themeKey={themeKey} lastRefresh={lastRefresh} server={!!server} drafter={draftLive} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onSettings={() => setSettingsOpen(true)} onBuilder={() => setView('builder')} />
           </Suspense>
         </PanelBoundary>
         <ShakedownAskMark />
@@ -1378,6 +1468,20 @@ export function App() {
         </main>
         {selected && (
           <div className="flex h-full min-h-0 w-[360px] shrink-0 flex-col">
+            {measureOffer?.flagId === selected.id && measureOffer.brief === selected.brief && (
+              <Suspense fallback={null}>
+                <MeasureOffer
+                  metric={measureOffer.metric}
+                  sentence={measureOffer.sentence}
+                  onAdd={() => {
+                    setCatalog({ ...catalog, metrics: [...catalog.metrics, measureOffer.metric] });
+                    setMeasureOffer(null);
+                    setRedraftFor(selected.id);
+                  }}
+                  onDismiss={() => setMeasureOffer(null)}
+                />
+              </Suspense>
+            )}
             {miss && (
               <DraftMiss
                 miss={miss}
@@ -1473,8 +1577,10 @@ export function App() {
             hoist={hoist}
             index={index}
             onClose={() => setKitsOpen(false)}
-            onApply={(h, summary) => {
+            onApply={(h, summary, metrics) => {
               autoSnap('Flying a kit');
+              // The calculated measures the kit's flags bind to go into the catalog first (checked with them).
+              if (metrics.length) setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] });
               change(h);
               notify(summary, { tone: 'success' });
             }}
@@ -1499,9 +1605,9 @@ export function App() {
             onRemoveSource={removeSource}
             onProfile={profile}
             onLoadExample={loadExample}
-            onImportQlik={() => {
+            onImportModel={() => {
               setDataOpen(false);
-              setQlikOpen(true);
+              setModelOpen(true);
             }}
           />
         </Panel>
@@ -1568,6 +1674,12 @@ export function App() {
       {sqlOpen && server && (
         <Panel name="SQL desk" onClose={() => setSqlOpen(false)}>
           <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />
+        </Panel>
+      )}
+
+      {modelOpen && (
+        <Panel name="Model import" onClose={() => setModelOpen(false)}>
+          <ModelImport sources={server?.sources ?? []} busy={busy} onImport={importModel} onQlik={() => (setModelOpen(false), setQlikOpen(true))} onClose={() => setModelOpen(false)} />
         </Panel>
       )}
 

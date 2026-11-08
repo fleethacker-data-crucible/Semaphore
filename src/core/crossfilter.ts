@@ -7,7 +7,8 @@
 
 import { calendarDay } from './dates.ts';
 import type { Behavior } from './hoist.ts';
-import type { QueryPlan } from './planner.ts';
+import { applyOp } from './formula.ts';
+import { overlaps, type PlannedExpr, type PlannedMetric, planLeaves, type QueryPlan } from './planner.ts';
 
 export type Cell = string | number | boolean | null;
 export type ResultRow = Record<string, Cell>;
@@ -35,6 +36,8 @@ export interface CrossfilterResult {
   truncated: boolean;
   /** Totals across every row before a top-N cut, for additive metrics (sum, count). */
   totals: Record<string, number | null>;
+  /** Measures from several tables (a drill-across): how many rows some of the tables have nothing for. */
+  gaps?: number;
 }
 
 export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], selections: Selections, behavior: Behavior): CrossfilterResult {
@@ -92,34 +95,11 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
   // A KPI with no own dimensions always shows one row, even when everything is filtered out.
   if (ownDims.length === 0 && groups.size === 0) groups.set('[]', { dims: {}, acc: new Map() });
 
-  let out: DisplayRow[] = [...groups.values()].map((g) => {
+  const accs = [...groups.values()];
+  let out: DisplayRow[] = accs.map((g) => {
     const values: Record<string, number | null> = {};
-    for (const m of plan.metrics) {
-      const get = (alias?: string): number | null => (alias === undefined ? null : (g.acc.get(alias) ?? null));
-      switch (m.agg) {
-        case 'sum':
-          values[m.key] = get(m.parts.sum);
-          break;
-        case 'count':
-          values[m.key] = get(m.parts.count) ?? 0;
-          break;
-        case 'min':
-          values[m.key] = get(m.parts.min);
-          break;
-        case 'max':
-          values[m.key] = get(m.parts.max);
-          break;
-        case 'avg': {
-          const s = get(m.parts.sum);
-          const c = get(m.parts.count);
-          values[m.key] = s === null || !c ? null : s / c;
-          break;
-        }
-        case 'count_distinct':
-          values[m.key] = get(m.parts.distinct) ?? 0;
-          break;
-      }
-    }
+    const get = (alias?: string): number | null => (alias === undefined ? null : (g.acc.get(alias) ?? null));
+    for (const m of plan.metrics) values[m.key] = metricValue(m, get);
     return { dims: g.dims, values };
   });
 
@@ -139,13 +119,33 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
       })
       .map((x) => x.row);
   }
+  // Totals across every row before a top-N cut: sums and counts add up; a formula is worked out
+  // from its inputs' totals (never by adding up its per-row values). A distinct count has no total
+  // across groups (the same item can be in several), so a formula reading one has none either,
+  // unless there is only one group; the page then reads it from the data (web/src/lib/data.ts).
   const totals: Record<string, number | null> = {};
+  const partTotal = new Map<string, number | null>();
+  for (const a of plan.aggregates) {
+    let t: number | null = null;
+    for (const g of accs) {
+      const v = g.acc.get(a.alias);
+      if (typeof v !== 'number') continue;
+      t = t === null ? v : a.fn === 'min' ? Math.min(t, v) : a.fn === 'max' ? Math.max(t, v) : t + v;
+    }
+    if (a.fn === 'count_distinct' && accs.length > 1) continue; // unknown
+    partTotal.set(a.alias, t);
+  }
   for (const m of plan.metrics) {
-    if (m.agg !== 'sum' && m.agg !== 'count') continue;
+    if (m.agg !== 'sum' && m.agg !== 'count' && m.agg !== 'formula') continue;
     // Split by a many-side field, a row can sit in several groups: adding the groups up would
     // count it more than once, so there is no total to give (manyjoin.ts).
-    if (plan.many?.overlap) {
+    if (overlaps(plan)) {
       totals[m.key] = null;
+      continue;
+    }
+    if (m.agg === 'formula') {
+      const known = planLeaves(m).every((l) => Object.values(l.parts).every((alias) => partTotal.has(alias)));
+      totals[m.key] = known ? metricValue(m, (alias) => (alias === undefined ? null : (partTotal.get(alias) ?? null))) : null;
       continue;
     }
     let t: number | null = null;
@@ -155,8 +155,39 @@ export function applySelections(plan: QueryPlan, rows: readonly ResultRow[], sel
     }
     totals[m.key] = t;
   }
+  const gaps = plan.across ? accs.filter((g) => plan.across!.some((p) => (g.acc.get(p.seen) ?? null) === null)).length : 0;
   if (plan.displayLimit) out = out.slice(0, plan.displayLimit);
-  return { rows: out, applied, live, truncated, totals };
+  return { rows: out, applied, live, truncated, totals, ...(gaps ? { gaps } : {}) };
+}
+
+/**
+ * A metric's value from its partials: a sum, a count, an average from its sum and count, and so on.
+ * A formula is worked out from its inputs' values the way SQL would: null in, null out, and
+ * division by zero is null.
+ */
+export function metricValue(m: Pick<PlannedMetric, 'agg' | 'parts' | 'expr'>, get: (alias?: string) => number | null): number | null {
+  switch (m.agg) {
+    case 'sum':
+      return get(m.parts.sum);
+    case 'count':
+      return get(m.parts.count) ?? 0;
+    case 'min':
+      return get(m.parts.min);
+    case 'max':
+      return get(m.parts.max);
+    case 'avg': {
+      const s = get(m.parts.sum);
+      const c = get(m.parts.count);
+      return s === null || !c ? null : s / c;
+    }
+    case 'count_distinct':
+      return get(m.parts.distinct) ?? 0;
+    case 'formula': {
+      const ev = (e: PlannedExpr): number | null =>
+        e.t === 'num' ? e.v : e.t === 'neg' ? applyOp('-', 0, ev(e.x)) : e.t === 'bin' ? applyOp(e.op, ev(e.l), ev(e.r)) : e.seen !== undefined && get(e.seen) === null ? null : metricValue(e, get);
+      return m.expr ? ev(m.expr) : null;
+    }
+  }
 }
 
 /** Values compare as text so a selection made on one flag matches the same value on another. */

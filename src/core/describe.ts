@@ -4,6 +4,7 @@
 
 import type { CatalogIndex } from './catalog.ts';
 import { type Filter, type Flag, type Hoist, dimensionKey } from './hoist.ts';
+import { parseFormula, printFormula } from './formula.ts';
 import { planFlag } from './planner.ts';
 
 const KIND_NAMES: Record<Flag['kind'], string> = {
@@ -24,6 +25,8 @@ const KIND_NAMES: Record<Flag['kind'], string> = {
   sankey: 'A flow (Sankey) of',
   sunburst: 'A sunburst of',
   stream: 'A stream chart of',
+  combo: 'Bars and a line of',
+  map: 'A map of',
   model: 'A predictive model over',
   pivot: 'A pivot table of',
   custom: 'A custom widget drawing',
@@ -61,6 +64,10 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
   else what = `${KIND_NAMES[flag.kind]} ${list(b.metrics.map(metric))}${own.length ? ` ${own.join(', ')}` : ''}`;
   if (b.share) what += ', as a share of the total';
   lines.push(`${what}.`);
+  for (const k of b.metrics) {
+    const words = describeFormula(k, index);
+    if (words) lines.push(words);
+  }
 
   if (b.limit) {
     const by = b.sort && index.metric(b.sort.by) ? index.metric(b.sort.by)!.label : 'value';
@@ -87,8 +94,12 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
 
   // A measure on the one side split or filtered by a many-side field: say how rows are counted.
   const planned = planFlag(hoist ?? { version: 1, id: '', title: '', brief: '', grid: { cols: 12 }, filters: [], flags: [flag], updated: '' }, flag, index);
-  if (planned.ok && planned.plan.many) lines.push(...planned.plan.many.explain, ...planned.plan.many.warnings);
-  else if (!planned.ok && planned.reason === 'many-side') lines.push(planned.error);
+  // Measures from several tables: each read on its own and lined up by the split (across.ts).
+  if (planned.ok) {
+    const p = planned.plan;
+    if (p.across) lines.push(p.notes[0]!); // across.ts puts its sentence first
+    for (const x of p.across ?? [p]) if (x.many) lines.push(...x.many.explain, ...x.many.warnings);
+  } else if (!planned.ok && planned.reason === 'many-side') lines.push(planned.error);
 
   if (flag.kind !== 'filter') {
     if (flag.behavior.onClick === 'filter-page') lines.push('Clicking a value filters the whole page.');
@@ -101,6 +112,15 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
     lines.push(`Turns ${tone} when ${index.metric(t.metric)?.label ?? t.metric} is ${op} ${formatNumber(t.value, index.metric(t.metric)?.format)}.`);
   }
   return lines;
+}
+
+/** A calculated measure in words: "Cost per hull is Labor cost ÷ Hulls affected, …". Null for other measures. */
+export function describeFormula(key: string, index: CatalogIndex): string | null {
+  const m = index.metric(key);
+  if (m?.agg !== 'formula') return null;
+  const p = parseFormula(m.formula ?? '');
+  if (!p.ok) return `${m.label} has a formula Semaphore cannot read: ${p.error}`;
+  return `${m.label} is ${printFormula(p.node, (k) => index.metric(k)?.label ?? k)}, worked out for each row and for the total from their own totals (nothing is shown where it would divide by zero).`;
 }
 
 export function filterText(f: Filter, index: CatalogIndex): string {

@@ -51,6 +51,9 @@
 #   POST /api/local/script-run { plan | id, params }, POST /api/local/export { table, format }, GET /api/local/sources
 #   Pipelines (Pipeline.ps1, docs/PIPELINES.md): GET /api/pipelines, GET|PUT|DELETE /api/pipelines/<id>,
 #   POST /api/pipelines/<id>/run { from?, force? }, GET /api/pipelines/<id>/runs[/<run>]
+#   Alerts (Alerts.ps1): GET /api/alerts, GET|PUT|DELETE /api/alerts/<id>, POST /api/alerts/check { source, readings }
+#   Briefing delivery (Mail.ps1, never sends): GET /api/mail, PUT /api/mail/settings, PUT /api/mail/briefing,
+#   POST /api/mail/outlook-draft { subject, html, to, attachment, open }
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
@@ -416,6 +419,196 @@ function Invoke-SemWidgetRoute {
 }
 
 # ---------------------------------------------------------------------------
+# Region maps for map flags (src/core/geo.ts): <home>\maps\<id>.json says what the map is and
+# <home>\maps\shapes\<id>.json holds its GeoJSON. The page reads the analyst's GeoJSON or TopoJSON
+# file and cuts it down to named polygons first; the shapes are checked again here.
+#   GET    /api/maps          [{ id, name, regions, aliases, lonLat, bytes, by, updated }], by name
+#   GET    /api/maps/<id>     the map's GeoJSON verbatim
+#   POST   /api/maps  { name, geojson, aliases?, lonLat?, id? }
+#          geojson is the FeatureCollection as text: at most 2 MB, 2000 regions, each a Polygon or
+#          MultiPolygon with a name in properties.name. A new map gets an id made from its name (a -2,
+#          -3 ... suffix when taken); with id, that map is changed, its shapes only when geojson is sent.
+#          aliases: { "other name": "region" }, at most 500. -> { ok: true, map }
+#   DELETE /api/maps/<id>     both files moved to .trash with a timestamp suffix
+# ---------------------------------------------------------------------------
+$script:SemMapMaxBytes = 2097152      # GeoJSON text (src/core/geo.ts MAP_LIMITS.bytes)
+$script:SemMapMaxRegions = 2000
+$script:SemMapMaxCount = 50
+$script:SemMapMaxAliases = 500
+$script:SemMapNameMax = 80
+
+function Get-SemMapDir {
+    param([string]$HomeDir = $script:Sem.Home, [switch]$Shapes)
+    $d = Join-Path $HomeDir 'maps'
+    if ($Shapes) { $d = Join-Path $d 'shapes' }
+    if (-not (Test-Path -LiteralPath $d)) { [void][IO.Directory]::CreateDirectory($d) }
+    return $d
+}
+
+function ConvertTo-SemMapId {
+    # Lower-case letters, digits and dashes from the name, 48 at most; 'map' when nothing is left.
+    param([string]$Name)
+    $s = [regex]::Replace($Name.ToLowerInvariant(), '[^a-z0-9]+', '-').Trim('-')
+    if ($s.Length -gt 48) { $s = $s.Substring(0, 48).TrimEnd('-') }
+    if (-not $s) { $s = 'map' }
+    return $s
+}
+
+function ConvertTo-SemMapAliases {
+    # { alias: region } from a JSON object: both sides one line of text, 80 characters at most, 500 pairs at most.
+    param($Value)
+    $out = [ordered]@{}
+    if ($Value -isnot [Management.Automation.PSCustomObject]) { return $out }
+    foreach ($p in $Value.PSObject.Properties) {
+        if ($out.Count -ge $script:SemMapMaxAliases) { break }
+        $a = ConvertTo-SemWidgetText ([string]$p.Name) $script:SemMapNameMax
+        $r = ConvertTo-SemWidgetText $p.Value $script:SemMapNameMax
+        if ($a -and $r -and -not $out.Contains($a)) { $out[$a] = $r }
+    }
+    return $out
+}
+
+function Test-SemMapShapes {
+    <#
+      Checks a region map's GeoJSON text. Returns @{ Status; Code; Error } for a refusal, else
+      @{ Regions } with the region names in order (each once).
+    #>
+    param($Text)
+    if ($Text -isnot [string] -or $Text.Trim() -eq '') { return @{ Status = 400; Code = 'invalid'; Error = 'The map has no shapes: send its GeoJSON as text.' } }
+    if ([Text.Encoding]::UTF8.GetByteCount($Text) -gt $script:SemMapMaxBytes) { return @{ Status = 413; Code = 'too-large'; Error = 'A region map may be at most 2 MB of GeoJSON. Simplify the shapes or split the file.' } }
+    if (-not $Text.TrimStart().StartsWith('{')) { return @{ Status = 400; Code = 'invalid'; Error = 'The shapes must be a GeoJSON FeatureCollection.' } }
+    try { $j = $Text | ConvertFrom-Json -ErrorAction Stop } catch { return @{ Status = 400; Code = 'invalid'; Error = 'The shapes are not valid JSON.' } }
+    if ($j -isnot [Management.Automation.PSCustomObject] -or (Get-SemJsonProp $j 'type') -cne 'FeatureCollection') { return @{ Status = 400; Code = 'invalid'; Error = 'The shapes must be a GeoJSON FeatureCollection.' } }
+    # The property itself: a function's return would unroll a list of one region.
+    $fp = $j.PSObject.Properties['features']
+    $features = $null; if ($null -ne $fp) { $features = $fp.Value }
+    if ($features -isnot [array] -or $features.Count -eq 0) { return @{ Status = 400; Code = 'invalid'; Error = 'The map has no regions.' } }
+    if ($features.Count -gt $script:SemMapMaxRegions) { return @{ Status = 413; Code = 'too-large'; Error = ('A region map may have at most ' + $script:SemMapMaxRegions + ' regions.') } }
+    $names = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $n = 0
+    foreach ($f in $features) {
+        $n++
+        $bad = @{ Status = 400; Code = 'invalid'; Error = ('Region ' + $n + ' is not a named polygon (a Feature with a Polygon or MultiPolygon geometry and properties.name).') }
+        if ($f -isnot [Management.Automation.PSCustomObject] -or (Get-SemJsonProp $f 'type') -cne 'Feature') { return $bad }
+        $g = Get-SemJsonProp $f 'geometry'
+        if ($g -isnot [Management.Automation.PSCustomObject]) { return $bad }
+        $type = Get-SemJsonProp $g 'type'
+        if ($type -cne 'Polygon' -and $type -cne 'MultiPolygon') { return $bad }
+        $cp = $g.PSObject.Properties['coordinates']
+        $coords = $null; if ($null -ne $cp) { $coords = $cp.Value }
+        if ($coords -isnot [array] -or $coords.Count -eq 0) { return $bad }
+        $props = Get-SemJsonProp $f 'properties'
+        if ($props -isnot [Management.Automation.PSCustomObject]) { return $bad }
+        $name = Get-SemJsonProp $props 'name'
+        if ($name -isnot [string]) { return $bad }
+        $clean = ConvertTo-SemWidgetText $name $script:SemMapNameMax
+        if (-not $clean -or $clean -cne $name) { return $bad }
+        if ($seen.Add($name)) { $names.Add($name) }
+    }
+    return @{ Regions = $names.ToArray() }
+}
+
+function Get-SemMapList {
+    # [{ id, name, regions, aliases, lonLat, bytes, by, updated }] from <dir>\*.json, by name; unreadable files are skipped.
+    param([Parameter(Mandatory = $true)][string]$Dir)
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        if ($out.Count -ge $script:SemMapMaxCount) { break }
+        $id = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+        if (-not (Test-SemDocId $id)) { continue }
+        if ($f.Length -gt 262144) { continue }
+        try { $j = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($j -isnot [Management.Automation.PSCustomObject]) { continue }
+        $name = ConvertTo-SemWidgetText (Get-SemJsonProp $j 'name') $script:SemMapNameMax
+        if (-not $name) { $name = $id }
+        $regions = 0; $bytes = 0
+        [void][int]::TryParse([string](Get-SemJsonProp $j 'regions'), [ref]$regions)
+        [void][int]::TryParse([string](Get-SemJsonProp $j 'bytes'), [ref]$bytes)
+        $lonLat = (Get-SemJsonProp $j 'lonLat') -ne $false
+        $updated = Get-SemJsonProp $j 'updated'
+        if ($updated -is [datetime]) { $updated = $updated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        if ($updated -isnot [string] -or $updated -eq '') { $updated = $f.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        $out.Add([ordered]@{ id = $id; name = $name; regions = $regions; aliases = (ConvertTo-SemMapAliases (Get-SemJsonProp $j 'aliases')); lonLat = $lonLat; bytes = $bytes; by = (ConvertTo-SemWidgetText (Get-SemJsonProp $j 'by') 64); updated = $updated })
+    }
+    return , @($out.ToArray() | Sort-Object -Property @{ Expression = { $_.name } })
+}
+
+function Invoke-SemMapRoute {
+    param($Req, $Id)
+    $dir = Get-SemMapDir
+    if ($null -eq $Id) {
+        if ($Req.Method -eq 'GET') { Send-SemJson 200 (Get-SemMapList -Dir $dir); return }
+        if ($Req.Method -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
+        $name = ConvertTo-SemWidgetText (Get-SemJsonProp $Req.Json 'name') $script:SemMapNameMax
+        if (-not $name) { Send-SemError 400 'invalid' 'Give the map a name (at most 80 characters).'; return }
+        $id = Get-SemJsonProp $Req.Json 'id'
+        if ($null -ne $id -and ($id -isnot [string] -or -not (Test-SemDocId $id))) { Send-SemError 400 'bad-id' 'Invalid map id: use 1 to 64 letters, digits, _ or -.'; return }
+        $text = Get-SemJsonProp $Req.Json 'geojson'
+        $old = $null
+        if ($null -ne $id) {
+            $metaFile = Join-Path $dir ($id + '.json')
+            if (-not [IO.File]::Exists($metaFile)) { Send-SemError 404 'not-found' ("No region map '$id'."); return }
+            try { $old = [IO.File]::ReadAllText($metaFile, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { $old = $null }
+        } elseif ($null -eq $text) { Send-SemError 400 'invalid' 'The map has no shapes: send its GeoJSON as text.'; return }
+        $regions = $null
+        if ($null -ne $text) {
+            $check = Test-SemMapShapes $text
+            if ($check.ContainsKey('Status')) { Send-SemError $check.Status $check.Code $check.Error; return }
+            $regions = $check.Regions
+        }
+        if ($null -eq $id) {
+            $count = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+            if ($count -ge $script:SemMapMaxCount) { Send-SemError 409 'full' ('The Semaphore folder holds ' + $script:SemMapMaxCount + ' region maps at most. Remove some first.'); return }
+            $stem = ConvertTo-SemMapId $name
+            $id = $stem; $n = 1
+            while ([IO.File]::Exists((Join-Path $dir ($id + '.json')))) { $n++; $id = $stem + '-' + $n }
+        }
+        $lonLat = $true
+        $l = Get-SemJsonProp $Req.Json 'lonLat'
+        if ($l -is [bool]) { $lonLat = $l } elseif ($null -ne $old -and (Get-SemJsonProp $old 'lonLat') -eq $false) { $lonLat = $false }
+        $regionCount = 0; $bytes = 0
+        if ($null -ne $regions) {
+            $regionCount = $regions.Count
+            $bytes = [Text.Encoding]::UTF8.GetByteCount($text)
+        } elseif ($null -ne $old) {
+            [void][int]::TryParse([string](Get-SemJsonProp $old 'regions'), [ref]$regionCount)
+            [void][int]::TryParse([string](Get-SemJsonProp $old 'bytes'), [ref]$bytes)
+        }
+        $meta = [ordered]@{ version = 1; id = $id; name = $name; regions = $regionCount; aliases = (ConvertTo-SemMapAliases (Get-SemJsonProp $Req.Json 'aliases')); lonLat = $lonLat; bytes = $bytes; by = (ConvertTo-SemWidgetText ([string]$env:USERNAME) 64); updated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+        $utf8 = New-Object Text.UTF8Encoding $false
+        $script:Sem.SyncBusy = $true
+        try {
+            if ($null -ne $regions) { Save-SemDoc -Dir (Get-SemMapDir -Shapes) -Id $id -Bytes ($utf8.GetBytes($text)) }
+            Save-SemDoc -Dir $dir -Id $id -Bytes ($utf8.GetBytes((ConvertTo-SemJson $meta)))
+        } finally { $script:Sem.SyncBusy = $false }
+        Write-SemLog 'INFO' ("Saved region map $id ($regionCount regions, $bytes bytes)")
+        Send-SemJson 200 ([ordered]@{ ok = $true; map = $meta })
+        return
+    }
+    if (-not (Test-SemDocId $Id)) { Send-SemError 400 'bad-id' 'Invalid map id: use 1 to 64 letters, digits, _ or -.'; return }
+    switch ($Req.Method) {
+        'GET' {
+            $f = Join-Path (Get-SemMapDir -Shapes) ($Id + '.json')
+            if (-not [IO.File]::Exists($f) -or -not [IO.File]::Exists((Join-Path $dir ($Id + '.json')))) { Send-SemError 404 'not-found' ("No region map '$Id'."); return }
+            Send-SemJsonText 200 ([IO.File]::ReadAllText($f, [Text.Encoding]::UTF8).TrimStart([char]0xFEFF))
+        }
+        'DELETE' {
+            $script:Sem.SyncBusy = $true
+            try {
+                $done = Remove-SemDoc -Dir $dir -Id $Id
+                if ($done) { [void](Remove-SemDoc -Dir (Get-SemMapDir -Shapes) -Id $Id) }
+            } finally { $script:Sem.SyncBusy = $false }
+            if (-not $done) { Send-SemError 404 'not-found' ("No region map '$Id'."); return }
+            Write-SemLog 'INFO' "Moved region map $Id to .trash"
+            Send-SemJson 200 ([ordered]@{ ok = $true })
+        }
+        default { Send-SemError 405 'method' 'Method not allowed.' }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Page snapshots: a named or automatic copy of one hoist, to look at again or restore. The page is
 # kept byte for byte as it was sent (never re-serialised), next to a small file saying what it is.
 # ---------------------------------------------------------------------------
@@ -682,6 +875,29 @@ function Invoke-SemRoute {
         $id = $null
         if ($p -ne '/api/widgets') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
         Invoke-SemWidgetRoute -Req $Req -Id $id
+        return
+    }
+    if ($p -match '^/api/(maps)(?:/([^/]*))?$') {
+        $id = $null
+        if ($p -ne '/api/maps') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
+        Invoke-SemMapRoute -Req $Req -Id $id
+        return
+    }
+    if ($p -eq '/api/alerts/check') {
+        # The page's values from refreshed snapshots, checked against every alert on those flags (Alerts.ps1).
+        Invoke-SemAlertRoute -Req $Req -Id 'check'
+        return
+    }
+    if ($p -match '^/api/(alerts)(?:/([^/]*))?$') {
+        # Alerts on reviewed flags (Alerts.ps1).
+        $id = $null
+        if ($p -ne '/api/alerts') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
+        Invoke-SemAlertRoute -Req $Req -Id $id
+        return
+    }
+    if ($p -eq '/api/mail' -or $p -eq '/api/mail/settings' -or $p -eq '/api/mail/briefing' -or $p -eq '/api/mail/outlook-draft') {
+        # Briefing delivery: Outlook drafts and the weekly schedule (Mail.ps1). Never sends.
+        Invoke-SemMailRoute -Req $Req
         return
     }
     if ($p -eq '/api/client-log') {

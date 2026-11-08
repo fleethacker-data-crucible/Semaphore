@@ -80,7 +80,7 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `kpi` (one number), `bar`, `line`, `area`, `pie` (one field), `table`, `filter` (a picker for one field), `text` |
+| `kind` | `kpi` (one number), `bar`, `line`, `area`, `pie` (one field), `table`, `filter` (a picker for one field), `text`; also `combo` (one field, two or more measures: bars and a line) and `map` (one field of states or region names, or latitude and longitude fields; [MAPS.md](MAPS.md)) among the richer chart kinds |
 | `brief` | What the analyst asked for, in their words. The hoist brief sets context; the flag brief wins where they disagree. |
 | `layout` | Grid cells on a 12-column grid. Flags never overlap and float up to fill gaps. |
 | `binding` | `null` until drafted. Metric keys, dimension fields (dates may have a `grain`), filters, optional sort and limit. |
@@ -97,7 +97,7 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 | `status` | `empty` → `drafted` (an AI suggestion, not yet accepted) → `ready`; `error` when the binding is unusable |
 | `confidence` | 0–1 from the provider. Low values show a "verify" badge. |
 | `notes` | Plain-language explanations: what could not be matched, what re-queries the source, and why |
-| `style` | Optional. How this one flag is drawn, over the page's `design` ([DESIGN.md](DESIGN.md)); never touches the binding. Chart fields shared with `design.charts`: `palette` (`skin`, `signal`, `ember`, `meadow`, `dusk`, `mono`, `custom` with `colors`), `fill`, `corners`, `glow`, `curve`, `lineWidth`, `markers`, `labels`, `legend`, `gridLines`, `focus`, `motion` (`none`, `calm`, `lively`), `striped`, `tableBars`, `titleAlign`. Flag-only: `barLayout` (`auto`, `stacked`, `grouped`, `percent`), `orientation`, `pieForm` (`donut`, `pie`, `rose`, `funnel`, `treemap`), `kpiForm` (`number`, `gauge`) with `gaugeMax`, `kpiSize`, `zeroBase` (lines only; bars always start at zero), `target` `{ value, label }`, `average`, `zoom`, `accent` (a `#rrggbb` strip), `hideTitle`. Checked by `parseFlagStyle` in `src/core/design.ts`; an unknown value is dropped. |
+| `style` | Optional. How this one flag is drawn, over the page's `design` ([DESIGN.md](DESIGN.md)); never touches the binding. Chart fields shared with `design.charts`: `palette` (`skin`, `signal`, `ember`, `meadow`, `dusk`, `mono`, `custom` with `colors`), `fill`, `corners`, `glow`, `curve`, `lineWidth`, `markers`, `labels`, `legend`, `gridLines`, `focus`, `motion` (`none`, `calm`, `lively`), `striped`, `tableBars`, `titleAlign`. Flag-only: `barLayout` (`auto`, `stacked`, `grouped`, `percent`), `orientation`, `pieForm` (`donut`, `pie`, `rose`, `funnel`, `treemap`), `kpiForm` (`number`, `gauge`) with `gaugeMax`, `kpiSize`, `zeroBase` (lines only; bars always start at zero), `target` `{ value, label }`, `average`, `zoom`, `accent` (a `#rrggbb` strip), `hideTitle`, `combo` (combo flags: per measure key `{ as: "bar" | "line", axis: "left" | "right" }`, only where it differs from the default of bars on the left and the last measure a line on the right), `map` (map flags: `us-states`, the default, or a region map's id; [MAPS.md](MAPS.md)). Checked by `parseFlagStyle` in `src/core/design.ts`; an unknown value is dropped. |
 
 ## Validation
 

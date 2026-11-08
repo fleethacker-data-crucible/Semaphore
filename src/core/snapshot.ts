@@ -10,7 +10,7 @@
 import type { CatalogIndex } from './catalog.ts';
 import { applySelections, type CrossfilterResult, lineUp, type ResultRow, type Selections } from './crossfilter.ts';
 import { type Binding, dimensionKey, type Filter, type Flag, type Hoist } from './hoist.ts';
-import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from './planner.ts';
+import { comparisonPlan, comparisonShift, loadAcross, planFlag, planLeaves, type QueryPlan } from './planner.ts';
 import { entryFlag, entryHoist, isFilterShape, type PlaybookEntry } from './playbook.ts';
 
 export interface Snapshot {
@@ -76,6 +76,7 @@ export async function takeSnapshot(
   run: (plan: QueryPlan) => Promise<{ rows: ResultRow[]; truncated: boolean }>,
   now: Date = new Date(),
 ): Promise<Snapshot | null> {
+  await loadAcross(); // an entry may read measures from several tables
   const plan = snapshotPlan(entry, index);
   if (!plan) return null;
   const result = await run(plan);
@@ -129,7 +130,10 @@ export function answerFromSnapshots(
       const asked = b.filters.filter((f) => f.op !== 'last').map((f) => JSON.stringify(f));
       if (!fixed.every((f) => asked.includes(f))) return false;
       // A distinct count cannot be re-added: only an exact match on fields and no picks.
-      const distinct = b.metrics.some((k) => p.metrics.find((m) => m.key === k)?.agg === 'count_distinct');
+      const distinct = b.metrics.some((k) => {
+        const m = p.metrics.find((x) => x.key === k);
+        return !!m && planLeaves(m).some((l) => l.agg === 'count_distinct');
+      });
       if (distinct && (keys.length !== wanted.length || picks.length > 0)) return false;
       if (b.compare && !s.previous) return false;
       return true;

@@ -15,6 +15,7 @@ import type { SocialSettings } from '../lib/playbook.ts';
 import { ThemeCards } from './ThemeCards.tsx';
 import { VoiceCard, VoiceInputCard } from './VoiceCard.tsx';
 import { SqlLanguageCard } from './SqlLanguageCard.tsx';
+import { MapsCard } from './MapsCard.tsx';
 
 export interface VaultStatus {
   paired: boolean;
@@ -47,7 +48,7 @@ export interface SettingsDialogProps {
   onEnd: () => void;
 }
 
-type TabId = 'appearance' | 'lazarette' | 'ai' | 'sql' | 'features' | 'session';
+type TabId = 'appearance' | 'lazarette' | 'ai' | 'sql' | 'maps' | 'features' | 'session';
 
 const btn = 'inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[var(--fl-control-border)] px-2.5 text-sm hover:border-accent disabled:opacity-40';
 
@@ -209,6 +210,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
     { id: 'appearance', label: 'Appearance' },
     ...(p.hasServer ? [{ id: 'lazarette' as const, label: 'Lazarette' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
     { id: 'sql', label: 'SQL' },
+    ...(p.hasServer ? [{ id: 'maps' as const, label: 'Maps' }] : []),
     { id: 'features', label: 'Features' },
     ...(p.hasServer ? [{ id: 'session' as const, label: 'Session' }] : []),
   ];
@@ -299,6 +301,8 @@ export function SettingsDialog(p: SettingsDialogProps) {
           )}
 
           {tab === 'sql' && <SqlLanguageCard />}
+
+          {tab === 'maps' && <MapsCard />}
 
           {tab === 'features' && (
             <Card title="For you, in this browser" description="What is already kept stays, and comes back when you turn a feature on. A feature the deployment turned off stays off.">

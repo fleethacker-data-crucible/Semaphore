@@ -6,6 +6,11 @@ import { type Catalog, indexCatalog } from '../../src/core/catalog.ts';
 import { checkCsvSize, readCsv } from '../../src/core/csv.ts';
 import { runPlan, type TableRows } from '../../src/core/engine.ts';
 import type { QueryPlan } from '../../src/core/planner.ts';
+import { registerReshaping } from '../../src/core/reshape.ts';
+import * as reshapingImpl from '../../src/core/reshape-impl.ts';
+
+// Fields made by cleaning steps are read here too, so their code is part of the worker.
+registerReshaping(reshapingImpl);
 import { countValues, findDuplicates } from '../../src/core/quality.ts';
 
 // No prototype: a table name can only ever be a table, never Object's machinery (csv.ts also

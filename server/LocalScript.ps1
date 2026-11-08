@@ -541,7 +541,7 @@ try {
 
 function Get-SemLocalTaskPaths {
     $here = $PSScriptRoot
-    return @(foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1') { $p = Join-Path $here $f; if ([IO.File]::Exists($p)) { $p } })
+    return @(foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1', 'Alerts.ps1') { $p = Join-Path $here $f; if ([IO.File]::Exists($p)) { $p } })
 }
 
 function Start-SemLocalTask {

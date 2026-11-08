@@ -326,6 +326,7 @@ function Get-SemBodyLimit {
         /api/local/import     settings localImportMaxGB (20 GB), streamed to disk by the import job, never read here
         a page snapshot       3 MB, 10 s   (a 2 MB page sent as an escaped JSON string)
         /api/widgets          512 KB, 10 s (a library widget: 64 KB of code, JSON-escaped)
+        /api/maps             3 MB, 20 s   (a region map: 2 MB of GeoJSON as an escaped JSON string)
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
@@ -337,6 +338,7 @@ function Get-SemBodyLimit {
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
     if ($Path -cmatch '^/api/page-snapshots/') { return @{ MaxBytes = 3145728; DeadlineMs = 10000; TooLarge = 'A snapshot may be at most 2 MB.' } }
     if ($Path -ceq '/api/widgets' -or $Path.StartsWith('/api/widgets/', [StringComparison]::Ordinal)) { return @{ MaxBytes = 524288; DeadlineMs = 10000; TooLarge = 'A library widget may be at most 512 KB as sent (its code at most 64 KB).' } }
+    if ($Path -ceq '/api/maps' -or $Path.StartsWith('/api/maps/', [StringComparison]::Ordinal)) { return @{ MaxBytes = 3145728; DeadlineMs = 20000; TooLarge = 'A region map may be at most 3 MB as sent (its GeoJSON at most 2 MB).' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
 }
 

@@ -1,13 +1,42 @@
 // A flag's Look, in the inspector: how it is drawn, which never changes what it means. A reviewed
 // flag stays reviewed. Only the settings that apply to this flag's kind are shown.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Palette as PaletteIcon, RotateCcw } from 'lucide-react';
 import { type FlagStyle, type HoistDesign, MAX_CORNERS, resolveStyle } from '../../../src/core/design.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Flag } from '../../../src/core/hoist.ts';
+import { comboRoles, type ComboRole } from '../../../src/core/combo.ts';
 import type { PivotHeat, PivotSpec } from '../../../src/core/pivot-spec.ts';
+import { listRegionMaps, type RegionMapInfo } from '../lib/maps.ts';
 import { Choice, Group, PalettePicker, Slider, Switch } from './StyleControls.tsx';
+
+/** The combo settings with one measure's role changed; a role that matches the default is left out. */
+export function withComboRole(style: FlagStyle['combo'], metrics: readonly string[], metric: string, patch: Partial<ComboRole>): FlagStyle['combo'] {
+  const defaults = comboRoles(metrics, undefined).find((r) => r.metric === metric)!;
+  const next = { ...(style?.[metric] ?? {}), ...patch };
+  const out = { ...(style ?? {}) };
+  const kept: Partial<ComboRole> = {};
+  if (next.as && next.as !== defaults.as) kept.as = next.as;
+  if (next.axis && next.axis !== defaults.axis) kept.axis = next.axis;
+  if (Object.keys(kept).length) out[metric] = kept;
+  else delete out[metric];
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The region maps in the Semaphore folder, for a map flag's Look. */
+function useRegionMaps(wanted: boolean): RegionMapInfo[] {
+  const [maps, setMaps] = useState<RegionMapInfo[]>([]);
+  useEffect(() => {
+    if (!wanted) return;
+    let live = true;
+    listRegionMaps().then((m) => live && setMaps(m), () => {});
+    return () => {
+      live = false;
+    };
+  }, [wanted]);
+  return maps;
+}
 
 export interface StylePanelProps {
   flag: Flag;
@@ -49,7 +78,11 @@ export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onO
   const bar = k === 'bar';
   const line = k === 'line' || k === 'area';
   const pie = k === 'pie';
-  const chart = bar || line || pie;
+  const combo = k === 'combo';
+  const map = k === 'map';
+  const chart = bar || line || pie || combo;
+  const metrics = flag.binding?.metrics ?? [];
+  const regionMaps = useRegionMaps(open && map);
   const Icon = open ? ChevronDown : ChevronRight;
   if (k === 'filter') return null;
   return (
@@ -66,7 +99,7 @@ export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onO
               <PalettePicker look={own} inherit onChange={set} />
               {!(k === 'line') && <Choice label="Fill" value={shown.fill ?? 'solid'} options={[{ id: 'solid', label: 'Solid' }, { id: 'gradient', label: 'Gradient' }]} onChange={(fill) => set({ fill })} />}
               <Switch label="Glow" checked={!!shown.glow} onChange={(glow) => set({ glow })} />
-              {(bar || pie) && <Slider label="Rounded corners" value={shown.corners ?? 0} min={0} max={MAX_CORNERS} onChange={(corners) => set({ corners })} />}
+              {(bar || pie || combo) && <Slider label="Rounded corners" value={shown.corners ?? 0} min={0} max={MAX_CORNERS} onChange={(corners) => set({ corners })} />}
             </Group>
           )}
 
@@ -77,12 +110,45 @@ export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onO
             </Group>
           )}
 
-          {line && (
+          {combo && (
+            <Group title="Bars and line">
+              {metrics.length < 2 && <p className="text-[11px] text-ink-3">Add a second measure to draw it as a line.</p>}
+              {comboRoles(metrics, own.combo).map((r) => (
+                <div key={r.metric} className="grid grid-cols-2 gap-2" role="group" aria-label={`How ${index?.metric(r.metric)?.label ?? r.metric} is drawn`}>
+                  <Choice label={index?.metric(r.metric)?.label ?? r.metric} value={r.as} options={[{ id: 'bar', label: 'Bars' }, { id: 'line', label: 'Line' }]} onChange={(as) => set({ combo: withComboRole(own.combo, metrics, r.metric, { as }) })} />
+                  <Choice label="Scale" value={r.axis} options={[{ id: 'left', label: 'Left' }, { id: 'right', label: 'Right' }]} onChange={(axis) => set({ combo: withComboRole(own.combo, metrics, r.metric, { axis }) })} />
+                </div>
+              ))}
+              {metrics.length > 1 && <Choice label="Bars" value={shown.barLayout === 'stacked' ? 'stacked' : 'grouped'} options={[{ id: 'grouped', label: 'Side by side' }, { id: 'stacked', label: 'Stacked' }]} onChange={(v) => set({ barLayout: v === 'stacked' ? 'stacked' : undefined })} />}
+            </Group>
+          )}
+
+          {(line || combo) && (
             <Group title="Line">
               <Choice label="Shape" value={shown.curve ?? 'smooth'} options={[{ id: 'smooth', label: 'Smooth' }, { id: 'straight', label: 'Straight' }, { id: 'step', label: 'Steps' }]} onChange={(curve) => set({ curve })} />
               <Slider label="Thickness" value={shown.lineWidth ?? 2} min={1} max={6} onChange={(lineWidth) => set({ lineWidth })} />
               <Choice label="Points" value={shown.markers ?? 'auto'} options={[{ id: 'auto', label: 'Best fit' }, { id: 'on', label: 'Show' }, { id: 'off', label: 'Hide' }]} onChange={(markers) => set({ markers })} />
-              <Switch label="Start the scale at zero" title="Off shows small changes better, and makes them look bigger than they are" checked={shown.zeroBase !== false} onChange={(on) => set({ zeroBase: on ? undefined : false })} />
+              {line && <Switch label="Start the scale at zero" title="Off shows small changes better, and makes them look bigger than they are" checked={shown.zeroBase !== false} onChange={(on) => set({ zeroBase: on ? undefined : false })} />}
+            </Group>
+          )}
+
+          {map && (
+            <Group title="Map">
+              <label className="block text-[11px] font-medium text-ink-2">
+                Draw on
+                <select aria-label="Map" value={own.map ?? 'us-states'} onChange={(e) => set({ map: e.target.value === 'us-states' ? undefined : e.target.value })} className="mt-1 block h-8 w-full rounded-md border border-[var(--fl-control-border)] bg-panel px-2 text-xs">
+                  <option value="us-states">US states (built in)</option>
+                  {own.map && own.map !== 'us-states' && !regionMaps.some((m) => m.id === own.map) && <option value={own.map}>{own.map}</option>}
+                  {regionMaps.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.regions} regions)
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block font-normal text-ink-3">Add your own regions in Settings &gt; Maps.</span>
+              </label>
+              <PalettePicker look={own} inherit onChange={set} />
+              <Choice label="Names on the map" value={shown.labels ?? 'auto'} options={[{ id: 'auto', label: 'Best fit' }, { id: 'on', label: 'Show' }, { id: 'off', label: 'Hide' }]} onChange={(labels) => set({ labels })} />
             </Group>
           )}
 

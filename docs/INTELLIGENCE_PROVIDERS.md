@@ -65,6 +65,8 @@ page  --(session token)-->  Semaphore server /api/ai/v1  --(Fairlead key)-->  Fa
 | "last 12 months", "past 2 quarters" | a relative date filter |
 | "top 10 hulls by cost", "bottom 5" | limit and sort |
 | "as a table", "pie", "line", "bar" | the flag kind |
+| "bars and a line", "combo", "cost as bars and days open as a line", "with a line for" | a combo: the measures in the brief's order, the last one the line |
+| "on a map", "map of", "by state" | a map (US states, or a region map picked in the Look) |
 | "clicking a bar filters the page", "drill into" | click behaviour |
 | "ignore the region filter" | that field's selections are skipped |
 | "turn red over $5M", "amber under 80%" | thresholds |

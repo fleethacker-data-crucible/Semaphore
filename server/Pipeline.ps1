@@ -343,6 +343,7 @@ function Invoke-SemPipelinePublish {
     param([Parameter(Mandatory = $true)][string]$HomeDir, [string[]]$Tables = @())
     $want = @{}; foreach ($t in $Tables) { if ($t) { $want[$t.ToLowerInvariant()] = $true } }
     $marked = New-Object System.Collections.Generic.List[string]
+    $markedIds = New-Object System.Collections.Generic.List[string]
     if ($want.Count -eq 0) { return , $marked.ToArray() }
     $dir = Join-Path $HomeDir 'snapshots'
     if (-not [IO.Directory]::Exists($dir)) { return , $marked.ToArray() }
@@ -361,6 +362,13 @@ function Invoke-SemPipelinePublish {
         else { $text = '{"invalidatedAt":"' + $now + '",' + $text.Substring($text.IndexOf('{') + 1) }
         Save-SemDoc -Dir $dir -Id ([IO.Path]::GetFileNameWithoutExtension($f.Name)) -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($text))
         $marked.Add([string](Get-SemPipeProp $j 'title'))
+        $markedIds.Add([string](Get-SemPipeProp $j 'entryId'))
+    }
+    # Alerts on these flags (Alerts.ps1): the new values are worked out by the page, so they are checked at the next
+    # snapshot refresh or page open, with a note saying why.
+    if ($markedIds.Count -gt 0 -and (Get-Command Set-SemAlertsPending -ErrorAction SilentlyContinue)) {
+        $note = 'A pipeline rebuilt the tables behind this flag at ' + $now + '. The alert is checked when its snapshot is next refreshed (an open page or a refresh run).'
+        try { [void](Set-SemAlertsPending -HomeDir $HomeDir -EntryIds $markedIds.ToArray() -Note $note) } catch { }
     }
     return , $marked.ToArray()
 }
