@@ -65,6 +65,9 @@ function Get-SemDefaultSettings {
         fairleadPath = ''
         # Social and motivational features (docs/PLAYBOOK.md); each can be switched off per deployment.
         signalBook = $true; impact = $true; teamLog = $true; showAskers = $true; bz = $true
+        # Local database (docs/LOCAL-DATABASE.md): the hosts whose \\host\share paths it may open (opening one sends the
+        # user's Windows sign-in to that host), and the largest file the page may upload, in GB.
+        localShares = @(); localImportMaxGB = 20
         # Amazon S3 browsing and import (S3.ps1) and the AWS session for it (aws.vault, aws.fips); checked where used.
         s3 = $null; aws = $null
     }
@@ -104,6 +107,13 @@ function Merge-SemSettingsFile {
         }
     }
     if ($Settings.queryWorkers -gt 16) { $Settings.queryWorkers = 16 }
+    if ($names -contains 'localShares' -and $null -ne $j.localShares) {
+        $Settings.localShares = @(@($j.localShares) | ForEach-Object { ([string]$_).Trim().TrimStart('\') } | Where-Object { $_ -cmatch '\A[A-Za-z0-9][A-Za-z0-9._-]{0,252}\z' })
+    }
+    if ($names -contains 'localImportMaxGB' -and $null -ne $j.localImportMaxGB) {
+        $n = 0
+        if ([int]::TryParse([string]$j.localImportMaxGB, [ref]$n) -and $n -ge 1 -and $n -le 4096) { $Settings.localImportMaxGB = $n }
+    }
     return $true
 }
 

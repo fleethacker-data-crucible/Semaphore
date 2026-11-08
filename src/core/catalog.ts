@@ -27,6 +27,8 @@ export type SourceKind =
   | 'azure-sql'
   | 'azure-synapse'
   | 'foundry'
+  /** Semaphore's built-in local database (server/LocalDb.ps1): SQLite, the engine that ships with Windows. */
+  | 'local'
   | 'aws-rds'
   | 'other';
 
@@ -46,7 +48,7 @@ const RDS_DIALECTS: Record<RdsEngine, Dialect> = {
 
 /** The SQL profile a source kind uses; unknown kinds fall back to the ansi profile. */
 export function dialectForKind(kind: SourceKind): Dialect {
-  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark' };
+  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark', local: 'sqlite' };
   return map[kind] ?? 'ansi';
 }
 
@@ -155,7 +157,7 @@ export function checkCatalog(catalog: Catalog): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
-  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', 'aws-redshift': 'ansi', foundry: 'spark' };
+  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', 'aws-redshift': 'ansi', foundry: 'spark', local: 'sqlite' };
   for (const s of catalog.sources) {
     if (!isSqlDialect(s.dialect)) problems.push(`Source "${s.id}" uses an unsupported SQL dialect; supported profiles: ${SQL_DIALECTS.join(', ')}.`);
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);

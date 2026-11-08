@@ -448,7 +448,7 @@ Describe 'An import on the worker pool against a simulated S3 on loopback' {
         try { [void]$script:FakeS3.PS.BeginStop($null, $null) } catch { }
         foreach ($n in $script:SavedEnv.Keys) { [Environment]::SetEnvironmentVariable($n, $script:SavedEnv[$n]) }
     }
-    It 'streams the object through the real seam, signed, and reaches the importer (the stub here)' {
+    It 'streams the object through the real seam, signed, and reaches the importer' {
         Mock Send-SemJson { $script:Started = $Object }
         Start-SemS3Import -Req @{ Json = ('{"bucket":"sim","key":"semaphore/work orders.csv"}' | ConvertFrom-Json) }
         $script:Started.state | Should -Be 'queued'
@@ -457,7 +457,8 @@ Describe 'An import on the worker pool against a simulated S3 on loopback' {
         while (@('queued', 'running') -contains $job.state -and $clock.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 100; Update-SemWorkers }
         $job.bytes | Should -Be $script:Body.Length -Because 'the whole object came through the stream'
         $job.totalBytes | Should -Be $script:Body.Length
-        if ((Get-Command Import-SemLocalFile).Definition -match 'STUB') { $job.error | Should -Be 'The local database is not available yet' } else { $job.state | Should -Be 'done' }
+        # The worker loads server\LocalDb.ps1 (the real importer) when it is there; only without it does S3.ps1's stub answer.
+        if (-not [IO.File]::Exists([string]$script:Sem.WorkerContext.LocalDbPath)) { $job.error | Should -Be 'The local database is not available yet' } else { $job.error | Should -BeNullOrEmpty; $job.state | Should -Be 'done'; $job.rows | Should -Be 40000 }
         $heads = @($script:FakeS3.State.Heads)
         $heads.Count | Should -Be 2
         $heads[0] | Should -Match '^HEAD /sim/semaphore/work%20orders\.csv HTTP/1\.1'

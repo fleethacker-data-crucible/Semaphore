@@ -28,6 +28,8 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/vault/unpair'              = 'The Settings screen''s Unpair button; the CLI equivalent is "vault unpair".'
     '/api/voice'                     = 'The Settings screen''s spoken answers card: the TalkForge address and where the token comes from.'
     '/api/voice/speak'               = 'Relay for the page''s spoken answers: needs the browser session token and returns audio.'
+    '/api/local/import'              = 'Streams a file the analyst picks or drops on the page into the local database; the CLI reads files where they are with "local import".'
+    '/api/local/import-cancel'       = 'The Stop button of an import running on the server; a CLI import runs in the foreground and stops with Ctrl+C.'
     '/api/page-snapshots/{id}'       = 'The Snapshots dialog: lists and saves copies of the open page (files under snapshots\<hoist id> in the Semaphore folder).'
     '/api/page-snapshots/{id}/{id}'  = 'The Snapshots dialog: previews, restores into the open page, or deletes one copy (moved to .trash).'
     '/api/s3/buckets'                = 'The Data panel''s Amazon S3 section: the buckets config\settings.json allows (s3.buckets), shown to pick one.'
@@ -64,6 +66,12 @@ function Get-SemCommandRegistry {
     & $add 'vault pair' '(asks for the pairing code)' 'POST' 'Pair Semaphore with Lazarette: paste the code from Lazarette (Settings > Tools > Pair tool). It is read without echo and kept DPAPI-protected for this Windows account.' @() $false 'VaultPair'
     & $add 'vault unpair' '(removes the pairing file)' 'POST' 'Forget the Lazarette pairing on this computer (pair again with "vault pair"). Remove Semaphore in Lazarette (Settings > Tools) too.' @() $false 'VaultUnpair'
     & $add 'ai status' '/api/ai' 'GET' 'Whether drafting goes through Fairlead, the address and which key source is used. Never prints the key.' @() $false 'AiStatus'
+    & $add 'local list' '/api/local/tables' 'GET' 'The tables in the local database: rows, columns, size and the file each came from.' @() $false 'LocalList'
+    & $add 'local import' '/api/local/import-path' 'POST' 'Import a CSV, TSV, Excel, SQLite, Parquet or Arrow file (also .gz) into the local database. Network paths only on shares listed in settings localShares.' @((New-SemCommandInput 'file' 'string' $true 'The file to import.'), (New-SemCommandInput 'table' 'string' $false 'The table name (default: from the file name).'), (New-SemCommandInput 'sheet' 'string' $false 'The Excel sheet, or the table inside a SQLite file.'), (New-SemCommandInput 'replace' 'string' $false 'yes: replace a table of that name in one step.'), (New-SemCommandInput 'append' 'string' $false 'yes: add the rows to a table of that name (columns matched by name).')) $false 'LocalImport'
+    & $add 'local sheets' '/api/local/sheets' 'POST' 'The sheets of an Excel workbook, or the tables of a SQLite file.' @((New-SemCommandInput 'file' 'string' $true 'The workbook or SQLite file.')) $false 'LocalSheets'
+    & $add 'local status' '/api/local/import-status/{id}' 'GET' 'Progress of an import the page started (rows so far, table, error).' @((New-SemCommandInput 'id' 'string' $true 'The import job id.')) $false 'LocalStatus'
+    & $add 'local rename' '/api/local/tables/{id}/rename' 'POST' 'Rename a table in the local database (flags that read the old name need their catalog updated).' @((New-SemCommandInput 'id' 'string' $true 'The table.'), (New-SemCommandInput 'to' 'string' $true 'The new name.')) $false 'LocalRename'
+    & $add 'local delete' '/api/local/tables/{id}' 'DELETE' 'Drop a table from the local database. It cannot be undone: import the file again to get it back.' @((New-SemCommandInput 'id' 'string' $true 'The table.')) $true 'LocalDelete'
     & $add 'session stop' '(runs Stop-Semaphore.ps1)' 'POST' 'Stop every running copy of Semaphore on this computer.' @() $true 'SessionStop'
     return $list.ToArray()
 }
@@ -178,6 +186,38 @@ function Invoke-SemCommand {
                 return (& $r $true ([ordered]@{ removed = $gone }) '' $(if ($gone) { 'The Lazarette pairing is removed from this computer.' } else { 'There was no Lazarette pairing on this computer.' }) $false)
             }
             'AiStatus' { return (& $r $true (Get-SemAiStatus) '' '' $false) }
+            'LocalList' { return (& $r $true (Get-SemLocalTables -HomeDir $HomeDir) '' '' $false) }
+            'LocalImport' {
+                $shares = @((Read-SemSettings -Root $Root).localShares)
+                $res = Resolve-SemLocalPath -Path ([string]$Options['file']) -Shares $shares -HomeDir $HomeDir
+                if ($res.ContainsKey('Error')) { return (& $r $false $null $res.Error '' $false) }
+                $a = @{ HomeDir = $HomeDir; Path = $res.Path; SourceLabel = $res.Path }
+                if ($Options['table']) { $a.Table = [string]$Options['table'] }
+                if ($Options['sheet']) { $a.Sheet = [string]$Options['sheet'] }
+                if (@('yes', 'true', '1') -contains ([string]$Options['replace']).ToLowerInvariant()) { $a.Replace = $true }
+                if (@('yes', 'true', '1') -contains ([string]$Options['append']).ToLowerInvariant()) { $a.Append = $true }
+                $imp = Import-SemLocalFile @a
+                return (& $r $true ([ordered]@{ table = $imp.Table; rows = $imp.Rows; columns = $imp.Columns; ms = $imp.Ms; tables = $imp.Tables; warnings = $imp.Warnings }) '' ("Imported {0} rows into {1} in {2:N1} s." -f $imp.Rows, $imp.Table, ($imp.Ms / 1000.0)) $false)
+            }
+            'LocalSheets' {
+                $res = Resolve-SemLocalPath -Path ([string]$Options['file']) -Shares @((Read-SemSettings -Root $Root).localShares) -HomeDir $HomeDir
+                if ($res.ContainsKey('Error')) { return (& $r $false $null $res.Error '' $false) }
+                return (& $r $true (Get-SemLocalSheets -HomeDir $HomeDir -Path $res.Path) '' '' $false)
+            }
+            'LocalStatus' {
+                $text = Read-SemLocalJobStatus -HomeDir $HomeDir -Job $id
+                if ($null -eq $text) { return (& $r $false $null "No import '$id'." '' $false) }
+                return (& $r $true ($text | ConvertFrom-Json) '' '' $false)
+            }
+            'LocalRename' {
+                $ok = Rename-SemLocalTable -HomeDir $HomeDir -Name $id -NewName ([string]$Options['to'])
+                if (-not $ok) { return (& $r $false $null "No table '$id'." '' $false) }
+                return (& $r $true ([ordered]@{ name = [string]$Options['to'] }) '' ("Renamed {0} to {1}." -f $id, $Options['to']) $false)
+            }
+            'LocalDelete' {
+                if (-not (Remove-SemLocalTable -HomeDir $HomeDir -Name $id)) { return (& $r $false $null "No table '$id'." '' $false) }
+                return (& $r $true ([ordered]@{ name = $id; dropped = $true }) '' "Dropped table '$id'." $false)
+            }
             'RefreshRun' {
                 if (@(Get-SemInstances -Root $Root).Count -gt 0) { return (& $r $false $null 'Semaphore is open on this computer; it refreshes snapshots itself. Close it first, or use it.' '' $false) }
                 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'server\Start-Semaphore.ps1'), '--refresh') -Wait -PassThru -WindowStyle Hidden

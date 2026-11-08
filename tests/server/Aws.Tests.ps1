@@ -106,7 +106,7 @@ Describe 'RDS source settings' {
             (Rds @{ id = 'iamv'; vault = @{ accessKeyId = 'AWS_ACCESS_KEY_ID'; secretAccessKey = 'AWS_SECRET_ACCESS_KEY'; user = 'RDS_IAM_USER' } }),
             (Rds @{ id = 'pw'; engine = 'mariadb'; auth = 'password'; user = $null; vault = @{ password = 'RDS_PASSWORD'; user = 'RDS_USER' } }),
             (Rds @{ id = 'pwbad'; auth = 'password'; vault = @{ accessKeyId = 'AWS_ACCESS_KEY_ID'; secretAccessKey = 'X'; password = 'P' } }))
-        $s = @(Get-SemSources -HomeDir $homeDir)
+        $s = @(Get-SemSources -HomeDir $homeDir | Where-Object { $_.id -ne 'local' })   # the built-in local database is always last
         @($s | ForEach-Object { $_.id }) | Should -Be @('maint', 'iamv', 'pw')
         $s[0].engine | Should -Be 'postgres'; $s[0].kind | Should -Be 'aws-rds'; $s[0].provider | Should -Be 'odbc'
         (Test-SemSourceConnection $s[0]) | Should -BeNullOrEmpty -Because 'an aws-rds source builds its connection string itself'
