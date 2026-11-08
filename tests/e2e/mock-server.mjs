@@ -243,8 +243,14 @@ function send(res, status, type, body, { cache = 'no-store', headers = {}, head 
   res.writeHead(status, h);
   res.end(head ? undefined : bytes);
 }
-const sendJson = (res, status, obj, headers = {}) => send(res, status, 'application/json; charset=utf-8', JSON.stringify(obj), { headers });
-const sendJsonText = (res, status, text, headers = {}) => send(res, status, 'application/json; charset=utf-8', text, { headers });
+// JSON answers have their own writer with the content type fixed here, never HTML: stored documents and
+// request values echoed back in them cannot be read as markup (nosniff is in the fixed headers too).
+function sendJsonText(res, status, text, headers = {}) {
+  const bytes = Buffer.from(String(text), 'utf8');
+  res.writeHead(status, { ...securityHeaders('no-store'), ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(bytes.length), Connection: 'close' });
+  res.end(bytes);
+}
+const sendJson = (res, status, obj, headers = {}) => sendJsonText(res, status, JSON.stringify(obj), headers);
 const sendError = (res, status, code, message, extra = {}) => sendJson(res, status, { error: message, code, ...extra });
 
 // ---------------------------------------------------------------------------------------------
