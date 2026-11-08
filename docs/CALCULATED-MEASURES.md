@@ -43,6 +43,12 @@ Measures are found by their names, keys and synonyms. A brief that defines a mea
 the inspector; once added, the flag is drafted again over it, and the brief keeps meaning the new
 measure rather than the two it is made of. The readback says the formula in words.
 
+**In flag kits.** A kit saved with a flag on a calculated measure carries the measure's definition:
+label, format, formula, and each input described like any kit metric. Flown onto another catalog,
+each input is matched by key, label or synonym; an identical formula already there is used, or the
+measure is made again over the matched inputs (under a free key); an input with no match leaves the
+flag empty with the input named ([FLAG_KITS.md](FLAG_KITS.md)).
+
 ## Fixes that make fields or a table
 
 On Data > Clean, *Describe a fix*:
@@ -53,7 +59,7 @@ On Data > Clean, *Describe a fix*:
 | `split code at 3 into prefix and number` | by position: the first 3 characters, then the rest (up to 8 parts) |
 | `join city and state with ', ' as location` | one field; blank values are skipped |
 | `group days open into 0-7, 8-30, 31-90, 90+` | one field of labels; whole-number ranges close at the next whole number, so 7.5 is in 0-7 |
-| `bucket cost into quartiles` (or tertiles, quintiles, deciles, "5 equal groups") | Q1 to Q4 by row count |
+| `bucket cost into quartiles` (or tertiles, quintiles, deciles, "5 equal groups") | Q1 to Q4 by row count; equal values always share a group, so groups can differ in size |
 | `turn the month columns Jan..Dec into rows of month and value` | a new long table: the other columns, the column's name and its value, with a total measure |
 
 Parts, joined values and labels are trimmed, and blank is null. New fields get their types (text for
@@ -65,10 +71,21 @@ steps, measures, formulas and drill paths.
 every value (delimiter, separator, bounds, labels) is a bound parameter, written in the order the
 `?` dialects read. Splits use `SPLIT_PART` (PostgreSQL, Spark, ANSI), `SUBSTRING_INDEX` (MySQL),
 `INSTR` with an occurrence (Oracle), and `CHARINDEX` / `instr` / `InStr` chains (T-SQL, Synapse,
-SQLite, Access). Quartiles use `NTILE` over every row of the table, partitioned so blanks stay
-blank; Access has no NTILE, so it uses the group bounds read from the values when the step was
-accepted. A reshaped table is a derived table of one `SELECT` per column joined with `UNION ALL`.
+SQLite, Access). A reshaped table is a derived table of one `SELECT` per column joined with `UNION ALL`.
 The in-page engine follows the same rules; the SQLite SQL is checked against it in tests.
+
+**Equal-count groups and ties.** One rule everywhere (the page, its worker, every dialect, Access):
+a value's group is `floor((rank - 1) * k / n) + 1`, where `rank` is its rank among the values that are
+not blank, in ascending order, with equal values sharing the lowest rank (one more than how many
+values are below it), `n` is how many values are not blank and `k` is the number of groups. Blanks
+stay blank. So equal values always share a group, the result never depends on row order, and groups
+can differ in size: 1, 1, 1, 1, 2, 3, 3, 9 in quartiles is Q1 for the 1s, Q3 for 2 and 3, Q4 for 9,
+and no Q2. In SQL (PostgreSQL, Oracle, T-SQL, Synapse, Spark, MySQL 8+, SQLite 3.25+ and the ANSI
+engines) it is `RANK() OVER (PARTITION BY <blank or not> ORDER BY x)` and `COUNT(x) OVER ()` over
+every row of the table, compared as whole numbers (`(rank - 1) * k < n * g` for group g), so no
+dialect's division or rounding can differ. Access has no window functions: when the step is accepted
+Semaphore reads the field's values and counts, works out each group's upper bound by the same rule,
+and the SQL is a `Switch` over those bounds (a group no value falls in takes the bound before it).
 
 **Limits.** A made field or reshaped table cannot be on the many side of a one-to-many split, and
 quartile groups are read only on charts of their own table. Mixed date formats are still cleaned in
