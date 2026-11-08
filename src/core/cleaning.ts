@@ -173,6 +173,12 @@ function numberSql(x: () => string, dialect: Dialect): string {
       return `TO_NUMBER(${bare()} DEFAULT NULL ON CONVERSION ERROR)`;
     case 'access':
       return `IIf(IsNumeric(${bare()}), CDbl(${bare()}), Null)`;
+    case 'mysql':
+      // CAST AS DOUBLE: MySQL 8.0.17+ and MariaDB 10.4.5+.
+      return `CASE WHEN TRIM(${bare()}) REGEXP '^-?[0-9]*[.]?[0-9]+$' THEN CAST(TRIM(${bare()}) AS DOUBLE) END`;
+    case 'sqlite':
+      // SQLite casts any text to a number (0 when it is not one), so check the shape first.
+      return `CASE WHEN TRIM(${bare()}) GLOB '[0-9]*' OR TRIM(${bare()}) GLOB '-[0-9]*' OR TRIM(${bare()}) GLOB '.[0-9]*' THEN CAST(TRIM(${bare()}) AS REAL) END`;
     case 'postgres':
       return `CASE WHEN ${bare()} ~ '^\\s*-?[0-9]*\\.?[0-9]+\\s*$' THEN CAST(${bare()} AS DOUBLE PRECISION) END`;
   }

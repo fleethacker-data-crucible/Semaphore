@@ -10,6 +10,8 @@ const languages: Record<Dialect, { name: string; syntax: string }> = {
   tsql: { name: 'T-SQL (SQL Server / Azure SQL)', syntax: 'Square brackets name columns and tables. TOP caps rows. Date grouping uses DATETRUNC and requires SQL Server 2022+ or a compatible Azure SQL engine.' },
   synapse: { name: 'T-SQL (Azure Synapse)', syntax: 'Square brackets name columns and tables. TOP caps rows. Synapse has no DATETRUNC, so dates group with DATEADD and DATEDIFF.' },
   spark: { name: 'Spark SQL (Foundry, Databricks)', syntax: 'Backticks name columns and tables. date_trunc groups dates; LIMIT caps rows. Foundry takes no bound values, so Semaphore writes each value as a checked literal.' },
+  mysql: { name: 'MySQL / MariaDB (RDS, Aurora MySQL)', syntax: 'Backticks name columns and tables. DATE, WEEKDAY, DATE_FORMAT and MAKEDATE group dates; LIMIT caps rows.' },
+  sqlite: { name: 'SQLite (the local database)', syntax: 'Double quotes name columns and tables. Dates are ISO text and date() with modifiers groups them; LIMIT caps rows.' },
   ansi: { name: 'ANSI-like SQL profile', syntax: 'This profile uses double-quoted names, date_trunc and LIMIT. It is not universal ANSI SQL; confirm those features with your database.' },
 };
 

@@ -8,7 +8,7 @@ import type { Relationship } from './joins.ts';
  * ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server 2022+.
  * synapse is T-SQL without DATETRUNC (Azure Synapse pools). spark is Spark SQL with backtick names (Palantir Foundry, Databricks).
  */
-export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'synapse', 'spark', 'ansi'] as const;
+export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'synapse', 'spark', 'mysql', 'sqlite', 'ansi'] as const;
 export type Dialect = typeof SQL_DIALECTS[number];
 
 export function isSqlDialect(value: unknown): value is Dialect {
