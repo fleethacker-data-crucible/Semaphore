@@ -28,6 +28,11 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/vault/unpair'              = 'The Settings screen''s Unpair button; the CLI equivalent is "vault unpair".'
     '/api/voice'                     = 'The Settings screen''s spoken answers card: the TalkForge address and where the token comes from.'
     '/api/voice/speak'               = 'Relay for the page''s spoken answers: needs the browser session token and returns audio.'
+    '/api/s3/buckets'                = 'The Data panel''s Amazon S3 section: the buckets config\settings.json allows (s3.buckets), shown to pick one.'
+    '/api/s3/list'                   = 'The Data panel''s S3 browser: one folder of an allowlisted bucket at a time, with continuation tokens.'
+    '/api/s3/import'                 = 'Starts an S3 import from the Data panel into the local database; the page follows it with import-status.'
+    '/api/s3/import-status'          = 'Progress of an S3 import the page started (/api/s3/import-status/<job>); jobs live only in the running server.'
+    '/api/rds/discover'              = 'The Data panel''s RDS help card: lists RDS instances and clusters so an admin can copy a sources.json entry.'
 }
 
 function New-SemCommandInput {

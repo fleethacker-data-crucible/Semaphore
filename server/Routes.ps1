@@ -302,7 +302,9 @@ function Invoke-SemClientLog {
 function Get-SemInfo {
     $sources = @()
     foreach ($s in @(Get-SemSources -HomeDir $script:Sem.Home)) {
-        $sources += [ordered]@{ id = $s.id; label = $s.label; kind = $s.kind; provider = $s.provider; placeholders = 'question'; vault = [bool](Get-SemSourceVault $s) }
+        $one = [ordered]@{ id = $s.id; label = $s.label; kind = $s.kind; provider = $s.provider; placeholders = 'question'; vault = [bool](Get-SemSourceVault $s) }
+        if ($s.engine) { $one.engine = $s.engine }   # aws-rds: the engine picks the SQL dialect (dialectForSource)
+        $sources += $one
     }
     return [ordered]@{
         tool = 'semaphore'; version = $script:Sem.Version; pid = $PID; port = $script:Sem.Port; home = $script:Sem.Home
@@ -395,6 +397,26 @@ function Invoke-SemRoute {
         [void](Initialize-SemVault -Root $script:Sem.Root)
         [void](Unregister-SemVaultPairing)
         Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home); return
+    }
+    if ($p -eq '/api/s3/buckets') {
+        # S3.ps1: the allowlisted buckets from config\settings.json; no AWS call.
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Send-SemJson 200 (Get-SemS3BucketList); return
+    }
+    if ($p -eq '/api/s3/list' -or $p -eq '/api/rds/discover') {
+        # S3.ps1 / Aws.ps1, on the worker pool: AWS can take seconds, and the AWS session is read from Lazarette there.
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Start-SemWorkerRequest -Req $Req
+        return
+    }
+    if ($p -eq '/api/s3/import') {
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        if ($Req.Json -isnot [Management.Automation.PSCustomObject]) { Send-SemError 400 'bad-json' 'The body must be a JSON object.'; return }
+        Start-SemS3Import -Req $Req; return
+    }
+    if ($p -eq '/api/s3/import-status' -or $p.StartsWith('/api/s3/import-status/')) {
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Invoke-SemS3StatusRoute -Path $p; return
     }
     if ($p -eq '/api/voice') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
