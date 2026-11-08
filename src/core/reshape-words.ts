@@ -135,7 +135,7 @@ export function proposeReshape(sentence: string, index: CatalogIndex, scope?: { 
     if (tiles !== undefined) {
       if (tiles < 2 || tiles > 10) return { ok: false, error: 'Make 2 to 10 equal-count groups.' };
       const made = newField(index, f, `${f.label} ${tiles === 4 ? 'quartile' : 'group'}`, 'string', `bucket-${id}`, taken);
-      const step: CleaningStep = { id: `bucket-${id}`, field: f.key, kind: 'bucket', tiles, into: [made.key], sentence: `Group ${f.label} into ${tiles === 4 ? 'quartiles (Q1 lowest to Q4 highest)' : `${tiles} groups with as many rows in each`} as ${made.label}`, origin: 'analyst' };
+      const step: CleaningStep = { id: `bucket-${id}`, field: f.key, kind: 'bucket', tiles, into: [made.key], sentence: `Group ${f.label} into ${tiles === 4 ? 'quartiles (Q1 lowest to Q4 highest)' : `${tiles} groups of about as many rows each`} as ${made.label}; equal values always share a group, so groups can differ in size`, origin: 'analyst' };
       return { ok: true, step, fields: [{ ...made, cardinality: tiles }], metrics: [], needsValues: f.key };
     }
     const buckets = parseBuckets(how);
@@ -147,7 +147,7 @@ export function proposeReshape(sentence: string, index: CatalogIndex, scope?: { 
   return { ok: false, error: 'Semaphore can split a field (“split full name on the comma into last and first”), join fields (“join city and state with ", " as location”), turn columns into rows (“turn Jan..Dec into rows of month and value”) or group a number (“group days open into 0-7, 8-30, 31-90, 90+”).' };
 }
 
-/** Equal-count groups' bounds, from the values of the field grouped (for dialects with no NTILE). */
+/** Equal-count groups' bounds, from the values of the field grouped (for Access, which has no window functions). */
 export function withBounds(p: ReshapeProposal, values: ReadonlyArray<{ value: Cell; count: number }>): ReshapeProposal {
   if (!p.step.tiles) return p;
   return { ...p, step: { ...p.step, bounds: tileBounds(values, p.step.tiles) } };

@@ -40,7 +40,7 @@ export interface CleaningStep {
   buckets?: Array<{ label: string; from?: number; to?: number }>;
   /** bucket: this many equal-count groups instead (4 = quartiles). */
   tiles?: number;
-  /** bucket with tiles: each group's upper bound but the last, read when accepted (for dialects with no NTILE). */
+  /** bucket with tiles: each group's upper bound but the last, read when accepted (for Access, which has no window functions). */
   bounds?: number[];
   /** unpivot: the new table's name. */
   table?: string;

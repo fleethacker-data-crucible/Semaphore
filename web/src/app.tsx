@@ -1577,8 +1577,10 @@ export function App() {
             hoist={hoist}
             index={index}
             onClose={() => setKitsOpen(false)}
-            onApply={(h, summary) => {
+            onApply={(h, summary, metrics) => {
               autoSnap('Flying a kit');
+              // The calculated measures the kit's flags bind to go into the catalog first (checked with them).
+              if (metrics.length) setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] });
               change(h);
               notify(summary, { tone: 'success' });
             }}
