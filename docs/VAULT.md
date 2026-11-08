@@ -34,6 +34,7 @@ A source names one shared **variable** per role, never a secret and never an ite
 | `odbc`, `oledb` (and `synapse`, which runs as ODBC) | `password`; `user` (optional) | `PWD=` / `Password=` and `UID=` / `User ID=` in the connection string, in memory for one request. A `UID` already in the connection string wins. Synapse `SqlPassword` and `ActiveDirectoryPassword` need both. |
 | `athena`, `redshift-data` | `accessKeyId`, `secretAccessKey`; `sessionToken` (optional) | the AWS session that signs the request |
 | `foundry` | `token` | the bearer token |
+| `aws-rds-iam`: an `odbc` source with `"kind": "aws-rds"` and `"auth": "iam"` | `accessKeyId`, `secretAccessKey`; `sessionToken`, `user` (optional) | the AWS session that signs a 15-minute RDS IAM auth token, used as the password for one sign-in; `user` is the database user when `"user"` is not in the entry ([CONNECTORS.md](CONNECTORS.md#amazon-rds-and-aurora)) |
 
 Names follow Lazarette's rule for shares: letters, digits and `_`, not starting with a digit. Each role needs its own name. The block may hold only the roles of its provider; anything else (an unknown role, a value that is not a variable name, the retired `"item"`, `"fields"` or `"vaultItem"`) makes Semaphore skip the source and log why. `PWD=` in a connection string is still refused.
 
@@ -47,6 +48,8 @@ The `vaultItem` on a source in a **browser catalog** (`examples/fleet-maintenanc
 |---|---|---|
 | Each ODBC or OLE DB data source | `vault.password` and `vault.user` of that source in `sources.json` | password and user, in memory for one request |
 | Each Athena or Redshift source | `vault.accessKeyId`, `vault.secretAccessKey`, `vault.sessionToken` | the AWS session that signs the request |
+| Each RDS / Aurora source | password sign-in: `vault.password`, `vault.user`; IAM sign-in: the AWS roles above (and `vault.user`) | the password, or an IAM auth token signed in memory for one connection |
+| S3 browsing and import, "Find RDS databases" | `aws.vault` in `config\settings.json` (the AWS roles) | the AWS session that signs ListObjectsV2, GetObject and the RDS Describe calls ([CONNECTORS.md](CONNECTORS.md#amazon-s3-browse-and-import)) |
 | Each Foundry source | `vault.token` | the bearer token |
 | Fairlead client key (AI drafting) | **not a Lazarette share**: Windows Credential Manager target `Fairlead/Semaphore`, written by Fairlead (Fairlead > Clients); `Set-SemaphoreAiKey.bat` is a manual fallback, and `SEMAPHORE_AI_KEY` is for CI | sent only to Fairlead on 127.0.0.1:8776, after it answers as Fairlead |
 
