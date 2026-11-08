@@ -14,6 +14,11 @@
 # query and profile path opens the file read-only (LocalDb.cs: SQLITE_OPEN_READONLY, query_only,
 # no ATTACH, an authorizer that allows only reads), and Test-SemSqlGuard still applies.
 #
+# Parquet and Arrow: Columnar.cs (namespace SemColumnar) is compiled in its own Add-Type call. LocalDb.cs never
+# names it at compile time: LocalImport.Columnar and LocalExport.Columnar find SemColumnar.ColumnarFiles in the loaded
+# assemblies and call Open / WriteParquet / WriteArrow by reflection, reading rows through a delegate bound to
+# ITableReader.Next, so the row loop stays in C# and either file compiles without the other.
+#
 # Network paths: \\host\share is opened only when host is listed in settings localShares, because
 # opening it sends the user's Windows sign-in (NTLM) to that host. Mapped and subst drives and
 # symbolic links or junctions are resolved first and the target is checked the same way.
@@ -358,6 +363,18 @@ function Rename-SemLocalTable {
         Write-SemLog 'INFO' ("Local database: renamed {0} to {1}" -f $found, $NewName)
         return $true
     } catch { throw (ConvertTo-SemLocalMessage $_.Exception) } finally { $c.Dispose() }
+}
+
+function Export-SemLocalTable {
+    # Writes a local table to a Parquet or Arrow file with Columnar.cs's writers; returns @{ Rows; Ms; Path }.
+    param([Parameter(Mandatory = $true)][string]$HomeDir, [Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Path, [ValidateSet('parquet', 'arrow')][string]$Format = 'parquet')
+    Assert-SemLocalTableName $Name
+    $c = Open-SemLocalConnection -HomeDir $HomeDir
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try { $n = [SemLocal.LocalExport]::Columnar($c, $Name, $Path, $Format) }
+    catch { throw (ConvertTo-SemLocalMessage $_.Exception) }
+    finally { $c.Dispose() }
+    return @{ Rows = [long]$n; Ms = [long]$clock.ElapsedMilliseconds; Path = $Path }
 }
 
 function Get-SemLocalSheets {

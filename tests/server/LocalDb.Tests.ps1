@@ -414,6 +414,67 @@ namespace SemColumnarTest {
     }
 }
 
+Describe 'Parquet and Arrow with the real Columnar.cs' {
+    BeforeAll {
+        [SemLocal.LocalImport]::ColumnarTypeName = 'SemColumnar.ColumnarFiles'
+        $script:HasColumnar = [bool]('SemColumnar.ColumnarFiles' -as [type])
+        $script:Fixtures = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', 'fixtures', 'columnar'))
+    }
+    It 'is compiled beside LocalDb.cs and found at run time' {
+        $script:HasColumnar | Should -BeTrue
+        [SemLocal.LocalImport]::ColumnarAvailable | Should -BeTrue
+        (Get-SemLocalTables -HomeDir $script:HomeDir).columnar | Should -BeTrue
+    }
+    It 'imports an Arrow fixture with the row count the file states' {
+        $f = Join-Path $script:Fixtures 'SAMPLE_SALES.arrow'
+        $reader = [SemColumnar.ColumnarFiles]::Open($f)
+        try { $want = 0; $row = New-Object object[] $reader.Names.Length; while ($reader.Next($row)) { $want++ } } finally { $reader.Dispose() }
+        $r = Import-SemLocalFile -HomeDir $script:HomeDir -Path $f
+        $r.Table | Should -Be 'sample_sales'
+        $r.Rows | Should -Be $want
+        $r.Format | Should -Be 'columnar'
+    }
+    It 'round-trips a table through Parquet and Arrow: export, import, same rows and types' {
+        [void](Import-Text 'trip.csv' ("id,name,amount,day,at,ok`n" + "1,Ana,1.5,2024-01-05,2024-01-05 10:30:00,true`n" + "2,,2.25,2024-02-01,2024-02-01 00:00:01,false`n" + "3,Cy,,,,`n"))
+        foreach ($fmt in 'parquet', 'arrow') {
+            $out = Join-Path $script:Work ('trip_out.' + $fmt)
+            $e = Export-SemLocalTable -HomeDir $script:HomeDir -Name 'trip' -Path $out -Format $fmt
+            $e.Rows | Should -Be 3
+            $r = Import-SemLocalFile -HomeDir $script:HomeDir -Path $out -Table ('trip_' + $fmt)
+            $r.Rows | Should -Be 3
+            Get-Decl ('trip_' + $fmt) | Should -Be 'INTEGER,TEXT,REAL,DATE,DATE,BOOLEAN'
+            $a = Get-Rows ('SELECT * FROM trip_' + $fmt + ' ORDER BY id')
+            $a[0].at | Should -Be ([datetime]'2024-01-05T10:30:00')
+            $a[0].day | Should -Be ([datetime]'2024-01-05')
+            $a[1].ok | Should -BeFalse
+            $a[1].name | Should -BeOfType [DBNull]
+            $a[2].amount | Should -BeOfType [DBNull]
+            (Get-Rows ("SELECT typeof(at) AS t, at FROM trip_" + $fmt + " WHERE id = 1"))[0].at | Should -Be ([datetime]'2024-01-05T10:30:00')
+        }
+    }
+    It 'reports a damaged Parquet file in plain words' {
+        $p = Write-TestFile 'damaged.parquet' 'PAR1 this is not a parquet file PAR1'
+        { Import-SemLocalFile -HomeDir $script:HomeDir -Path $p } | Should -Throw '*Could not read the file*'
+        $c = Open-SemLocalConnection -HomeDir $script:HomeDir
+        try { $c.TableExists('damaged') | Should -BeFalse } finally { $c.Dispose() }
+    }
+    It 'imports a 1M-row Parquet file and reports rows per second' {
+        $p = Join-Path $script:Work 'million.parquet'
+        $rows = New-Object 'System.Collections.Generic.List[object[]]' 1000000
+        $d0 = [datetime]'2020-01-01'
+        for ($i = 0; $i -lt 1000000; $i++) { $rows.Add([object[]]@([long]$i, ('r' + ($i % 50)), ($i * 0.5), $d0.AddDays($i % 900).ToString('yyyy-MM-dd'), (($i % 2) -eq 0))) }
+        [SemColumnar.ColumnarFiles]::WriteParquet($p, [string[]]@('id', 'region', 'amount', 'day', 'ok'), [string[]]@('integer', 'text', 'real', 'date', 'boolean'), $rows)
+        $rows = $null
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $r = Import-SemLocalFile -HomeDir $script:HomeDir -Path $p -Table 'million'
+        $sw.Stop()
+        Write-Host ('    1,000,000-row Parquet ({0:N1} MB): {1:N0} ms, {2:N0} rows/s' -f ((New-Object IO.FileInfo $p).Length / 1MB), $sw.ElapsedMilliseconds, ($r.Rows / $sw.Elapsed.TotalSeconds))
+        $r.Rows | Should -Be 1000000
+        Get-Decl 'million' | Should -Be 'INTEGER,TEXT,REAL,DATE,BOOLEAN'
+        [IO.File]::Delete($p)
+    }
+}
+
 Describe 'ADO.NET behaviour on the query path' {
     BeforeAll {
         [void](Import-Text 'jobs.csv' ("id,region,cost,opened,done`n" + "1,North,10.5,2024-01-01,true`n2,South,20,2024-02-01,false`n3,North,,2024-03-01,true`n"))

@@ -2074,6 +2074,7 @@ namespace SemLocal
                 case "integer": return Kind.Integer;
                 case "real": return Kind.Real;
                 case "date": return Kind.Date;
+                case "datetime": return Kind.Date;
                 case "boolean": return Kind.Boolean;
                 case "blob": return Kind.Blob;
             }
@@ -2087,6 +2088,9 @@ namespace SemLocal
             {
                 if (v is DateTime) { LocalCommand.Bind(_conn, stmt, index, Values.DateText((DateTime)v)); return; }
                 if (v is DateTimeOffset) { LocalCommand.Bind(_conn, stmt, index, Values.DateText(((DateTimeOffset)v).UtcDateTime)); return; }
+                // Columnar.cs gives dates as yyyy-MM-dd and datetimes as yyyy-MM-ddTHH:mm:ss[.fff]Z: store SQLite's own form.
+                DateTime parsed;
+                if (v is string && Values.TryAnyDate((string)v, out parsed)) { LocalCommand.Bind(_conn, stmt, index, Values.DateText(parsed)); return; }
             }
             if (k == Kind.Text && !(v is string))
             {
@@ -2568,6 +2572,91 @@ namespace SemLocal
                 while (r.Read()) names.Add(r.GetString(0));
             foreach (string n in names) conn.Execute("DROP TABLE IF EXISTS " + LocalConnection.Quote(n));
             return names.Count;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Export a table to Parquet or Arrow through SemColumnar's writers (found at run time, like the reader)
+    // ---------------------------------------------------------------------------------------------
+    public static class LocalExport
+    {
+        static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        /// <summary>Writes the table to path as "parquet" or "arrow"; returns the number of rows written.</summary>
+        public static long Columnar(LocalConnection conn, string table, string path, string format)
+        {
+            string bad = LocalImport.CheckTableName(table);
+            if (bad != null) throw new LocalException(bad);
+            if (!conn.TableExists(table)) throw new LocalException("No table named \"" + table + "\" in the local database.");
+            Type t = null;
+            foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try { t = a.GetType(LocalImport.ColumnarTypeName, false); } catch { }
+                if (t != null) break;
+            }
+            if (t == null) throw new LocalException("Writing Parquet or Arrow needs Semaphore's columnar writer (server\\Columnar.cs), which is not in this copy.");
+            string method = string.Equals(format, "arrow", StringComparison.OrdinalIgnoreCase) ? "WriteArrow" : "WriteParquet";
+            MethodInfo write = t.GetMethod(method, BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string), typeof(string[]), typeof(string[]), typeof(IEnumerable<object[]>) }, null);
+            if (write == null) throw new LocalException(LocalImport.ColumnarTypeName + " has no " + method + ".");
+            List<string[]> cols = conn.TableColumns(table);
+            string[] names = new string[cols.Count];
+            string[] types = new string[cols.Count];
+            Kind[] kinds = new Kind[cols.Count];
+            for (int i = 0; i < cols.Count; i++)
+            {
+                names[i] = cols[i][0];
+                kinds[i] = Values.FromDecl(cols[i][1]);
+                switch (kinds[i])
+                {
+                    case Kind.Boolean: types[i] = "boolean"; break;
+                    case Kind.Integer: types[i] = "integer"; break;
+                    case Kind.Real: types[i] = "real"; break;
+                    case Kind.Blob: types[i] = "blob"; break;
+                    case Kind.Date:
+                        types[i] = conn.ScalarLong("SELECT IFNULL(MAX(length(" + LocalConnection.Quote(names[i]) + ")), 0) FROM " + LocalConnection.Quote(table)) > 10 ? "datetime" : "date";
+                        break;
+                    default: types[i] = "text"; break;
+                }
+            }
+            long[] count = new long[1];
+            try { write.Invoke(null, new object[] { path, names, types, Rows(conn, table, names, types, count) }); }
+            catch (TargetInvocationException e) { Exception inner = e.InnerException ?? e; throw new LocalException("Could not write the file: " + inner.Message, inner); }
+            return count[0];
+        }
+
+        static IEnumerable<object[]> Rows(LocalConnection conn, string table, string[] names, string[] types, long[] count)
+        {
+            StringBuilder sel = new StringBuilder("SELECT ");
+            for (int i = 0; i < names.Length; i++) { if (i > 0) sel.Append(", "); sel.Append(LocalConnection.Quote(names[i])); }
+            sel.Append(" FROM ").Append(LocalConnection.Quote(table));
+            using (LocalCommand c = new LocalCommand(conn, sel.ToString()))
+            {
+                c.CommandTimeout = 0;
+                using (LocalDataReader r = c.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        object[] row = new object[names.Length];
+                        for (int i = 0; i < names.Length; i++)
+                        {
+                            object v = r.GetValue(i);
+                            if (v is DBNull) { row[i] = null; continue; }
+                            switch (types[i])
+                            {
+                                case "integer": row[i] = Convert.ToInt64(v, Inv); break;
+                                case "real": row[i] = Convert.ToDouble(v, Inv); break;
+                                case "boolean": row[i] = v is bool ? v : (object)(Convert.ToInt64(v, Inv) != 0); break;
+                                case "blob": row[i] = v as byte[]; break;
+                                case "date": row[i] = v is DateTime ? ((DateTime)v).ToString("yyyy-MM-dd", Inv) : Convert.ToString(v, Inv); break;
+                                case "datetime": row[i] = v is DateTime ? ((DateTime)v).ToString(((DateTime)v).Millisecond != 0 ? "yyyy-MM-dd'T'HH:mm:ss.fff'Z'" : "yyyy-MM-dd'T'HH:mm:ss'Z'", Inv) : Convert.ToString(v, Inv); break;
+                                default: { IFormattable fm = v as IFormattable; row[i] = fm != null ? fm.ToString(null, Inv) : v.ToString(); break; }
+                            }
+                        }
+                        count[0]++;
+                        yield return row;
+                    }
+                }
+            }
         }
     }
 
