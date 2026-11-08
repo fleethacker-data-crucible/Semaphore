@@ -78,7 +78,7 @@ export function classify(dist) {
   for (const name of readdirSync(path.join(dist, 'assets')).sort()) {
     const f = `assets/${name}`;
     if (!statSync(path.join(dist, f)).isFile()) continue;
-    const kind = initial.has(f) ? 'initial' : css.includes(f) ? 'initial css' : /^report\./.test(name) ? 'report reader' : /^(worker|predict)\./.test(name) ? 'worker' : name.endsWith('.js') ? 'lazy' : 'other';
+    const kind = initial.has(f) ? 'initial' : css.includes(f) ? 'initial css' : /^report\./.test(name) ? 'report reader' : /^(worker|predict|stt)\./.test(name) ? 'worker' : name.endsWith('.js') ? 'lazy' : 'other';
     rows.push({ f, kind, ...sizeOf(f) });
   }
   return { entry, initial, rows };

@@ -36,6 +36,14 @@
 # needs nothing. worker-src: the CSV worker is a same-origin file (blob: kept for worker builds).
 # frame-src 'self': a custom widget's sandboxed frame (/sandbox/widget.html, below).
 $script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+# The Whisper worker for voice input (web/src/stt-worker.ts, assets/stt.<hash>.js) alone gets
+# 'wasm-unsafe-eval', which lets it compile WebAssembly (the ONNX runtime from TalkForge's files) and
+# does not allow JavaScript eval. A dedicated worker runs under the policy of its own script response,
+# so the page itself keeps the policy above. Sent only while voice input is on (settings voice.input).
+$script:SemSttCsp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+$script:SemSttWorkerPath = '\A/assets/stt\.[0-9a-f]{10}\.js\z'
+# Permissions-Policy with the microphone off. Get-SemPermissionsPolicy sends microphone=(self) instead
+# while voice input is on for this Semaphore (settings voice.input, read at start into $script:Sem.VoiceInput).
 $script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
 # A custom widget's frame: everything under /sandbox/ (web/sandbox/widget.html and its bundle). The page
 # loads it only in <iframe sandbox="allow-scripts">, and the CSP's own sandbox directive makes the
@@ -61,7 +69,7 @@ if ($null -eq $script:Sem) {
         StopRequested = $false; StopReason = ''; Stay = $false
         RuntimeFile = ''; StartedAt = (Get-Date); SyncBusy = $false
         Workers = $null; Pool = $null; WorkerContext = $null; AwsSettings = $null; S3Jobs = [hashtable]::Synchronized(@{})
-        OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
+        OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}; VoiceInput = $false
         Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
         LocalShares = @(); LocalMaxBytes = [long]21474836480; LocalJobs = $null; LocalPool = $null
     }
@@ -184,7 +192,7 @@ function Get-SemSecurityHeaders {
         'X-Frame-Options: DENY',
         'Cross-Origin-Resource-Policy: same-origin',
         'Cross-Origin-Opener-Policy: same-origin',
-        ('Permissions-Policy: ' + $script:SemPermissionsPolicy)
+        ('Permissions-Policy: ' + $(if ($Sandbox) { $script:SemPermissionsPolicy } else { Get-SemPermissionsPolicy }))   # the widget frame never gets the microphone
     )
     if ($Sandbox) {
         $h = @($h | ForEach-Object { $_.Replace('X-Frame-Options: DENY', ('X-Frame-Options: ' + $script:SemSandboxFrameOptions)).Replace('Cross-Origin-Resource-Policy: same-origin', ('Cross-Origin-Resource-Policy: ' + $script:SemSandboxResourcePolicy)) })
@@ -192,6 +200,12 @@ function Get-SemSecurityHeaders {
     if ($CacheControl) { $h += ('Cache-Control: ' + $CacheControl) }
     elseif ($NoStore) { $h += 'Cache-Control: no-store' } else { $h += 'Cache-Control: no-cache' }
     return $h
+}
+
+function Get-SemPermissionsPolicy {
+    # The microphone is allowed for this page (self, never a frame or another origin) only while voice input is on.
+    if ($script:Sem.VoiceInput -eq $true) { return $script:SemPermissionsPolicy.Replace('microphone=()', 'microphone=(self)') }
+    return $script:SemPermissionsPolicy
 }
 
 function Get-SemStaticCacheControl {
@@ -448,6 +462,63 @@ function Get-SemSkinFile {
     return $f
 }
 
+# ---------------------------------------------------------------------------
+# Voice input files: /stt/<file>, read-only from the TalkForge assets folder (as Lazarette serves
+# them, lib/server/Stark.ps1, PR 142). Whisper tiny.en runs in the page's worker through
+# transformers.js; this server only hands it these fixed files. Nothing else under TalkForge can be
+# read: the name must be one of the keys below, exactly, so no path is ever built from the request.
+# They hold no secrets and a worker fetches them, so they need no session token (the Host and Origin
+# gate still applies). Off (404) while voice input is off.
+# ---------------------------------------------------------------------------
+$script:SemSttFiles = [ordered]@{
+    'transformers.min.js' = 'stt\transformers.min.js'
+    'models/whisper-tiny.en/config.json' = 'stt\models\whisper-tiny.en\config.json'
+    'models/whisper-tiny.en/generation_config.json' = 'stt\models\whisper-tiny.en\generation_config.json'
+    'models/whisper-tiny.en/preprocessor_config.json' = 'stt\models\whisper-tiny.en\preprocessor_config.json'
+    'models/whisper-tiny.en/tokenizer.json' = 'stt\models\whisper-tiny.en\tokenizer.json'
+    'models/whisper-tiny.en/tokenizer_config.json' = 'stt\models\whisper-tiny.en\tokenizer_config.json'
+    'models/whisper-tiny.en/added_tokens.json' = 'stt\models\whisper-tiny.en\added_tokens.json'
+    'models/whisper-tiny.en/special_tokens_map.json' = 'stt\models\whisper-tiny.en\special_tokens_map.json'
+    'models/whisper-tiny.en/onnx/encoder_model_quantized.onnx' = 'stt\models\whisper-tiny.en\onnx\encoder_model_quantized.onnx'
+    'models/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx' = 'stt\models\whisper-tiny.en\onnx\decoder_model_merged_quantized.onnx'
+    'onnx/ort-wasm-simd-threaded.jsep.mjs' = 'vendor\onnx\ort-wasm-simd-threaded.jsep.mjs'
+    'onnx/ort-wasm-simd-threaded.jsep.wasm' = 'vendor\onnx\ort-wasm-simd-threaded.jsep.wasm'
+}
+# Needed before voice input can work (the runtime picks the ONNX build itself).
+$script:SemSttRequired = @('transformers.min.js', 'models/whisper-tiny.en/config.json', 'models/whisper-tiny.en/generation_config.json', 'models/whisper-tiny.en/preprocessor_config.json', 'models/whisper-tiny.en/tokenizer.json', 'models/whisper-tiny.en/tokenizer_config.json', 'models/whisper-tiny.en/onnx/encoder_model_quantized.onnx', 'models/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx', 'onnx/ort-wasm-simd-threaded.jsep.wasm')
+$script:SemSttInstall = "In the TalkForge folder run: populate-assets.ps1 -Only 'stt/*'"
+
+function Get-SemSttFileName {
+    # The relative file under the TalkForge assets folder for a /stt/ name, or $null. Exact, case-sensitive match only.
+    param([string]$Name)
+    foreach ($k in $script:SemSttFiles.Keys) { if ([string]$k -ceq $Name) { return [string]$script:SemSttFiles[$k] } }
+    return $null
+}
+
+function Get-SemSttStatus {
+    # GET /api/voice/dictation/status: { ready, missing[], message } for the Whisper files.
+    param([string]$Root = $script:Sem.Root)
+    $tf = Get-SemTalkForgeSettings -Root $Root
+    if (-not $tf.Folder) { return [ordered]@{ ready = $false; missing = @(); message = 'TalkForge was not found. Voice input uses its Whisper files: set voice.folder in config\settings.json (or SEMAPHORE_VOICE_FOLDER) to the TalkForge folder.' } }
+    $assets = Join-Path $tf.Folder 'assets'
+    $missing = @(foreach ($k in $script:SemSttRequired) { if (-not (Test-Path -LiteralPath (Join-Path $assets (Get-SemSttFileName $k)) -PathType Leaf)) { $k } })
+    if ($missing.Count) { return [ordered]@{ ready = $false; missing = $missing; message = ("Voice input needs TalkForge's speech-to-text files ({0} missing). {1}" -f $missing.Count, $script:SemSttInstall) } }
+    return [ordered]@{ ready = $true; missing = @(); message = 'Voice input is ready.' }
+}
+
+function Send-SemSttFile {
+    param($Req)
+    $head = ($Req.Method -eq 'HEAD')
+    if ($script:Sem.VoiceInput -ne $true) { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
+    $rel = Get-SemSttFileName ($Req.Path.Substring(5))
+    if (-not $rel) { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
+    $dir = (Get-SemTalkForgeSettings -Root $script:Sem.Root).Folder
+    $file = ''
+    if ($dir) { $file = [IO.Path]::Combine($dir, 'assets', $rel) }
+    if (-not $file -or -not [IO.File]::Exists($file)) { Send-SemError 404 'stt-missing' ("Voice input needs TalkForge's speech-to-text files. " + $script:SemSttInstall) -HeadOnly:$head; return }
+    Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $file) -Bytes ([IO.File]::ReadAllBytes($file)) -CacheControl 'no-cache' -HeadOnly:$head
+}
+
 function Send-SemStatic {
     param($Req)
     $head = ($Req.Method -eq 'HEAD')
@@ -467,7 +538,9 @@ function Send-SemStatic {
             return
         }
         default {
-            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head -Sandbox:$sandbox
+            $csp = ''
+            if ($script:Sem.VoiceInput -eq $true -and $Req.Path -cmatch $script:SemSttWorkerPath) { $csp = $script:SemSttCsp }
+            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head -Csp $csp -Sandbox:$sandbox
         }
     }
 }
@@ -620,6 +693,7 @@ function Invoke-SemRequest {
         return
     }
     if ($Req.Method -ne 'GET' -and $Req.Method -ne 'HEAD') { Send-SemError 405 'method' 'Method not allowed.'; return }
+    if ($path.StartsWith('/stt/')) { Send-SemSttFile -Req $Req; return }
     Send-SemStatic -Req $Req
 }
 

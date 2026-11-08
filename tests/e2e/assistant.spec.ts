@@ -10,6 +10,10 @@ test('the orb floats over the page and opens the assistant, which answers from t
   await orb.click();
   const dock = page.getByRole('complementary', { name: 'Semaphore assistant' });
   await expect(dock).toBeVisible();
+  // A click on the orb also listens (voice input); a second click stops without sending.
+  await expect(dock.getByTestId('assistant-listening')).toBeVisible();
+  await orb.click();
+  await expect(dock.getByTestId('assistant-listening')).toHaveCount(0);
   await expect(dock.getByTestId('assistant-status')).toContainText('Guide mode');
   await dock.getByRole('button', { name: 'How do I export to Excel?' }).click();
   await expect(dock.getByTestId('assistant-answer').last()).toContainText('Export and share');
@@ -67,7 +71,9 @@ test('hovering the orb shows no menu; its look and how you talk to it are set in
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await expect(page.getByRole('complementary', { name: 'Semaphore assistant' })).toBeVisible();
+  await expect(page.getByTestId('assistant-listening')).toBeVisible();
   await page.mouse.up();
+  await expect(page.getByTestId('assistant-listening')).toHaveCount(0);
   await expect(page.getByTestId('assistant-input')).toBeFocused();
 });
 
@@ -83,7 +89,8 @@ test('spoken answers: the speaker reads answers through TalkForge and says plain
   await expect(dock.getByRole('button', { name: 'Stop reading answers aloud' })).toHaveAttribute('aria-pressed', 'true');
   await dock.getByTestId('assistant-input').fill('How do I export to Excel?');
   await page.keyboard.press('Enter');
-  await expect(dock.getByTestId('assistant-speak-error')).toContainText('TalkForge is not running');
+  // Not running and nothing to start it from (the mock's default): one plain sentence that says why.
+  await expect(dock.getByTestId('assistant-speak-error')).toContainText('TalkForge was not found');
 
   await dock.getByRole('button', { name: 'Close assistant' }).click();
   await page.getByRole('button', { name: 'Settings' }).click();
@@ -92,6 +99,8 @@ test('spoken answers: the speaker reads answers through TalkForge and says plain
   const card = dialog.getByRole('region', { name: 'Spoken answers' });
   await expect(card.getByTestId('voice-url')).toHaveText('http://127.0.0.1:25009');
   await expect(card).toContainText('TALKFORGE_TOKEN');
+  await expect(card.getByTestId('voice-autostart')).toHaveText('On');
+  await expect(card.getByTestId('voice-folder')).toHaveText('Not found');
   await card.getByTestId('voice-test').click();
-  await expect(card.getByTestId('voice-test-result')).toContainText('TalkForge is not running');
+  await expect(card.getByTestId('voice-test-result')).toContainText('TalkForge was not found');
 });

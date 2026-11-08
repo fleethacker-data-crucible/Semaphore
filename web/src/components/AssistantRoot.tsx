@@ -1,19 +1,65 @@
 // The Semaphore assistant and its orb, as in Lazarette (StarkDock.svelte and AssistantOrb.svelte).
 // Loaded after the page paints (lib/assistant-bus.ts). The panel docks on the right; the orb floats
 // over the page, can be dragged, and opens the panel when clicked, held, or activated with Enter.
+// Talking to it (Lazarette PR 142): a click on the orb, or the microphone next to Send, opens the panel
+// and listens; the words go into the message box and are sent when you stop talking. A click while it
+// listens stops without sending; with press and hold, letting go sends.
 
 import { type KeyboardEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { CircleAlert, Sparkles, Square, SendHorizontal, SquarePen, Volume2, VolumeOff, X } from 'lucide-react';
+import { CircleAlert, LoaderCircle, Mic, MicOff, Sparkles, Square, SendHorizontal, SquarePen, Volume2, VolumeOff, X } from 'lucide-react';
 import '../../vendor/binnacle/binnacle.js';
 import type { AiStatus } from '../lib/ai.ts';
 import { assistant, assistantOrbState, MAX_QUESTION, type PageOutline } from '../lib/assistant.ts';
 import { takePendingOpen } from '../lib/assistant-bus.ts';
 import { HOLD_MS, orbGesture, useOrbPrefs } from '../lib/orb-prefs.ts';
 import { voice } from '../lib/voice.ts';
+import { dictation } from '../lib/dictation.ts';
+import { joinDraft } from '../lib/dictation-audio.ts';
 
 function useVoice() {
   useSyncExternalStore(voice.subscribe, voice.snapshot, voice.snapshot);
   return voice;
+}
+
+function useDictation() {
+  useSyncExternalStore(dictation.subscribe, dictation.snapshot, dictation.snapshot);
+  return dictation;
+}
+
+/** What a transcript is sent with: the latest AI status and page outline (set by AssistantRoot). */
+const sendContext: { ai: AiStatus | null; on: boolean; page: PageOutline | null } = { ai: null, on: false, page: null };
+
+function focusInput(): void {
+  requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-input"]')?.focus());
+}
+
+/** Voice input can be used: on in this person's Settings and not switched off for this Semaphore. */
+const canTalk = () => voice.prefs.input && !dictation.off;
+
+/** Opens the panel and listens; false when voice input is off or the microphone could not be opened. */
+async function startTalking(): Promise<boolean> {
+  voice.stop();
+  assistant.toggle(true);
+  if (voice.prefs.speak) voice.warmUp(); // TalkForge starts while you talk
+  if (!canTalk() || assistant.busy) {
+    focusInput();
+    return false;
+  }
+  const before = assistant.draft;
+  const ok = await dictation.start({
+    onText: (text) => assistant.setDraft(joinDraft(before, text)),
+    onDone: () => {
+      if (voice.prefs.autoSend && assistant.draft.trim()) void assistant.send(assistant.draft, { status: sendContext.ai, on: sendContext.on }, sendContext.page);
+    },
+  });
+  if (!ok) focusInput();
+  return ok;
+}
+
+/** Ends listening: send keeps what was said (and sends it when that is on); otherwise it is dropped. */
+function stopTalking(send: boolean): void {
+  dictation.stop(send);
+  focusInput();
 }
 
 interface BinnacleOrb {
@@ -63,13 +109,22 @@ function Orb() {
       size: 130,
       zIndex: 40,
       picker: false, // no menu on hover; the choices are in Settings
-      x: Math.max(120, window.innerWidth - 140),
+      // Left of the assistant panel (380 px), so the orb can be clicked again to stop listening while it is open.
+      x: Math.max(120, window.innerWidth - 380 - 110),
       y: window.innerHeight - 110,
       onActivate: () => {
         // A click (or Enter). With "press and hold" a quick click does nothing but say how.
-        voice.stop();
-        if (talkRef.current === 'click') assistant.toggle();
-        else B.voice.set(null, 0, 'Press and hold to talk');
+        if (talkRef.current !== 'click') {
+          B.voice.set(null, 0, 'Press and hold to talk');
+          return;
+        }
+        if (dictation.active) stopTalking(false); // a click while listening stops without sending
+        else if (canTalk()) void startTalking();
+        else {
+          voice.stop();
+          assistant.toggle();
+          if (assistant.open && voice.prefs.speak) voice.warmUp();
+        }
       },
     });
     orbRef.current = orb;
@@ -88,7 +143,7 @@ function Orb() {
       timer = setTimeout(() => {
         held = true;
         setHolding(true);
-        assistant.toggle(true);
+        void startTalking(); // listening while held; just the panel when voice input is off
       }, HOLD_MS);
     };
     const move = (e: PointerEvent) => {
@@ -103,7 +158,8 @@ function Orb() {
       if (held) {
         held = false;
         setHolding(false);
-        document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-input"]')?.focus();
+        if (dictation.active) stopTalking(true); // letting go sends
+        else focusInput();
       }
     };
     hit?.addEventListener('pointerdown', down);
@@ -130,16 +186,26 @@ function Orb() {
     orbRef.current?.setTheme(prefs.theme);
   }, [prefs.theme]);
   const v = useVoice();
+  const d = useDictation();
   useEffect(() => {
-    if (v.speaking && !holding) return; // lib/voice.ts sets 'speaking' with the real audio level
-    window.Binnacle?.voice.set(holding ? 'listening' : assistantOrbState(a.busy, a.open), 0);
-  }, [a.busy, a.open, holding, v.speaking]);
+    const orbVoice = window.Binnacle?.voice;
+    if (!orbVoice) return;
+    // (Binnacle's set() returns the voice object for chaining: never return it from the effect.)
+    if (d.state === 'listening') orbVoice.set('listening', d.level, 'Listening'); // lib/dictation.ts follows the microphone
+    else if (d.state === 'preparing') orbVoice.set('thinking', 0, 'Getting the microphone ready');
+    else if (d.state === 'transcribing') orbVoice.set('thinking', 0, 'Writing it down');
+    else if (holding) orbVoice.set('listening', 0);
+    else if (v.preparing) orbVoice.set('thinking', 0, 'Getting the voice ready');
+    else if (!v.speaking) orbVoice.set(assistantOrbState(a.busy, a.open), 0); // while speaking, lib/voice.ts sets 'speaking' with the real audio level
+  }, [a.busy, a.open, holding, v.speaking, v.preparing, d.state]);
   return null;
 }
 
 function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean; page: PageOutline | null; onClose: () => void }) {
   const a = useAssistant();
   const v = useVoice();
+  const d = useDictation();
+  const talk = v.prefs.input && !d.off;
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -147,6 +213,7 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
   }, [a.messages]);
   useEffect(() => {
     input.current?.focus();
+    void dictation.probe();
   }, []);
   const send = (text = a.draft) => void a.send(text, { status: ai, on: aiOn }, page);
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -170,7 +237,15 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
             {a.status}
           </p>
         </div>
-        <button type="button" aria-label={v.prefs.speak ? 'Stop reading answers aloud' : 'Read answers aloud'} aria-pressed={v.prefs.speak} onClick={() => v.setPrefs({ speak: !v.prefs.speak })} data-testid="assistant-speak" className={`grid size-8 place-items-center rounded-md hover:bg-panel-2 ${v.prefs.speak ? 'text-accent' : 'text-ink-2'}`}>
+        <button
+          type="button"
+          aria-label={v.prefs.speak ? 'Stop reading answers aloud' : 'Read answers aloud'}
+          aria-pressed={v.prefs.speak}
+          onClick={() => {
+            v.setPrefs({ speak: !v.prefs.speak });
+            if (v.prefs.speak) v.warmUp(); // TalkForge starts now, so the first answer speaks sooner
+          }}
+          data-testid="assistant-speak" className={`grid size-8 place-items-center rounded-md hover:bg-panel-2 ${v.prefs.speak ? 'text-accent' : 'text-ink-2'}`}>
           {v.prefs.speak ? <Volume2 size={16} /> : <VolumeOff size={16} />}
         </button>
         <button type="button" aria-label="New chat" onClick={() => a.newChat()} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
@@ -178,16 +253,43 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
         </button>
         <button type="button" aria-label="Close assistant" onClick={() => {
             voice.stop();
+            dictation.cancel();
             onClose();
           }} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
           <X size={16} />
         </button>
       </header>
 
-      {v.error && v.prefs.speak && (
-        <p role="status" data-testid="assistant-speak-error" className="flex items-start gap-1.5 border-b border-line px-4 py-2 text-[12px] text-bad">
-          <CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /> {v.error}
+      {d.state === 'listening' ? (
+        <p role="status" data-testid="assistant-listening" className="flex items-center gap-1.5 border-b border-line bg-accent-soft px-4 py-2 text-[12px]">
+          <Mic size={14} aria-hidden="true" className="shrink-0 animate-pulse text-accent" /> Listening… {v.prefs.autoSend ? 'speak, then pause to send.' : 'speak, then press Send.'} Click the microphone to stop.
         </p>
+      ) : d.state === 'preparing' ? (
+        <p role="status" data-testid="assistant-listening-preparing" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-[12px] text-ink-2">
+          <LoaderCircle size={14} aria-hidden="true" className="shrink-0 animate-spin" /> Getting the microphone ready…
+        </p>
+      ) : d.state === 'transcribing' ? (
+        <p role="status" data-testid="assistant-transcribing" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-[12px] text-ink-2">
+          <LoaderCircle size={14} aria-hidden="true" className="shrink-0 animate-spin" /> Writing down what you said…
+        </p>
+      ) : (
+        d.error && (
+          <p role="status" data-testid="assistant-listening-error" className="flex items-start gap-1.5 border-b border-line px-4 py-2 text-[12px] text-bad">
+            <CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /> {d.error}
+          </p>
+        )
+      )}
+      {v.preparing && v.prefs.speak ? (
+        <p role="status" data-testid="assistant-speak-preparing" className="flex items-center gap-1.5 border-b border-line px-4 py-2 text-[12px] text-ink-2">
+          <LoaderCircle size={14} aria-hidden="true" className="shrink-0 animate-spin" /> Getting the voice ready… this takes a few seconds the first time.
+        </p>
+      ) : (
+        v.error &&
+        v.prefs.speak && (
+          <p role="status" data-testid="assistant-speak-error" className="flex items-start gap-1.5 border-b border-line px-4 py-2 text-[12px] text-bad">
+            <CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /> {v.error}
+          </p>
+        )
       )}
       <div ref={list} role="log" aria-live="polite" aria-label="Conversation" data-testid="assistant-log" className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {!a.messages.length ? (
@@ -253,6 +355,19 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
           />
           <div className="flex items-center justify-between px-2 pb-2">
             <span className="pl-1 text-[11px] text-ink-2">Never paste passwords, tokens or keys.</span>
+            {talk && (
+              <button
+                type="button"
+                aria-label={d.active ? 'Stop listening' : 'Talk instead of typing'}
+                aria-pressed={d.active}
+                onClick={() => (d.active ? stopTalking(true) : void startTalking())}
+                disabled={a.busy}
+                data-testid="assistant-mic"
+                className={`ml-auto mr-1 grid size-8 place-items-center rounded-md hover:bg-panel-2 disabled:opacity-40 ${d.active ? 'text-accent' : 'text-ink-2'}`}
+              >
+                {d.active ? <MicOff size={16} /> : <Mic size={16} />}
+              </button>
+            )}
             {a.busy ? (
               <button type="button" onClick={() => a.stop()} data-testid="assistant-stop" className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[var(--fl-control-border)] px-2.5 text-[13px]">
                 <Square size={14} aria-hidden="true" /> Stop
@@ -271,9 +386,13 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
 
 export function AssistantRoot({ orb, ai, aiOn, page }: { orb: boolean; ai: AiStatus | null; aiOn: boolean; page: PageOutline | null }) {
   const a = useAssistant();
+  sendContext.ai = ai;
+  sendContext.on = aiOn;
+  sendContext.page = page;
   // The header button and Ctrl+K ask through lib/assistant-bus.ts, which works before this loaded.
   useEffect(() => {
     if (takePendingOpen()) assistant.toggle(true);
+    void dictation.probe(); // before the first click on the orb: is voice input on for this Semaphore?
     const open = () => {
       takePendingOpen();
       assistant.toggle();

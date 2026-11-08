@@ -339,6 +339,8 @@ $script:Sem.LocalShares = @($settings.localShares)
 $script:Sem.LocalMaxBytes = [long]$settings.localImportMaxGB * 1GB
 try { [void](Initialize-SemLocalDb -HomeDir $homeDir -Cleanup) } catch { Write-SemLog 'WARN' ('The local database is not available on this computer: ' + $_.Exception.Message) }
 $script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
+# Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
+$script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {
@@ -368,5 +370,6 @@ try {
     Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
 } finally {
     if ($Refresh) { Stop-SemHeadless }
+    [void](Stop-SemTalkForgeChild)   # only a TalkForge this Semaphore started
 }
 exit 0
