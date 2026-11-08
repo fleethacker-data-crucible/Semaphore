@@ -163,11 +163,8 @@ export function translateSql(sql: string, from: Dialect, to: Dialect): Translati
 
   // Row limits come off first, wherever they were written, and go back on in the target's form.
   let limit: string | null = null;
-  let lastWord = prev(toks, toks.length - 1);
-  if (lastWord >= 0 && toks[lastWord]!.text === ';') {
-    toks = toks.slice(0, lastWord);
-    lastWord = prev(toks, toks.length - 1);
-  }
+  const lastWord = prev(toks, toks.length - 1);
+  if (lastWord >= 0 && toks[lastWord]!.text === ';') toks = toks.slice(0, lastWord);
   for (let i = 0; i < toks.length; i++) {
     if (up(toks[i]) === 'SELECT') {
       let j = next(toks, i + 1);

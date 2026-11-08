@@ -54,7 +54,7 @@ const ALL = [
 
 function levelsFor(rows: Key[], column: Key | null): Record<string, DisplayRow[]> {
   const out: Record<string, DisplayRow[]> = {};
-  for (const [d, c] of neededLevels(rows.length, column !== null)) out[levelKey(d, c)] = group([...rows.slice(0, d), ...(c && column ? [column] : [])]);
+  for (const [d, c] of neededLevels(rows.length, column !== null)) out[levelKey(d, c)] = group([...rows.slice(0, d), ...(c ? [column!] : [])]);
   return out;
 }
 

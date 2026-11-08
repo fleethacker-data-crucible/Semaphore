@@ -58,7 +58,6 @@ export function fitLogit(x: number[][], y: ArrayLike<number>, lambda = 0, maxIte
   let obj = loglik(x, y, beta) - pen(beta);
   let converged = false;
   let it = 0;
-  let h: number[][] = [];
   const info = (b: number[]) => {
     const g = new Array<number>(p).fill(0);
     const hh = Array.from({ length: p }, () => new Array<number>(p).fill(0));
@@ -84,7 +83,6 @@ export function fitLogit(x: number[][], y: ArrayLike<number>, lambda = 0, maxIte
   };
   for (; it < maxIter; it++) {
     const { g, hh } = info(beta);
-    h = hh;
     const step = solve(hh, g);
     if (!step) break;
     let t = 1;
@@ -105,7 +103,7 @@ export function fitLogit(x: number[][], y: ArrayLike<number>, lambda = 0, maxIte
       break;
     }
   }
-  h = info(beta).hh;
+  const h = info(beta).hh;
   const cov = inverse(h) ?? h.map((row, i) => row.map((_, j) => (i === j ? Infinity : 0)));
   return { beta, cov, loglik: loglik(x, y, beta), iterations: it, converged };
 }

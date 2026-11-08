@@ -5,7 +5,7 @@
 // other way round: how many items are finished by `horizon` periods ahead.
 
 import { futureLabels, timeSeries } from '../data.ts';
-import { fmt, pct } from '../format.ts';
+import { fmt } from '../format.ts';
 import { Rng } from '../rng.ts';
 import { histogram, mean, quantileSorted } from '../stats.ts';
 import { ModelError, type ModelOutput, type ModelRunner, numParam } from '../types.ts';

@@ -108,9 +108,11 @@ export default function CustomWidget({ flag, result, index, selections, onSelect
         state.selects.push(t);
         now.onSelect(m.key, m.value, false);
       } else if (m.type === 'picture') {
+        // Only a picture this page asked for (a number it handed out) can settle a waiting export.
+        if (typeof m.seq !== 'number' || !state.pictures.has(m.seq)) return;
         const done = state.pictures.get(m.seq);
         state.pictures.delete(m.seq);
-        done?.(m.url ? { url: m.url, width: m.width, height: m.height } : null);
+        if (typeof done === 'function') done(m.url ? { url: m.url, width: m.width, height: m.height } : null);
       }
     };
     window.addEventListener('message', onMessage);

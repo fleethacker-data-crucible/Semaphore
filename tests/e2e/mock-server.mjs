@@ -698,7 +698,13 @@ const LOCAL_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const LOCAL_EXT = /\.(csv|tsv|txt|tab|xlsx|xlsm|sqlite|sqlite3|db|parquet|pq|arrow|feather|ipc)(\.gz)?$/i;
 
 function localSafeName(file) {
-  let s = String(file).replace(/\.gz$/i, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'table';
+  let s = String(file).replace(/\.gz$/i, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  // Trim the underscores by hand: a regular expression anchored at the end backtracks on long runs of '_'.
+  let a = 0;
+  let b = s.length;
+  while (a < b && s[a] === '_') a++;
+  while (b > a && s[b - 1] === '_') b--;
+  s = s.slice(a, b) || 'table';
   if (/^[0-9]/.test(s)) s = `t_${s}`;
   let name = s;
   for (let i = 2; [...localTables.keys()].some((k) => k.toLowerCase() === name.toLowerCase()); i++) name = `${s}_${i}`;

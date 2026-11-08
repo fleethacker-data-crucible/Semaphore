@@ -230,7 +230,6 @@ export interface SplitStatement {
 }
 
 const TSQL_STARTERS = new Set(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'CREATE', 'DROP', 'ALTER', 'DECLARE', 'SET', 'IF', 'WHILE', 'BEGIN', 'PRINT', 'TRUNCATE', 'EXEC', 'EXECUTE', 'RETURN', 'BREAK', 'CONTINUE', 'THROW', 'RAISERROR', 'WITH', 'USE', 'COMMIT', 'ROLLBACK', 'SAVE', 'IMPORT']);
-const BLOCK_STOPS = new Set(['END', 'ELSE', 'ELSIF', 'EXCEPTION', 'WHEN']);
 
 class Cursor {
   i = 0;

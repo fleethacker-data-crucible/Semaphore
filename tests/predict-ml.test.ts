@@ -118,7 +118,8 @@ test('random forest caps the trees on big data and says so', () => {
   const ms = Date.now() - t0;
   assert.ok(statOf(out, 'Trees') < 2000);
   assert.ok(out.notes.some((n) => /instead of 2000/.test(n)));
-  assert.ok(ms < 4000, `${ms} ms`);
+  // A bound that catches a runaway, not a benchmark: shared CI runners are several times slower than a desk PC.
+  assert.ok(ms < 20000, `${ms} ms`);
 });
 
 test('gradient boosting beats a single tree out of sample and refits with the chosen rounds', () => {

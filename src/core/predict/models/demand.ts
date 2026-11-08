@@ -174,12 +174,10 @@ export const runDemand: ModelRunner = (data, spec) => {
   }
   const ltMean = lead * rate;
   let rop: number;
-  let ltSd: number;
   if (method === 'poisson') {
     rop = poissonQuantile(ltMean, service);
-    ltSd = Math.sqrt(ltMean);
   } else {
-    ltSd = sd1 * Math.sqrt(lead);
+    const ltSd = sd1 * Math.sqrt(lead);
     rop = Math.max(0, Math.ceil(ltMean + normalInv(service) * ltSd - 1e-9));
     if (cls.pattern !== 'smooth') notes.push('The reorder point assumes lead-time demand is roughly normal; with intermittent use the true spread is skewed, so check it against past stock-outs.');
   }

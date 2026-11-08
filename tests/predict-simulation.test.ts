@@ -23,7 +23,6 @@ function mc(inputs: ModelInput[], params: Record<string, ParamValue> = {}): Mode
   return runMontecarlo(empty, { type: 'montecarlo', inputs, params }, ctx);
 }
 const stat = (o: ModelOutput, label: string) => o.stats.find((s) => s.label === label)?.value as number;
-const tableValue = (o: ModelOutput, first: string, col = 1) => o.table.rows.find((r) => r[0] === first)?.[col] as number;
 const near = (a: number, b: number, tol: number, what = '') => assert.ok(Math.abs(a - b) <= tol, `${what} ${a} is not within ${tol} of ${b}`);
 
 /** One labelled field and measures per row. */
