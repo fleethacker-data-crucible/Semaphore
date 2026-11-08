@@ -11,7 +11,9 @@ import { applySelections } from '../src/core/crossfilter.ts';
 import { runPlan, type TableRows } from '../src/core/engine.ts';
 import type { Binding, Flag, Hoist } from '../src/core/hoist.ts';
 import { planFlag, type QueryPlan } from '../src/core/planner.ts';
-import { bucketOf, mergeValues, splitPart, tileBounds, tileRanker } from '../src/core/reshape.ts';
+import * as impl from '../src/core/reshape-impl.ts';
+import { bucketOf, mergeValues, splitPart, tileBounds, tileRanker } from '../src/core/reshape-impl.ts';
+import { registerReshaping } from '../src/core/reshape.ts';
 import { acceptReshape, parseBuckets, previewPlan, proposeReshape, type ReshapeProposal, undoStep, withBounds } from '../src/core/reshape-words.ts';
 import { renderSql } from '../src/core/sql.ts';
 
@@ -42,6 +44,8 @@ const ROWS = [
   { name: 'Park, Joon', city: 'Pearl', state: 'HI', code: 'CC-3', days: 400, jan: 0, feb: 0, mar: 0 },
   { name: 'Ito, Yu', city: 'Bremerton', state: 'WA', code: 'DD-4', days: null, jan: 3, feb: 3, mar: 3 },
 ];
+registerReshaping(impl);
+
 const tables: TableRows = { crew: ROWS as unknown as TableRows[string] };
 const today = new Date('2025-06-15T00:00:00Z');
 

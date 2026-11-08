@@ -5,8 +5,8 @@
 // server binds the parameters with the driver's own API.
 
 import { type CatalogIndex, type Dialect, type FieldType, isIdentifier, isSqlDialect } from './catalog.ts';
-import { cleanType, dedupes, stepsFor } from './cleaning.ts';
-import { dedupesStored, fieldSql, makerOf, reshapedTable, unpivotSql, usesTiles } from './reshape.ts';
+import { cleanSql, cleanType, dedupes, stepsFor } from './cleaning.ts';
+import { makerOf, reshapedTable, reshaping } from './reshape.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { MANY_ALIAS, manyJoinSql, manyParts, renderManyBlock, type SqlKit } from './manyjoin.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
@@ -87,6 +87,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
     const step = reshaped(name);
     if (!step) return alias ? `${quoteTable(name, dialect)} ${as(alias)}` : quoteTable(name, dialect);
     const storedTable = index.field(step.field)!.table;
+    const { dedupesStored, unpivotSql } = reshaping();
     const inner = () => (dedupesStored(index, step) ? `(SELECT DISTINCT * FROM ${quoteTable(storedTable, dialect)}) ${as('s')}` : quoteTable(storedTable, dialect));
     return `${unpivotSql(index, step, dialect, (value, type) => bind({ value, type }), (n) => quote(n, dialect), inner)} ${as(alias ?? 'v')}`;
   };
@@ -123,15 +124,24 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   let from: string;
   const inner = new Map<string, string>();
   // Fields made by a step (split, merge, bucket) are computed in the inner query too, raw or not.
-  if ((!plan.raw && used.some((k) => stepsFor(index, k).length)) || used.some((k) => makerOf(index, k))) {
+  const made = used.some((k) => makerOf(index, k));
+  if ((!plan.raw && used.some((k) => stepsFor(index, k).length)) || made) {
     const cols = used.map((k, i) => {
       inner.set(k, `c${i}`);
-      // Equal-count groups rank every row of the base table, which is what the inner query reads.
-      if (usesTiles(index, k) && (index.field(k)?.table !== plan.table || plan.many)) throw new SqlError(TILES_ELSEWHERE);
+      const bindv = (value: string | number, type: 'string' | 'number') => bind({ value, type });
       let expr: string;
       try {
-        expr = fieldSql(index, k, !!plan.raw, stored, dialect, (value, type) => bind({ value, type }))();
+        if (made) {
+          // Equal-count groups rank every row of the base table, which is what the inner query reads.
+          const r = reshaping();
+          if (r.usesTiles(index, k) && (index.field(k)?.table !== plan.table || plan.many)) throw new SqlError(TILES_ELSEWHERE);
+          expr = r.fieldSql(index, k, !!plan.raw, stored, dialect, bindv)();
+        } else {
+          const steps = plan.raw ? [] : stepsFor(index, k);
+          expr = steps.length ? cleanSql(steps, stored(k), dialect, bindv) : stored(k);
+        }
       } catch (e) {
+        if (e instanceof SqlError) throw e;
         throw new SqlError((e as Error).message);
       }
       return `${expr} AS ${quote(`c${i}`, dialect)}`;

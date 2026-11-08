@@ -9,7 +9,7 @@ import { runPlan, type TableRows } from '../../../src/core/engine.ts';
 import { comparisonPlanFor, comparisonSelections } from '../../../src/core/drill-compare.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
 import { comparisonShift, planFlag, planLeaves, type QueryPlan } from '../../../src/core/planner.ts';
-import { storedTables } from '../../../src/core/reshape.ts';
+import { loadReshaping, storedTables } from '../../../src/core/reshape.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
 import type { CsvWorker } from './worker.ts';
@@ -171,6 +171,8 @@ function sourceSql(plan: QueryPlan, ctx: DataContext): RenderedSql | null {
 }
 
 async function run(plan: QueryPlan, ctx: DataContext) {
+  // Fields made by cleaning steps (split, merge, bucket, reshape) read through code loaded on demand.
+  await loadReshaping(ctx.index.catalog);
   if (ctx.localSources.has(plan.source)) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;

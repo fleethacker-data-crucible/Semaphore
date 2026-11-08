@@ -7,8 +7,8 @@ import type { CatalogIndex, FieldType } from './catalog.ts';
 import type { Filter, TimeGrain } from './hoist.ts';
 import type { QueryPlan } from './planner.ts';
 import type { Cell, ResultRow } from './crossfilter.ts';
-import { cleanType, dedupes } from './cleaning.ts';
-import { dedupesStored, fieldReader, reshapedTable, unpivotRows, usesTiles } from './reshape.ts';
+import { cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
+import { hasMaking, reshapedTable, reshaping } from './reshape.ts';
 import { calendarDay, dayStart } from './dates.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { type ManyRows, prepareManyRows } from './manyjoin.ts';
@@ -27,7 +27,8 @@ export class EngineError extends Error {}
 
 export function runPlan(plan: QueryPlan, index: CatalogIndex, stored: TableRows, today: Date = new Date()): RunResult {
   const started = Date.now();
-  const tables = withReshaped(plan, index, stored);
+  const making = hasMaking(index.catalog);
+  const tables = making ? withReshaped(plan, index, stored) : stored;
   const loaded = tables[plan.table];
   if (!loaded) throw new EngineError(`No rows are loaded for table "${plan.table}".`);
   const source = !plan.raw && dedupes(index, plan.source, plan.table) ? distinctRows(loaded) : loaded;
@@ -66,10 +67,17 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, stored: TableRows,
     const alias = f.source === plan.source ? aliasOf(plan.table, joins, f.table) : undefined;
     if (!alias) throw new EngineError(`Field "${fieldKey}" is not in ${plan.table} or a table joined to it.`);
     const at = slot.get(alias)!;
-    // Equal-count groups rank every row of the base table, as the SQL's inner query does.
-    if (usesTiles(index, fieldKey) && (f.table !== plan.table || plan.many)) throw new EngineError(TILES_ELSEWHERE);
-    const read = fieldReader(index, fieldKey, !!plan.raw, (t) => (t === plan.table ? source : (tables[t] ?? [])));
-    return { get: (row) => read(row[at]), type: plan.raw ? f.type : cleanType(index, fieldKey) };
+    const type = plan.raw ? f.type : cleanType(index, fieldKey);
+    if (making) {
+      // Fields made by a step (reshape-impl.ts). Equal-count groups rank every row of the base table, as the SQL's inner query does.
+      const r = reshaping();
+      if (r.usesTiles(index, fieldKey) && (f.table !== plan.table || plan.many)) throw new EngineError(TILES_ELSEWHERE);
+      const read = r.fieldReader(index, fieldKey, !!plan.raw, (t) => (t === plan.table ? source : (tables[t] ?? [])));
+      return { get: (row) => read(row[at]), type };
+    }
+    const steps = plan.raw ? [] : stepsFor(index, fieldKey);
+    const read = (row: Joined): Cell => row[at]?.[f.column] ?? null;
+    return { get: steps.length ? (row) => cleanValue(steps, read(row)) : read, type };
   };
 
   // A one-to-many split: each one-side row expands to the distinct many-side groups it belongs to
@@ -168,7 +176,8 @@ function withReshaped(plan: QueryPlan, index: CatalogIndex, stored: TableRows): 
     if (!step || stored[name]) continue;
     const from = stored[index.field(step.field)!.table];
     if (!from) continue;
-    out = { ...out, [name]: unpivotRows(index, step, dedupesStored(index, step) ? distinctRows(from) : from) };
+    const r = reshaping();
+    out = { ...out, [name]: r.unpivotRows(index, step, r.dedupesStored(index, step) ? distinctRows(from) : from) };
   }
   return out;
 }

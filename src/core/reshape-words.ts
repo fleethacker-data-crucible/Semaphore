@@ -15,7 +15,12 @@ import { type CleaningStep, cleanType } from './cleaning.ts';
 import type { Cell } from './crossfilter.ts';
 import { dropBrokenFormulas } from './formula-words.ts';
 import type { QueryPlan } from './planner.ts';
-import { type Bucket, BUCKETS_MAX, newField, SPLIT_MAX, tileBounds, UNPIVOT_MAX } from './reshape.ts';
+import { type Bucket, BUCKETS_MAX, registerReshaping, SPLIT_MAX, UNPIVOT_MAX } from './reshape.ts';
+import * as impl from './reshape-impl.ts';
+import { newField, tileBounds } from './reshape-impl.ts';
+
+// Previews run the proposed step, so the readers and SQL are needed from here on.
+registerReshaping(impl);
 
 export interface ReshapeProposal {
   step: CleaningStep;
