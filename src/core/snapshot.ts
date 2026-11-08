@@ -27,6 +27,8 @@ export interface Snapshot {
   previous?: { plan: QueryPlan; rows: ResultRow[] };
   truncated: boolean;
   updated: string;
+  /** Set by a pipeline's Publish step (server/Pipeline.ps1) when the tables it reads were rebuilt: refresh it. */
+  invalidatedAt?: string;
 }
 
 /** Rows a snapshot may hold; enough for any reasonable pre-split, small enough for a shared folder. */
@@ -63,6 +65,7 @@ export function snapshotPlan(entry: PlaybookEntry, index: CatalogIndex): QueryPl
 export function isStale(s: Snapshot | undefined, entry: PlaybookEntry, now: Date = new Date()): boolean {
   if (!s) return true;
   if (s.updated < entry.acceptedAt) return true; // the entry changed after the snapshot was taken
+  if (s.invalidatedAt && s.invalidatedAt > s.asOf) return true; // a pipeline rebuilt the tables it reads
   return now.getTime() - Date.parse(s.asOf) > SNAPSHOT_MAX_AGE_HOURS * 3_600_000;
 }
 

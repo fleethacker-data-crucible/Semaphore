@@ -360,6 +360,16 @@ export function Inspector(p: InspectorProps) {
             ))}
           </section>
         )}
+        {result && flag.kind === 'table' && result.plan.source === 'local' && (
+          <section aria-label="Export the whole table" className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs font-semibold text-ink-2">All of {result.plan.table}</span>
+            {(['csv', 'parquet', 'sqlite', 'xlsx'] as const).map((f) => (
+              <button key={f} type="button" onClick={() => void import('../lib/scripts.ts').then((m) => m.downloadLocalTable(result.plan.table, f)).then((r) => r.note && window.alert(r.note), (e: Error) => window.alert(e.message))} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
+                {f}
+              </button>
+            ))}
+          </section>
+        )}
 
         <div className="flex gap-2 border-t border-line pt-3">
           <button type="button" onClick={p.onDuplicate} title="Duplicate (D)" className="flex h-8 items-center gap-1 rounded-md border border-[var(--fl-control-border)] px-2 text-xs hover:border-accent">
