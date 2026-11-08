@@ -9,17 +9,10 @@ import type { TableRows } from '../core/engine.ts';
 const REGIONS = ['Northeast', 'Southeast', 'Gulf', 'Pacific Northwest', 'Southwest', 'Great Lakes'];
 const CLASSES = ['Cutter', 'Patrol boat', 'Buoy tender', 'Icebreaker', 'Tug', 'Landing craft', 'Frigate', 'Destroyer', 'Survey vessel', 'Supply ship', 'Ferry', 'Research vessel'];
 const STATUSES = ['Open', 'In progress', 'Awaiting parts', 'Closed', 'Cancelled'];
-/** The states each region's home ports are in, for the map example. */
-const HOME_STATES: Record<string, readonly string[]> = {
-  Northeast: ['Maine', 'Massachusetts', 'Rhode Island', 'Connecticut', 'New York', 'New Jersey'],
-  Southeast: ['Virginia', 'North Carolina', 'South Carolina', 'Georgia', 'Florida'],
-  Gulf: ['Texas', 'Louisiana', 'Mississippi', 'Alabama', 'Florida'],
-  'Pacific Northwest': ['Washington', 'Oregon', 'Alaska'],
-  Southwest: ['California', 'Hawaii', 'California', 'Arizona'],
-  'Great Lakes': ['Michigan', 'Ohio', 'Wisconsin', 'Illinois', 'Minnesota', 'Pennsylvania'],
-};
+/** The states each region's home ports are in (USPS codes, in REGIONS order), for the map example. */
+const HOME_STATES = ['ME MA RI CT NY NJ', 'VA NC SC GA FL', 'TX LA MS AL FL', 'WA OR AK', 'CA HI CA AZ', 'MI OH WI IL MN PA'].map((s) => s.split(' '));
 const homeState = (region: string, hull: string) => {
-  const list = HOME_STATES[region]!;
+  const list = HOME_STATES[REGIONS.indexOf(region)]!;
   return list[Number(hull.slice(2)) % list.length]!;
 };
 const PARTS = ['Impeller', 'Gasket set', 'Fuel injector', 'Bilge pump', 'Radar module', 'Shaft seal', 'Anode', 'Filter cartridge', 'Hydraulic hose', 'Alternator', 'Propeller', 'Battery bank'];

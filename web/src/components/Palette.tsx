@@ -1,7 +1,7 @@
 // The flag palette: drag a flag onto the hoist, or click to drop it in the first free slot.
 // "Smart flag" leaves the chart to Semaphore: say what you want and it picks the shape.
 
-import { AreaChart, BarChart3, BrainCircuit, CalendarDays, ChartBarDecreasing, ChartColumnStacked, ChartNoAxesCombined, Code2, ChartScatter, Filter, Gauge, Grid2x2, Grid3x3, LineChart, Map as MapIcon, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
+import { AreaChart, BarChart3, BrainCircuit, CalendarDays, ChartBarDecreasing, ChartColumnStacked, Code2, ChartScatter, Filter, Gauge, Grid2x2, Grid3x3, LineChart, Map as MapIcon, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FlagKind } from '../../../src/core/hoist.ts';
 import { KIND_MIME } from './Canvas.tsx';
@@ -25,7 +25,7 @@ export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint
   sankey: { label: 'Sankey', icon: Workflow, hint: 'Flows from one field to another' },
   sunburst: { label: 'Sunburst', icon: SunMedium, hint: 'Rings of a breakdown' },
   stream: { label: 'Stream', icon: Waves, hint: 'Shares over time' },
-  combo: { label: 'Combo', icon: ChartNoAxesCombined, hint: 'Bars and a line, each on its own scale' },
+  combo: { label: 'Combo', icon: BarChart3, hint: 'Bars and a line, each on its own scale' },
   map: { label: 'Map', icon: MapIcon, hint: 'US states or your own regions, shaded by a measure' },
   model: { label: 'Predict', icon: BrainCircuit, hint: 'Forecasts, simulations, models' },
   pivot: { label: 'Pivot', icon: Grid2x2, hint: 'Rows by columns, with totals' },
