@@ -32,6 +32,11 @@
 //                                               vault state back to the --vault default. Presence is
 //                                               kept (the calling page's tab is still open).
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
+//
+// Amazon S3 and RDS (server/S3.ps1, server/Aws.ps1) answer from a fixed fake bucket: s3://maint-exports/semaphore/
+// holds work_orders.csv, hulls.csv.gz, broken.csv and a partitioned folder parts/ (year=2025, year=2026); any other
+// bucket or a key outside the prefix is refused as the server refuses it. An import finishes on the second status
+// poll; a key containing "broken" fails. /api/rds/discover lists one Aurora PostgreSQL cluster and one SQL Server instance.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -471,8 +476,103 @@ function clientLogRoute(req, res, json, body) {
   send(res, 204, '', null);
 }
 
+// ---- Amazon S3 and RDS (S3.ps1, Aws.ps1) ------------------------------------------------------
+const S3_BUCKETS = [{ bucket: 'maint-exports', region: 'us-gov-west-1', prefix: 'semaphore/', label: 'Maintenance exports' }];
+const S3_OBJECTS = [
+  { key: 'semaphore/work_orders.csv', size: 48213, lastModified: '2026-11-02T10:00:00.000Z', etag: '9b2cf535f27731c974343645a3985328' },
+  { key: 'semaphore/hulls.csv.gz', size: 2048, lastModified: '2026-11-03T10:00:00.000Z', etag: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' },
+  { key: 'semaphore/broken.csv', size: 10, lastModified: '2026-11-03T10:00:00.000Z', etag: '00000000000000000000000000000000' },
+  { key: 'semaphore/parts/year=2025/part-0000.csv', size: 1_200_000, lastModified: '2026-01-01T00:00:00.000Z', etag: '11111111111111111111111111111111' },
+  { key: 'semaphore/parts/year=2026/part-0000.csv', size: 1_400_000, lastModified: '2026-06-01T00:00:00.000Z', etag: '22222222222222222222222222222222' },
+];
+const s3Jobs = new Map();
+function s3Allowed(bucket, key) {
+  const e = S3_BUCKETS.find((b) => b.bucket === bucket);
+  if (!e) return `The bucket "${bucket}" is not one Semaphore may read. Only the buckets in config\\settings.json (s3.buckets) can be browsed or imported.`;
+  if (!key.startsWith(e.prefix)) return `That is outside what Semaphore may read in ${bucket}: only s3://${bucket}/${e.prefix} is allowed.`;
+  return null;
+}
+function s3Listing(prefix) {
+  const folders = new Set();
+  const objects = [];
+  for (const o of S3_OBJECTS) {
+    if (!o.key.startsWith(prefix)) continue;
+    const rest = o.key.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash >= 0) folders.add(prefix + rest.slice(0, slash + 1));
+    else objects.push({ ...o, name: rest });
+  }
+  return { folders: [...folders].sort().map((f) => ({ prefix: f, name: f.slice(prefix.length).replace(/\/$/, '') })), objects };
+}
+function s3Shown(st) {
+  const { polls, fail, ...shown } = st;
+  return shown;
+}
+function s3Route(req, res, p, query, json) {
+  const m = req.method;
+  const q = new URLSearchParams(query);
+  if (p === '/api/s3/buckets') return m === 'GET' ? sendJson(res, 200, { buckets: S3_BUCKETS, maxObjectMb: 20480, maxPrefixObjects: 2000, problems: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/s3/list') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const bucket = q.get('bucket') ?? '';
+    const entry = S3_BUCKETS.find((b) => b.bucket === bucket);
+    const prefix = q.get('prefix') || (entry ? entry.prefix : '');
+    const why = s3Allowed(bucket, prefix);
+    if (why) return sendError(res, 403, 's3-not-allowed', why);
+    return sendJson(res, 200, { bucket, prefix, root: entry.prefix, ...s3Listing(prefix), nextToken: null });
+  }
+  if (p === '/api/s3/import') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json || typeof json.bucket !== 'string') return sendError(res, 400, 'bad-request', 'Name the bucket.');
+    const keys = typeof json.key === 'string' ? [json.key] : Array.isArray(json.keys) ? json.keys.map(String) : null;
+    const prefix = typeof json.prefix === 'string' ? json.prefix : null;
+    if ((keys ? 1 : 0) + (prefix !== null ? 1 : 0) !== 1) return sendError(res, 400, 'bad-request', 'Give exactly one of key, keys or prefix.');
+    for (const k of keys ?? [prefix]) {
+      const why = s3Allowed(json.bucket, k);
+      if (why) return sendError(res, 403, 's3-not-allowed', why);
+    }
+    const picked = keys ? S3_OBJECTS.filter((o) => keys.includes(o.key)) : S3_OBJECTS.filter((o) => o.key.startsWith(prefix) && o.key.slice(prefix.length).includes('/'));
+    const name = (keys ? keys[0] : prefix).replace(/\/$/, '').split('/').pop().replace(/\.gz$/, '').replace(/\.[a-z]+$/, '');
+    const job = randomBytes(8).toString('hex');
+    const what = keys && keys.length === 1 ? `s3://${json.bucket}/${keys[0]}` : prefix !== null ? `s3://${json.bucket}/${prefix}` : `${keys.length} objects in s3://${json.bucket}`;
+    const st = { job, state: 'running', phase: 'downloading', what, bytes: 0, totalBytes: picked.reduce((n, o) => n + o.size, 0), objects: 0, objectCount: picked.length, table: typeof json.table === 'string' && json.table ? json.table : name, rows: null, columns: null, ms: null, error: null, polls: 0, fail: (keys ?? []).some((k) => k.includes('broken')) };
+    s3Jobs.set(job, st);
+    log('INFO', `S3 import ${job} started: ${what}`);
+    return sendJson(res, 202, s3Shown(st));
+  }
+  if (p === '/api/s3/import-status' || p.startsWith('/api/s3/import-status/')) {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const st = s3Jobs.get(p.slice('/api/s3/import-status/'.length));
+    if (!st) return sendError(res, 404, 'not-found', 'No such import (imports are forgotten when Semaphore stops).');
+    st.polls++;
+    if (st.state === 'running') {
+      if (st.polls === 1) Object.assign(st, { bytes: Math.round(st.totalBytes / 2), objects: Math.max(1, Math.floor(st.objectCount / 2)) });
+      else if (st.fail) Object.assign(st, { state: 'failed', phase: 'failed', error: 'S3 answered 403 when reading s3://maint-exports/semaphore/broken.csv: AccessDenied: Access Denied. The AWS session needs s3:ListBucket on the bucket and s3:GetObject on its objects.' });
+      else Object.assign(st, { state: 'done', phase: 'done', bytes: st.totalBytes, objects: st.objectCount, rows: 1250 * st.objectCount, columns: 6, ms: 2400 });
+    }
+    return sendJson(res, 200, s3Shown(st));
+  }
+  if (p === '/api/rds/discover') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const region = q.get('region') ?? '';
+    if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region)) return sendError(res, 400, 'bad-request', 'Give a region such as us-gov-west-1.');
+    const reader = `maint-aurora.cluster-ro-abc123.${region}.rds.amazonaws.com`;
+    const sql = `supply-sql.abc123.${region}.rds.amazonaws.com`;
+    return sendJson(res, 200, {
+      region,
+      note: 'Copy an entry into sources.json in the Semaphore folder; Semaphore does not write sources.json.',
+      databases: [
+        { type: 'cluster', id: 'maint-aurora', engine: 'aurora-postgresql', engineRaw: 'aurora-postgresql', version: '16.4', host: `maint-aurora.cluster-abc123.${region}.rds.amazonaws.com`, readerHost: reader, port: 5432, database: 'maint', iam: true, status: 'available', suggested: { id: 'maint-aurora', label: 'maint-aurora', kind: 'aws-rds', provider: 'odbc', engine: 'aurora-postgresql', host: reader, port: 5432, database: 'maint', region, auth: 'iam', user: 'semaphore_ro', vault: { accessKeyId: 'AWS_ACCESS_KEY_ID', secretAccessKey: 'AWS_SECRET_ACCESS_KEY', sessionToken: 'AWS_SESSION_TOKEN' } } },
+        { type: 'instance', id: 'supply-sql', engine: 'sqlserver', engineRaw: 'sqlserver-se', version: '16.00', host: sql, readerHost: '', port: 1433, database: '', iam: false, status: 'available', suggested: { id: 'supply-sql', label: 'supply-sql', kind: 'aws-rds', provider: 'odbc', engine: 'sqlserver', host: sql, port: 1433, database: 'master', region, auth: 'password', vault: { password: 'RDS_PASSWORD', user: 'RDS_USER' } } },
+      ],
+    });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
 function apiRoute(req, res, p, query, json, body) {
   const m = req.method;
+  if (p.startsWith('/api/s3/') || p.startsWith('/api/rds/')) return s3Route(req, res, p, query, json);
   if (p === '/api/commands') return m === 'GET' ? sendJson(res, 200, []) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/info') return m === 'GET' ? sendJson(res, 200, info()) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/heartbeat') {
@@ -557,6 +657,7 @@ function handle(req, res, body) {
       clientLog.length = 0;
       clientLogTimes.length = 0;
       saves = 0;
+      s3Jobs.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
     }

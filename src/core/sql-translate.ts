@@ -28,6 +28,7 @@ export const DIALECT_NAMES: Record<Dialect, string> = {
   synapse: 'T-SQL (Azure Synapse)',
   spark: 'Spark SQL (Databricks, Foundry)',
   ansi: 'ANSI-like SQL (Athena, Redshift, DuckDB, Trino)',
+  mysql: 'MySQL / MariaDB',
 };
 
 type Kind = 'space' | 'string' | 'ident' | 'word' | 'number' | 'punct';

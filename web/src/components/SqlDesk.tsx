@@ -8,7 +8,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Download, History, Play, TerminalSquare, X } from 'lucide-react';
 import { ApiError, type QueryResponse, runServerQuery, type ServerSource } from '../lib/api.ts';
 import { useModal } from '../lib/modal.ts';
-import { dialectForKind, SQL_DIALECTS, type SourceKind } from '../../../src/core/catalog.ts';
+import { dialectForSource, SQL_DIALECTS } from '../../../src/core/catalog.ts';
 import { DIALECT_NAMES, translateSql } from '../../../src/core/sql-translate.ts';
 import { setSqlPref, type SqlPref, useSqlPref } from '../lib/sql-pref.ts';
 
@@ -63,7 +63,7 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
   const pref = useSqlPref();
   const target = (() => {
     const s = sources.find((x) => x.id === source);
-    return s ? (s.provider === 'athena' ? 'ansi' : dialectForKind(s.kind as SourceKind)) : 'ansi';
+    return s ? dialectForSource(s) : 'ansi';
   })();
   // What actually runs: the SQL as written, translated into the source's dialect when the person writes in another.
   const translation = useMemo(() => (pref === 'source' || !sql.trim() ? null : translateSql(sql.trim(), pref, target)), [pref, sql, target]);

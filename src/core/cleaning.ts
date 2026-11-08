@@ -175,5 +175,8 @@ function numberSql(x: () => string, dialect: Dialect): string {
       return `IIf(IsNumeric(${bare()}), CDbl(${bare()}), Null)`;
     case 'postgres':
       return `CASE WHEN ${bare()} ~ '^\\s*-?[0-9]*\\.?[0-9]+\\s*$' THEN CAST(${bare()} AS DOUBLE PRECISION) END`;
+    case 'mysql':
+      // MySQL / MariaDB (RDS, Aurora): CAST of text that is not a number gives 0, so test the text first.
+      return `CASE WHEN TRIM(${bare()}) REGEXP '^-?[0-9]*[.]?[0-9]+$' THEN CAST(${bare()} AS DECIMAL(65,10)) END`;
   }
 }
