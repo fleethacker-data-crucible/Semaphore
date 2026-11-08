@@ -8,7 +8,8 @@ import { applySelections, type CrossfilterResult, type DisplayRow, lineUp, type 
 import { runPlan, type TableRows } from '../../../src/core/engine.ts';
 import { comparisonPlanFor, comparisonSelections } from '../../../src/core/drill-compare.ts';
 import type { Filter, Flag, Hoist } from '../../../src/core/hoist.ts';
-import { comparisonShift, planFlag, type QueryPlan } from '../../../src/core/planner.ts';
+import { comparisonShift, planFlag, planLeaves, type QueryPlan } from '../../../src/core/planner.ts';
+import { loadReshaping, storedTables } from '../../../src/core/reshape.ts';
 import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
 import { ApiError, runServerQuery, type ServerInfo } from './api.ts';
 import type { CsvWorker } from './worker.ts';
@@ -170,10 +171,14 @@ function sourceSql(plan: QueryPlan, ctx: DataContext): RenderedSql | null {
 }
 
 async function run(plan: QueryPlan, ctx: DataContext) {
+  // Fields made by cleaning steps (split, merge, bucket, reshape) read through code loaded on demand.
+  await loadReshaping(ctx.index.catalog);
   if (ctx.localSources.has(plan.source)) {
     // Cleaning steps and relationships change answers without changing the plan, so they are in the key.
     const key = `page|${ctx.version}|${ctx.today.toISOString().slice(0, 10)}|${JSON.stringify(plan)}|${JSON.stringify([ctx.index.catalog.cleaning ?? [], ctx.index.catalog.relationships ?? []])}`;
-    const inWorker = !!ctx.worker && [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])].every((t) => ctx.workerTables?.has(t));
+    // A reshaped table (reshape.ts) is built from its stored table, wherever that is held.
+    const read = storedTables(ctx.index, plan.source, [plan.table, ...(plan.joins ?? []).map((j) => j.table), ...(plan.many?.tables ?? [])]);
+    const inWorker = !!ctx.worker && read.every((t) => ctx.workerTables?.has(t));
     return { origin: 'page' as const, result: await cache.remember(key, async () => (inWorker ? ctx.worker!.run(plan, ctx.index.catalog, ctx.today) : runPlan(plan, ctx.index, ctx.local, ctx.today))) };
   }
   const server = ctx.server?.sources.find((s) => s.id === plan.source);
@@ -256,11 +261,35 @@ export async function computeFlag(hoist: Hoist, flag: Flag, selections: Selectio
     out.previousTotals = prevDisplay.totals;
     out.previousRaw = { plan: earlier, rows: prev.result.rows };
   }
+  await formulaTotals(hoist, flag, selections, ctx, out);
   if (flag.kind === 'pivot') {
     const levels = await (await import('./pivot-levels.ts')).pivotLevels(hoist, flag, selections, ctx, out, computeFlag);
     if (levels) out.levels = levels;
   }
   return out;
+}
+
+/**
+ * A calculated measure that reads a distinct count has no total that can be worked out from its
+ * rows (the same hull is in several groups). Its total is read from the data instead: the same
+ * measures, filters and selections with no grouping, and the same comparison window.
+ */
+async function formulaTotals(hoist: Hoist, flag: Flag, selections: Selections, ctx: DataContext, out: FlagResult): Promise<void> {
+  const b = flag.binding;
+  const { plan, display } = out;
+  if (!b || !b.dimensions.length || plan.many?.overlap || display.rows.length < 2) return;
+  const keys = plan.metrics.filter((m) => m.agg === 'formula' && display.totals[m.key] === null && planLeaves(m).some((l) => l.agg === 'count_distinct')).map((m) => m.key);
+  if (!keys.length) return;
+  const whole: Flag = { ...flag, kind: 'kpi', binding: { metrics: keys, dimensions: [], filters: b.filters, ...(b.compare ? { compare: b.compare } : {}) } };
+  try {
+    const t = await computeFlag(hoist, whole, selections, ctx);
+    for (const k of keys) {
+      display.totals[k] = t.display.rows[0]?.values[k] ?? null;
+      if (out.previousTotals) out.previousTotals[k] = t.previous?.[0]?.[k] ?? null;
+    }
+  } catch {
+    // Left empty: a total that could not be read is never guessed.
+  }
 }
 
 /**

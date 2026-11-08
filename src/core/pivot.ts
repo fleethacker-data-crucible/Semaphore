@@ -2,9 +2,10 @@
 // side by side under each column value. With one field it is a one-way table with a grand total.
 //
 // Totals are only ever added up where adding up is right. A sum or a count of a group is the sum of
-// its cells, and a min or max is the min or max of its cells. An average or a distinct count is not:
-// the average of averages is wrong, and the same hull can be in two cells. Those totals come from the
-// data itself, grouped by fewer fields (`levels`, read by web/src/lib/pivot-levels.ts as extra
+// its cells, and a min or max is the min or max of its cells. An average, a distinct count or a
+// calculated measure is not: the average of averages is wrong, the same hull can be in two cells, and
+// a ratio's total is the ratio of the totals, never the sum of the cells' ratios. Those totals come
+// from the data itself, grouped by fewer fields (`levels`, read by web/src/lib/pivot-levels.ts as extra
 // queries); when a level could not be read the total is left empty with the reason, never guessed.
 // A split by a many-side field counts a row in several groups, so then nothing is added up.
 //
@@ -144,6 +145,7 @@ export function compareCells(a: Cell, b: Cell): number {
 function why(agg: Aggregate, overlap: boolean): string {
   if (overlap) return 'A row can sit in several of these groups, so the groups do not add up to a total, and the total could not be read.';
   if (agg === 'avg') return 'An average cannot be added up from its cells, and the total could not be read from the data.';
+  if (agg === 'formula') return "A calculated measure is worked out from its inputs' totals, not added up from its cells, and the total could not be read from the data.";
   return 'A distinct count cannot be added up from its cells (the same item can be in several), and the total could not be read from the data.';
 }
 

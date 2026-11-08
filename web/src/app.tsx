@@ -2,7 +2,7 @@
 // middle, the selected flag's inspector on the right. State lives here; the core does the
 // thinking (src/core) and lib/data.ts fetches the numbers.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
@@ -74,6 +74,8 @@ import { announcedByAccept, useAccept } from './lib/accept.ts';
 import { scrollBehavior } from './lib/motion.ts';
 import { withBriefFlag } from './lib/onboarding.ts';
 
+// The offer of a calculated measure a brief defines, loaded when one is offered.
+const MeasureOffer = lazy(() => import('./components/MeasureOffer.tsx').then((m) => ({ default: m.MeasureOffer })));
 const FILES_SOURCE = 'files';
 const EXAMPLE_SOURCES = new Set(['maint', 'parts']);
 const K = { hoist: 'semaphore.hoist', catalog: 'semaphore.catalog', theme: 'semaphore.theme', skin: 'semaphore.skin', auto: 'semaphore.autoKind', view: 'semaphore.view', skipWelcome: 'semaphore.skipWelcome' };
@@ -160,6 +162,8 @@ export function App() {
   const [browserNoteHidden, setBrowserNoteHidden] = useState(false);
   // "Why it didn't draft" (#69): kept until the flag's brief changes.
   const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
+  // A brief that defines a measure ("cost per hull = labor cost / hulls") offers it, to accept or leave.
+  const [measureOffer, setMeasureOffer] = useState<{ flagId: string; brief: string; metric: Metric; sentence: string } | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -435,6 +439,11 @@ export function App() {
 
   const draftSelected = useCallback(async () => {
     if (!selected) return;
+    if (/=|\bdivided by\b|\bdifference between\b|\bas an? (?:percent|share)/i.test(selected.brief)) {
+      const p = (await import('../../src/core/formula-words.ts')).proposeMeasure(selected.brief, index);
+      const known = p.ok && index.catalog.metrics.some((m) => m.label.toLowerCase() === p.metric.label.toLowerCase());
+      setMeasureOffer(p.ok && !known ? { flagId: selected.id, brief: selected.brief, metric: p.metric, sentence: p.sentence } : null);
+    }
     const provider = draftingProvider(index, ai, useAi);
     await runBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`, async () => {
       const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
@@ -1459,6 +1468,20 @@ export function App() {
         </main>
         {selected && (
           <div className="flex h-full min-h-0 w-[360px] shrink-0 flex-col">
+            {measureOffer?.flagId === selected.id && measureOffer.brief === selected.brief && (
+              <Suspense fallback={null}>
+                <MeasureOffer
+                  metric={measureOffer.metric}
+                  sentence={measureOffer.sentence}
+                  onAdd={() => {
+                    setCatalog({ ...catalog, metrics: [...catalog.metrics, measureOffer.metric] });
+                    setMeasureOffer(null);
+                    setRedraftFor(selected.id);
+                  }}
+                  onDismiss={() => setMeasureOffer(null)}
+                />
+              </Suspense>
+            )}
             {miss && (
               <DraftMiss
                 miss={miss}

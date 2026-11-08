@@ -6,8 +6,10 @@
 
 import { useState } from 'react';
 import { Link2, ShieldCheck, Sparkles, Table2, Trash2, Undo2, Wand2, X } from 'lucide-react';
-import type { Catalog, Field } from '../../../src/core/catalog.ts';
-import type { CleaningStep } from '../../../src/core/cleaning.ts';
+import { type Catalog, type Field, indexCatalog } from '../../../src/core/catalog.ts';
+import { type CleaningStep, MAKING_KINDS } from '../../../src/core/cleaning.ts';
+import type { Cell } from '../../../src/core/crossfilter.ts';
+import { acceptReshape, previewPlan, proposeReshape, type ReshapeProposal, undoStep, withBounds } from '../../../src/core/reshape-words.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
 import { proposeCleaningWithAi } from '../../../src/core/intelligence/tasks.ts';
 import { describeRelationship, type Relationship } from '../../../src/core/joins.ts';
@@ -39,7 +41,8 @@ interface Props {
 const tableId = (f: Field) => `${f.source}|${f.table}`;
 
 async function valuesOf(ctx: DataContext, field: Field): Promise<{ values: ValueCount[]; partial: boolean }> {
-  if (ctx.localSources.has(field.source)) {
+  // A field made by a step has no stored column: it is read through a query like any source's.
+  if (ctx.localSources.has(field.source) && !field.derived) {
     if (ctx.worker && ctx.workerTables?.has(field.table)) return { values: await ctx.worker.values(field.table, field.column), partial: false };
     const rows = ctx.local[field.table] ?? [];
     return { values: countValues(rows, field.column), partial: false };
@@ -63,7 +66,8 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
     recordSkill('clean');
     if (findingId) setFindings((all) => all?.filter((x) => x.id !== findingId) ?? null);
   };
-  const undo = (id: string) => onCatalog({ ...catalog, cleaning: steps.filter((s) => s.id !== id) });
+  // A step that made fields or a table takes them, and what was built on them, with it.
+  const undo = (id: string) => onCatalog(MAKING_KINDS.has(steps.find((s) => s.id === id)?.kind ?? 'trim') ? undoStep(catalog, id) : { ...catalog, cleaning: steps.filter((s) => s.id !== id) });
 
   const check = async () => {
     setFindings(null);
@@ -76,7 +80,7 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
         seen[f.key] = v;
         out.push(...findIssues(ctx.index, f.key, v, { pageData: ctx.localSources.has(f.source), partial }));
       }
-      const first = fieldsIn[0];
+      const first = fieldsIn.find((f) => !f.derived);
       if (first && ctx.localSources.has(first.source)) {
         const d = ctx.worker && ctx.workerTables?.has(first.table) ? await ctx.worker.duplicates(ctx.index.catalog, first.source, first.table) : findDuplicates(ctx.index, first.source, first.table, ctx.local[first.table] ?? []);
         if (d) out.push(d);
@@ -171,6 +175,8 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
         </section>
       )}
 
+      <DescribeFix catalog={catalog} ctx={ctx} table={table} onAccept={(p) => (onCatalog(acceptReshape(catalog, p)), recordSkill('clean'))} />
+
       <section className="space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">Accepted fixes ({steps.length})</h3>
         {steps.length === 0 && <p className="text-xs text-ink-3">None yet.</p>}
@@ -191,6 +197,103 @@ export function CleanTab({ catalog, ctx, provider, onCatalog }: Props) {
         </ul>
       </section>
     </div>
+  );
+}
+
+/**
+ * A fix in the analyst's own words: split a field, join fields, turn columns into rows, or group a
+ * number. The sentence proposes a step, a preview shows what it makes, and nothing changes until
+ * the analyst accepts (src/core/reshape-words.ts).
+ */
+function DescribeFix({ catalog, ctx, table, onAccept }: { catalog: Catalog; ctx: DataContext; table: string; onAccept: (p: ReshapeProposal) => void }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [offer, setOffer] = useState<{ p: ReshapeProposal; columns: Array<{ key: string; label: string }>; rows: Array<Record<string, Cell>>; note?: string } | { error: string } | null>(null);
+  const [source, name] = table.split('|');
+  const propose = async () => {
+    const index = indexCatalog(catalog);
+    const r = proposeReshape(text, index, source && name ? { source, table: name } : undefined);
+    if (!r.ok) return setOffer({ error: r.error });
+    setBusy(true);
+    try {
+      let p: ReshapeProposal = r;
+      let note: string | undefined;
+      // Equal-count groups read the field's values once, for the dialects that have no NTILE.
+      if (r.needsValues) {
+        const v = await valuesOf({ ...ctx, index }, index.field(r.needsValues)!);
+        p = withBounds(r, v.values);
+        if (v.partial) note = 'Only the most common values were read for the group bounds Access uses; other databases rank every row.';
+      }
+      const pv = previewPlan(catalog, p);
+      const out = await runAnywhere(pv.plan, { ...ctx, index: pv.index });
+      const at = new Map(pv.plan.dimensions.map((d) => [d.key, d.alias]));
+      setOffer({ p, columns: pv.columns, rows: out.rows.map((row) => Object.fromEntries(pv.columns.map((c) => [c.key, row[at.get(c.key) ?? 'a0'] ?? null]))), ...(note ? { note } : {}) });
+    } catch (e) {
+      setOffer({ error: `Could not preview this: ${(e as Error).message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">Describe a fix</h3>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void propose();
+        }}
+      >
+        <input value={text} maxLength={400} onChange={(e) => (setText(e.target.value), setOffer(null))} aria-label="Describe a fix" placeholder="split full name on the comma into last and first" className="min-w-0 flex-1 rounded-md border border-line bg-panel px-2 py-1 text-xs" />
+        <button type="submit" disabled={!text.trim() || busy} className="rounded-md border border-line px-2 py-1 text-xs disabled:opacity-40">
+          Preview
+        </button>
+      </form>
+      <p className="text-[11px] text-ink-3">
+        Split a field (“… on the comma into last and first”, “… at 3 into prefix and number”), join fields (“join city and state with ', ' as location”), turn columns into rows (“turn Jan..Dec into rows of month and value”) or group a number (“group days open into 0-7, 8-30, 31-90, 90+”, “bucket cost into quartiles”).
+      </p>
+      {offer && 'error' in offer && <p className="text-xs text-bad">{offer.error}</p>}
+      {offer && 'p' in offer && (
+        <div className="space-y-1.5 rounded-lg border border-line p-2" data-testid="fix-proposal">
+          <p className="text-sm font-medium">{offer.p.step.sentence}</p>
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr>
+                {offer.columns.map((c) => (
+                  <th key={c.key} className="border-b border-line px-1 py-0.5 text-left font-medium text-ink-2">
+                    {c.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {offer.rows.map((r, i) => (
+                <tr key={i}>
+                  {offer.columns.map((c) => (
+                    <td key={c.key} className="border-b border-line px-1 py-0.5">
+                      {r[c.key] === null ? <span className="text-ink-3">blank</span> : String(r[c.key])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {offer.note && <p className="text-[11px] text-ink-3">{offer.note}</p>}
+          <p className="text-[11px] text-ink-3">
+            Adds {offer.p.fields.map((f) => f.label).join(', ')}
+            {offer.p.metrics.length ? `, and the measure${offer.p.metrics.length === 1 ? '' : 's'} ${offer.p.metrics.map((m) => m.label).join(', ')}` : ''}. The data itself is never changed.
+          </p>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => (onAccept(offer.p), setOffer(null), setText(''))} className="min-h-8 rounded-md bg-accent px-2.5 text-xs font-semibold text-panel">
+              Accept
+            </button>
+            <button type="button" onClick={() => setOffer(null)} className="min-h-8 rounded-md border border-line px-2.5 text-xs">
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

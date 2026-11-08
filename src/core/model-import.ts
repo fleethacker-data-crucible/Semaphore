@@ -9,6 +9,7 @@
 // is a warning with the original expression; nothing is guessed.
 
 import type { Catalog, Field, FieldType, Hierarchy, Metric } from './catalog.ts';
+import { type FormulaNode, parseFormula as parseCore, printFormula as printCore } from './formula.ts';
 import type { Relationship } from './joins.ts';
 
 export type ModelTool = 'dbt' | 'powerbi';
@@ -93,91 +94,22 @@ export function emptyRead(tool: ModelTool, name: string): ModelRead {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Parses `+ - * /`, unary minus, parentheses, numbers and names into a formula. `name` says which
- * words are references (and may rename them, e.g. a dbt alias to its metric); a word it refuses or
- * any other character makes the whole formula unreadable: the error says what was found.
+ * Parses `+ - * /`, unary minus, parentheses, numbers and names into a formula, with the one
+ * calculated-measure grammar (formula.ts). `name` says which words are references (and may rename
+ * them, e.g. a dbt alias to its metric); a word it refuses or any other character makes the whole
+ * formula unreadable: the reason says what was found.
  */
 export function parseFormula(text: string, name: (word: string) => string | null = (w) => w): { ok: true; formula: Formula } | { ok: false; reason: string } {
-  if (text.length > MODEL_LIMITS.formulaChars) return { ok: false, reason: 'The expression is too long to read' };
-  const tokens: string[] = [];
-  const re = /\s*(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+|[A-Za-z_][A-Za-z0-9_]*|[-+*/()]|\S)/gy;
-  for (let m = re.exec(text); m; m = re.exec(text)) tokens.push(m[1]!);
-  if (!text.trim()) return { ok: false, reason: 'The expression is empty' };
-  let i = 0;
-  let fail: string | null = null;
-  const expr = (depth: number): Formula | null => {
-    if (depth > 64) return ((fail = 'The expression is nested too deeply'), null);
-    let a = term(depth);
-    while (a && (tokens[i] === '+' || tokens[i] === '-')) {
-      const op = tokens[i++] as '+' | '-';
-      const b = term(depth);
-      if (!b) return null;
-      a = { op, a, b };
-    }
-    return a;
-  };
-  const term = (depth: number): Formula | null => {
-    let a = unary(depth);
-    while (a && (tokens[i] === '*' || tokens[i] === '/')) {
-      const op = tokens[i++] as '*' | '/';
-      const b = unary(depth);
-      if (!b) return null;
-      a = { op, a, b };
-    }
-    return a;
-  };
-  const unary = (depth: number): Formula | null => {
-    if (tokens[i] === '-') {
-      i++;
-      const x = unary(depth + 1);
-      return x ? { neg: x } : null;
-    }
-    if (tokens[i] === '+') {
-      i++;
-      return unary(depth + 1);
-    }
-    const t = tokens[i];
-    if (t === undefined) return ((fail ??= 'The expression ends too soon'), null);
-    if (t === '(') {
-      i++;
-      const x = expr(depth + 1);
-      if (!x) return null;
-      if (tokens[i] !== ')') return ((fail ??= 'Unbalanced parentheses'), null);
-      i++;
-      return x;
-    }
-    if (/^[\d.]/.test(t)) {
-      i++;
-      return { num: Number(t) };
-    }
-    if (/^[A-Za-z_]/.test(t)) {
-      if (tokens[i + 1] === '(') return ((fail ??= `Uses the function ${t}(), which a calculated measure cannot`), null);
-      const ref = name(t);
-      if (ref === null) return ((fail ??= `"${t}" is not a measure in this model`), null);
-      i++;
-      return { ref };
-    }
-    return ((fail ??= `"${t}" is not part of a calculated measure (only + - * /, parentheses, numbers and measures)`), null);
-  };
-  const f = expr(0);
-  if (!f) return { ok: false, reason: fail ?? 'The expression could not be read' };
-  if (i < tokens.length) return { ok: false, reason: tokens[i] === ')' ? 'Unbalanced parentheses' : `"${tokens[i]}" is not part of a calculated measure (only + - * /, parentheses, numbers and measures)` };
-  return { ok: true, formula: f };
+  const p = parseCore(text, name);
+  if (!p.ok) return { ok: false, reason: p.error };
+  const conv = (n: FormulaNode): Formula => (n.t === 'num' ? { num: n.v } : n.t === 'ref' ? { ref: n.key } : n.t === 'neg' ? { neg: conv(n.x) } : { op: n.op, a: conv(n.l), b: conv(n.r) });
+  return { ok: true, formula: conv(p.node) };
 }
 
-const PREC = { '+': 1, '-': 1, '*': 2, '/': 2 } as const;
-
-/** The formula as text, with each reference printed by `key` and only the parentheses it needs. */
+/** The formula as text, with each reference printed by `key` and only the parentheses it needs (formula.ts). */
 export function printFormula(f: Formula, key: (ref: string) => string = (r) => r): string {
-  const go = (x: Formula, parent: number, right: boolean): string => {
-    if ('num' in x) return String(x.num);
-    if ('ref' in x) return key(x.ref);
-    if ('neg' in x) return `-${go(x.neg, 3, false)}`;
-    const p = PREC[x.op];
-    const s = `${go(x.a, p, false)} ${x.op} ${go(x.b, p, true)}`;
-    return p < parent || (right && p === parent) ? `(${s})` : s;
-  };
-  return go(f, 0, false);
+  const conv = (x: Formula): FormulaNode => ('num' in x ? { t: 'num', v: x.num } : 'ref' in x ? { t: 'ref', key: key(x.ref) } : 'neg' in x ? { t: 'neg', x: conv(x.neg) } : { t: 'bin', op: x.op, l: conv(x.a), r: conv(x.b) });
+  return printCore(conv(f));
 }
 
 export function formulaRefs(f: Formula, out: Set<string> = new Set()): Set<string> {

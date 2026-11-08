@@ -295,6 +295,8 @@ export function manyParts(plan: QueryPlan, index: CatalogIndex): ManyParts {
 // ---------------------------------------------------------------------------------------------
 // SQL: the derived table of distinct (key, group values) pairs.
 
+const MADE_ON_MANY = 'A field or table made by a cleaning step (split, merge, bucket or reshape) cannot be on the many side of a one-to-many split yet.';
+
 /** The pieces of sql.ts this file needs, passed in so the two files do not import each other. */
 export interface SqlKit {
   quote(name: string, dialect: Dialect): string;
@@ -325,6 +327,7 @@ export function renderManyBlock(plan: QueryPlan, index: CatalogIndex, dialect: D
 
   const stored = (field: string): string => {
     const f = index.field(field)!;
+    if (f.derived) throw new kit.SqlError(MADE_ON_MANY);
     const alias = aliasOf.get(f.table);
     if (!alias) throw new kit.SqlError(`Field "${field}" is not in the many-side tables of this query.`);
     return `${q(alias)}.${q(f.column)}`;
@@ -431,6 +434,7 @@ export function prepareManyRows(
 
   const reader = (field: string): { get: (row: JoinedRow) => Cell; type: FieldType } => {
     const f = index.field(field)!;
+    if (f.derived) throw new kit.EngineError(MADE_ON_MANY);
     const at = tableSlot.get(f.table);
     if (at === undefined) throw new kit.EngineError(`Field "${field}" is not in the many-side tables of this query.`);
     const steps = plan.raw ? [] : stepsFor(index, field);

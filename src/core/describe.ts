@@ -4,6 +4,7 @@
 
 import type { CatalogIndex } from './catalog.ts';
 import { type Filter, type Flag, type Hoist, dimensionKey } from './hoist.ts';
+import { parseFormula, printFormula } from './formula.ts';
 import { planFlag } from './planner.ts';
 
 const KIND_NAMES: Record<Flag['kind'], string> = {
@@ -63,6 +64,10 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
   else what = `${KIND_NAMES[flag.kind]} ${list(b.metrics.map(metric))}${own.length ? ` ${own.join(', ')}` : ''}`;
   if (b.share) what += ', as a share of the total';
   lines.push(`${what}.`);
+  for (const k of b.metrics) {
+    const words = describeFormula(k, index);
+    if (words) lines.push(words);
+  }
 
   if (b.limit) {
     const by = b.sort && index.metric(b.sort.by) ? index.metric(b.sort.by)!.label : 'value';
@@ -103,6 +108,15 @@ export function describeFlag(flag: Flag, hoist: Hoist | null, index: CatalogInde
     lines.push(`Turns ${tone} when ${index.metric(t.metric)?.label ?? t.metric} is ${op} ${formatNumber(t.value, index.metric(t.metric)?.format)}.`);
   }
   return lines;
+}
+
+/** A calculated measure in words: "Cost per hull is Labor cost ÷ Hulls affected, …". Null for other measures. */
+export function describeFormula(key: string, index: CatalogIndex): string | null {
+  const m = index.metric(key);
+  if (m?.agg !== 'formula') return null;
+  const p = parseFormula(m.formula ?? '');
+  if (!p.ok) return `${m.label} has a formula Semaphore cannot read: ${p.error}`;
+  return `${m.label} is ${printFormula(p.node, (k) => index.metric(k)?.label ?? k)}, worked out for each row and for the total from their own totals (nothing is shown where it would divide by zero).`;
 }
 
 export function filterText(f: Filter, index: CatalogIndex): string {

@@ -4,11 +4,16 @@
 //
 // Steps on one field always apply in the same order, whatever order they were accepted in:
 // trim, then map, then blank-as, then number or date.
+//
+// Steps that make new fields or a new table (split, merge, bucket, unpivot) are in reshape.ts.
 
 import type { CatalogIndex, Dialect, FieldType } from './catalog.ts';
 import type { Cell } from './crossfilter.ts';
 
-export type CleaningKind = 'trim' | 'map' | 'blank-as' | 'number' | 'date' | 'dedupe';
+export type CleaningKind = 'trim' | 'map' | 'blank-as' | 'number' | 'date' | 'dedupe' | 'split' | 'merge' | 'bucket' | 'unpivot';
+
+/** The steps that make new fields or a table (reshape.ts) rather than fix the values of their field. */
+export const MAKING_KINDS: ReadonlySet<CleaningKind> = new Set(['split', 'merge', 'bucket', 'unpivot']);
 
 export interface CleaningStep {
   id: string;
@@ -21,6 +26,26 @@ export interface CleaningStep {
   value?: string | number;
   /** date: how day and month are ordered in the stored text. */
   order?: 'mdy' | 'dmy' | 'ymd';
+  /** split: the text between parts ("," for "Smith, Jane"). */
+  delimiter?: string;
+  /** split by position: the length of each part but the last, which takes the rest. */
+  widths?: number[];
+  /** split, merge, bucket: the field keys made. unpivot: the name field and the value field made. */
+  into?: string[];
+  /** merge: the fields joined, in order (`field` is the first). unpivot: the columns turned into rows. */
+  fields?: string[];
+  /** merge: the text put between values. */
+  separator?: string;
+  /** bucket: the groups, in order; from <= value < to. */
+  buckets?: Array<{ label: string; from?: number; to?: number }>;
+  /** bucket: this many equal-count groups instead (4 = quartiles). */
+  tiles?: number;
+  /** bucket with tiles: each group's upper bound but the last, read when accepted (for dialects with no NTILE). */
+  bounds?: number[];
+  /** unpivot: the new table's name. */
+  table?: string;
+  /** unpivot: the name each column gets in the name field, in the order of `fields`. */
+  names?: string[];
   /** The step in plain words: "Read “N.E.” and “north east” as “Northeast”". */
   sentence: string;
   origin?: 'analyst' | 'rules' | 'ai' | 'qlik';
@@ -28,11 +53,11 @@ export interface CleaningStep {
 
 export class CleaningError extends Error {}
 
-const ORDER: Record<CleaningKind, number> = { dedupe: 0, trim: 1, map: 2, 'blank-as': 3, number: 4, date: 4 };
+const ORDER: Record<CleaningKind, number> = { dedupe: 0, trim: 1, map: 2, 'blank-as': 3, number: 4, date: 4, split: 5, merge: 5, bucket: 5, unpivot: 5 };
 export const MAP_MAX = 200;
 
 export function stepsFor(index: CatalogIndex, fieldKey: string): CleaningStep[] {
-  return (index.catalog.cleaning ?? []).filter((s) => s.field === fieldKey && s.kind !== 'dedupe').sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
+  return (index.catalog.cleaning ?? []).filter((s) => s.field === fieldKey && s.kind !== 'dedupe' && !MAKING_KINDS.has(s.kind)).sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
 }
 
 /** Whether a table's rows are deduplicated before anything is counted. */
@@ -75,7 +100,7 @@ export function cleanValue(steps: readonly CleaningStep[], raw: Cell): Cell {
       case 'date':
         v = toIsoDate(v, s.order ?? 'mdy');
         break;
-      case 'dedupe':
+      default:
         break;
     }
   }
@@ -123,11 +148,12 @@ export function toIsoDate(v: Cell, order: 'mdy' | 'dmy' | 'ymd'): string | null 
  * A column expression with the field's steps applied, for one dialect. Values in the steps are
  * bound parameters, like every other value Semaphore sends.
  */
-export function cleanSql(steps: readonly CleaningStep[], col: string, dialect: Dialect, bind: (value: string | number, type: 'string' | 'number') => string): string {
+export function cleanSql(steps: readonly CleaningStep[], col: string | (() => string), dialect: Dialect, bind: (value: string | number, type: 'string' | 'number') => string): string {
   // Several steps write the incoming expression more than once (CASE x … ELSE x, IIf(x …, x)). The
   // expression is rebuilt, and its values bound again, each time it is written, so with positional
   // "?" placeholders the parameters stay in the order the markers appear in the text.
-  let x: () => string = () => col;
+  // A made field's expression (reshape.ts) carries bound values of its own, so it comes as a function.
+  let x: () => string = typeof col === 'function' ? col : () => col;
   for (const s of steps) {
     const prev = x;
     switch (s.kind) {
@@ -153,7 +179,7 @@ export function cleanSql(steps: readonly CleaningStep[], col: string, dialect: D
         break;
       case 'date':
         throw new CleaningError('Mixed date formats are cleaned in data held in the page only; ask for the column to be fixed at the source.');
-      case 'dedupe':
+      default:
         break;
     }
   }
