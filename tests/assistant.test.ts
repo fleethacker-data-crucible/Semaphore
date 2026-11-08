@@ -96,3 +96,13 @@ test('when Fairlead is set up but does not answer, the guide answers and says wh
   await refused.send('hello', { status: configured, on: true }, null);
   assert.match(refused.messages.at(-1)!.error!, /configured model/, 'a refusal is shown, not hidden behind the guide');
 });
+
+test('orb choices read from storage keep only known values, and a moved press is a drag', async () => {
+  const { orbGesture, parseOrbPrefs, HOLD_MS } = await import('../web/src/lib/orb-prefs.ts');
+  assert.deepEqual(parseOrbPrefs({ look: 'eclipse', theme: 'reef', talk: 'hold' }), { look: 'eclipse', theme: 'reef', talk: 'hold' });
+  assert.deepEqual(parseOrbPrefs({ look: 'disco', theme: 1, talk: 'shout' }), { look: 'ring', theme: 'brass', talk: 'click' });
+  assert.deepEqual(parseOrbPrefs(null), { look: 'ring', theme: 'brass', talk: 'click' });
+  assert.equal(orbGesture({ x: 0, y: 0 }, { x: 3, y: 3 }, HOLD_MS), 'hold');
+  assert.equal(orbGesture({ x: 0, y: 0 }, { x: 3, y: 3 }, 100), 'press');
+  assert.equal(orbGesture({ x: 0, y: 0 }, { x: 10, y: 0 }, HOLD_MS), 'drag');
+});

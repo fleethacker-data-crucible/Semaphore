@@ -1,20 +1,24 @@
 // The Semaphore assistant and its orb, as in Lazarette (StarkDock.svelte and AssistantOrb.svelte).
 // Loaded after the page paints (lib/assistant-bus.ts). The panel docks on the right; the orb floats
-// over the page, can be dragged, and opens the panel when clicked or activated with Enter.
+// over the page, can be dragged, and opens the panel when clicked, held, or activated with Enter.
 
-import { type KeyboardEvent, useEffect, useRef, useSyncExternalStore } from 'react';
+import { type KeyboardEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { CircleAlert, Sparkles, Square, SendHorizontal, SquarePen, X } from 'lucide-react';
 import '../../vendor/binnacle/binnacle.js';
 import type { AiStatus } from '../lib/ai.ts';
 import { assistant, assistantOrbState, MAX_QUESTION, type PageOutline } from '../lib/assistant.ts';
 import { takePendingOpen } from '../lib/assistant-bus.ts';
+import { HOLD_MS, orbGesture, useOrbPrefs } from '../lib/orb-prefs.ts';
 
 interface BinnacleOrb {
+  el: HTMLElement;
   destroy(): void;
+  setLook(name: string): BinnacleOrb;
+  setTheme(name: string): BinnacleOrb;
 }
 interface BinnacleApi {
   mount(opts: Record<string, unknown>): BinnacleOrb;
-  voice: { set(state: string, level?: number, text?: string): void; setLevel(level: number): void };
+  voice: { set(state: string | null, level?: number, text?: string): void; setLevel(level: number): void };
 }
 declare global {
   interface Window {
@@ -29,30 +33,98 @@ function useAssistant() {
   return assistant;
 }
 
+/**
+ * The floating orb, as Lazarette's newest (AssistantOrb.svelte, PR 140): no menu on hover, since its
+ * look, theme and how you talk to it are chosen in Settings > Appearance. Talking is a click, or a
+ * press held still, whichever the person chose; a drag is never a hold.
+ */
 function Orb() {
   const a = useAssistant();
+  const prefs = useOrbPrefs();
+  const orbRef = useRef<BinnacleOrb | null>(null);
+  const talkRef = useRef(prefs.talk);
+  talkRef.current = prefs.talk;
+  const [holding, setHolding] = useState(false);
+
   useEffect(() => {
     const B = window.Binnacle;
     if (!B) return;
     const orb = B.mount({
       id: 'semaphore-assistant',
       name: 'Semaphore assistant',
-      look: 'ring',
-      theme: 'brass',
+      look: prefs.look,
+      theme: prefs.theme,
       size: 130,
       zIndex: 40,
+      picker: false, // no menu on hover; the choices are in Settings
       x: Math.max(120, window.innerWidth - 140),
       y: window.innerHeight - 110,
-      onActivate: () => assistant.toggle(),
+      onActivate: () => {
+        // A click (or Enter). With "press and hold" a quick click does nothing but say how.
+        if (talkRef.current === 'click') assistant.toggle();
+        else B.voice.set(null, 0, 'Press and hold to talk');
+      },
     });
+    orbRef.current = orb;
+    // The orb remembers its own last look; Settings is the one place that decides it.
+    orb.setLook(prefs.look);
+    orb.setTheme(prefs.theme);
+
+    // Press and hold: held still for HOLD_MS opens the assistant; releasing puts the cursor in it.
+    const hit = orb.el.querySelector<HTMLElement>('.binnacle-hit');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let start: { x: number; y: number } | null = null;
+    let held = false;
+    const down = (e: PointerEvent) => {
+      if (talkRef.current !== 'hold' || e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY };
+      timer = setTimeout(() => {
+        held = true;
+        setHolding(true);
+        assistant.toggle(true);
+      }, HOLD_MS);
+    };
+    const move = (e: PointerEvent) => {
+      if (start && orbGesture(start, { x: e.clientX, y: e.clientY }, 0) === 'drag') {
+        clearTimeout(timer);
+        start = null;
+      }
+    };
+    const up = () => {
+      clearTimeout(timer);
+      start = null;
+      if (held) {
+        held = false;
+        setHolding(false);
+        document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-input"]')?.focus();
+      }
+    };
+    hit?.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
     return () => {
+      clearTimeout(timer);
+      hit?.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
       orb.destroy();
+      orbRef.current = null;
       B.voice.set('idle', 0);
     };
+    // Mounted once; look and theme changes go through the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    window.Binnacle?.voice.set(assistantOrbState(a.busy, a.open), 0);
-  }, [a.busy, a.open]);
+    orbRef.current?.setLook(prefs.look);
+  }, [prefs.look]);
+  useEffect(() => {
+    orbRef.current?.setTheme(prefs.theme);
+  }, [prefs.theme]);
+  useEffect(() => {
+    window.Binnacle?.voice.set(holding ? 'listening' : assistantOrbState(a.busy, a.open), 0);
+  }, [a.busy, a.open, holding]);
   return null;
 }
 

@@ -1,4 +1,4 @@
-// Settings > Appearance: the Theme and "Make it yours" cards, laid out as Lazarette lays out its own
+// Settings > Appearance: the Theme, "Make it yours" and Assistant orb cards, laid out as Lazarette lays out its own
 // (Lazarette ui-src/src/views/settings/SettingsView.svelte). The theme lives in this browser
 // (lib/theme.ts); a theme exported here imports into Lazarette, and the other way round.
 
@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { Download, Monitor, Moon, RotateCcw, Sparkles, Sun, Upload } from 'lucide-react';
 import { setReduceMotionChoice, useReduceMotionChoice } from '../lib/motion.ts';
 import { setAssistantOrb, useAssistantOrb } from '../lib/assistant-bus.ts';
+import { ORB_LOOKS, ORB_THEMES, type OrbLook, type OrbTalk, type OrbTheme, setOrbPrefs, useOrbPrefs } from '../lib/orb-prefs.ts';
 import { theme, type ThemeSpec, useTheme } from '../lib/theme.ts';
 import { contrastRatio, edited, exportTheme as themeJson, isPreset as presetAsItComes, parseTheme, PRESETS, sameTheme, surprise } from '../lib/theme-presets.ts';
 import { notify } from '../lib/toasts.ts';
@@ -64,6 +65,7 @@ export function ThemeCards() {
   const spec = useTheme();
   const reduce = useReduceMotionChoice();
   const orb = useAssistantOrb();
+  const orbPrefs = useOrbPrefs();
   const isPreset = presetAsItComes(spec);
   // An edited preset is named Custom, as in Lazarette.
   const set = (next: Partial<ThemeSpec>) => theme.replace(edited(spec, next));
@@ -213,9 +215,54 @@ export function ThemeCards() {
             <Toggle label="High contrast" hint="Stronger borders, text and focus rings." checked={spec.contrast === 'high'} onChange={(on) => set({ contrast: on ? 'high' : 'normal' })} />
           </div>
         </div>
-        <div className="mt-5 grid gap-5">
-          <Toggle label="Assistant orb" hint="A small animated orb that shows what the assistant is doing. Drag it anywhere; click it to open the assistant." checked={orb} onChange={setAssistantOrb} />
-          <Toggle label="Reduce motion" hint="Turns off animations even if Windows allows them. Charts and page designs then arrive still." checked={reduce} onChange={setReduceMotionChoice} />
+        <div className="mt-5">
+          <Toggle label="Reduce motion" hint="Turns off animations even if Windows allows them. Charts, page designs and the orb then stay still." checked={reduce} onChange={setReduceMotionChoice} />
+        </div>
+      </Card>
+
+      <Card title="Assistant orb" description="The orb has no menu of its own: hovering does nothing. Its look, theme and how you talk to it are chosen here, as in Lazarette.">
+        <div className="grid gap-4">
+          <Toggle label="Show the orb" hint="A small animated orb that shows what the assistant is doing. Drag it anywhere; click it (or press and hold, below) to open the assistant." checked={orb} onChange={setAssistantOrb} />
+          {orb && (
+            <div className="grid gap-3 border-l-2 border-line pl-4" data-testid="orb-settings">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                <label htmlFor="s-orb-look" className="font-medium">
+                  Orb look
+                </label>
+                <select id="s-orb-look" className={`${select} max-w-[220px]`} value={orbPrefs.look} onChange={(e) => setOrbPrefs({ look: e.target.value as OrbLook })}>
+                  {ORB_LOOKS.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                <label htmlFor="s-orb-theme" className="font-medium">
+                  Orb theme
+                </label>
+                <select id="s-orb-theme" className={`${select} max-w-[220px]`} value={orbPrefs.theme} onChange={(e) => setOrbPrefs({ theme: e.target.value as OrbTheme })}>
+                  {ORB_THEMES.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                <span>
+                  <label htmlFor="s-orb-talk" className="font-medium">
+                    Talk to the orb
+                  </label>
+                  <span className="block text-[12px] text-ink-2">Click it, or press and hold it. Hovering does nothing.</span>
+                </span>
+                <select id="s-orb-talk" className={`${select} max-w-[220px]`} value={orbPrefs.talk} onChange={(e) => setOrbPrefs({ talk: e.target.value as OrbTalk })}>
+                  <option value="click">Click</option>
+                  <option value="hold">Press and hold</option>
+                </select>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
     </>
