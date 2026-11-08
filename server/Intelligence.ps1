@@ -520,3 +520,146 @@ function Invoke-SemAiRequest {
     if ($fallback) { $extra += 'X-Fairlead-Fallback: ' + $fallback }
     Send-SemBytes -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes $r.Bytes -ExtraHeaders $extra
 }
+
+# ---- Spoken answers (TalkForge) ---------------------------------------------------------------
+# As in Lazarette (lib/server/Stark.ps1): the assistant's answer, a sentence at a time, goes to the
+# TalkForge speech server on this computer and comes back as WAV audio. The browser never talks to
+# TalkForge (TalkForge refuses browser requests anyway); only this server does, to the configured
+# loopback address, with the token. The page may choose the voice and speed; it can never change the
+# address, so the token only ever goes to the one place a person set up. Redirects are not followed,
+# no proxy is used, and the text and the token are never logged.
+#
+# Address: SEMAPHORE_VOICE_URL (environment or config\semaphore.env), default http://127.0.0.1:25009.
+# Token: SEMAPHORE_VOICE_TOKEN in the same places, else the Lazarette share TALKFORGE_TOKEN (Settings >
+# Tools > Semaphore in Lazarette), read when needed and dropped straight after.
+
+$script:SemVoiceDefaultUrl = 'http://127.0.0.1:25009'
+$script:SemVoiceTokenShare = 'TALKFORGE_TOKEN'
+$script:SemVoiceMaxChars = 4000
+$script:SemVoiceMaxBytes = 32MB
+$script:SemVoiceNamePattern = '\A[A-Za-z0-9._-]{1,80}\z'
+
+function Test-SemVoiceUrl {
+    # '' when the TalkForge address is acceptable, otherwise the reason. Loopback by address only: a host
+    # name could resolve elsewhere. No path, query or credentials.
+    param([AllowNull()][string]$Url)
+    $u = ([string]$Url).Trim()
+    if ($u -eq '') { return 'Set the TalkForge address, for example http://127.0.0.1:25009.' }
+    if ($u -match '\Ahttp://(127\.0\.0\.1|\[::1\]):(\d{1,5})/?\z' -and [int]$Matches[2] -ge 1 -and [int]$Matches[2] -le 65535) { return '' }
+    return 'The TalkForge address must be http://127.0.0.1:<port>, the address talkforge serve prints; TalkForge only runs on this computer.'
+}
+
+function Get-SemVoiceSettings {
+    # Url, Problem (or ''), and where the token would come from: environment | lazarette.
+    param([string]$Root = (Get-SemRoot))
+    $url = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_URL' -Root $Root
+    if (-not $url) { $url = $script:SemVoiceDefaultUrl }
+    $url = $url.Trim().TrimEnd('/')
+    $tokenSource = 'lazarette'
+    if (Get-SemEnvValue -Name 'SEMAPHORE_VOICE_TOKEN' -Root $Root) { $tokenSource = 'environment' }
+    return @{ Url = $url; Problem = (Test-SemVoiceUrl $url); TokenSource = $tokenSource; TokenShare = $script:SemVoiceTokenShare }
+}
+
+function Get-SemVoiceStatus {
+    # What the browser may know for Settings: the address and where the token comes from, never the token.
+    param([string]$Root = (Get-SemRoot))
+    $s = Get-SemVoiceSettings -Root $Root
+    return [ordered]@{ url = $s.Url; problem = $s.Problem; tokenSource = $s.TokenSource; tokenShare = $s.TokenShare }
+}
+
+function Read-SemVoiceToken {
+    # The token, or throws a sentence the person can act on. Worker side.
+    param([string]$Root = (Get-SemRoot))
+    $t = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_TOKEN' -Root $Root
+    if ($t) { return $t.Trim() }
+    $got = $null
+    try {
+        try { $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names @($script:SemVoiceTokenShare) -Purpose 'Semaphore spoken answers' }
+        catch { throw (ConvertTo-SemVaultError -Message ([string]$_.Exception.Message)).Message }
+        $v = $got[$script:SemVoiceTokenShare]
+        if ($null -eq $v -or ([string]$v).Length -eq 0) {
+            throw ('Share the TalkForge token with Semaphore: in Lazarette open Settings > Tools > Semaphore and share {0} (the token TalkForge was started with), or set SEMAPHORE_VOICE_TOKEN.' -f $script:SemVoiceTokenShare)
+        }
+        return [string]$v
+    } finally { $got = $null }
+}
+
+function New-SemVoicePayload {
+    param([string]$Text, [string]$Voice, [double]$Speed)
+    $p = [ordered]@{ input = $Text; response_format = 'wav'; speed = [Math]::Round([Math]::Min(2.0, [Math]::Max(0.5, $Speed)), 2) }
+    if (-not [string]::IsNullOrWhiteSpace($Voice)) { $p['voice'] = $Voice }
+    return ($p | ConvertTo-Json -Compress)
+}
+
+function Read-SemVoiceSpeakBody {
+    # Text, Voice, Speed from the page, or Error. The page chooses the voice and speed only.
+    param($Json)
+    $text = ([string](Get-SemJsonProp $Json 'text')).Trim()
+    if ($text -eq '' -or $text.Length -gt $script:SemVoiceMaxChars) { return @{ Error = ('Send 1-{0} characters of text.' -f $script:SemVoiceMaxChars) } }
+    $voice = ([string](Get-SemJsonProp $Json 'voice')).Trim()
+    if ($voice -ne '' -and $voice -cnotmatch $script:SemVoiceNamePattern) { return @{ Error = 'The voice must be 1-80 letters, digits and . _ - (or empty for the TalkForge default).' } }
+    $speed = 1.0
+    $raw = Get-SemJsonProp $Json 'speed'
+    if ($null -ne $raw) {
+        try { $speed = [double]::Parse(([string]$raw), [Globalization.CultureInfo]::InvariantCulture) } catch { $speed = 1.0 }
+        if ([double]::IsNaN($speed) -or [double]::IsInfinity($speed)) { $speed = 1.0 }
+    }
+    return @{ Text = $text; Voice = $voice; Speed = [Math]::Min(2.0, [Math]::Max(0.5, $speed)) }
+}
+
+function Invoke-SemVoiceSpeak {
+    # Worker side of POST /api/voice/speak.
+    param($Req, [string]$Root = (Get-SemRoot))
+    $body = Read-SemVoiceSpeakBody -Json $Req.Json
+    if ($body.ContainsKey('Error')) { Send-SemError 400 'input' $body.Error; return }
+    $s = Get-SemVoiceSettings -Root $Root
+    if ($s.Problem) { Send-SemError 400 'voice-config' $s.Problem; return }
+    $endpoint = $s.Url + '/v1/audio/speech'
+    $token = $null; $request = $null; $response = $null
+    try {
+        try { $token = Read-SemVoiceToken -Root $Root } catch { Send-SemError 424 'voice-token' ([string]$_.Exception.Message); return }
+        $bytes = [Text.Encoding]::UTF8.GetBytes((New-SemVoicePayload -Text $body.Text -Voice $body.Voice -Speed $body.Speed))
+        $request = [Net.HttpWebRequest]::Create($endpoint)
+        $request.Method = 'POST'; $request.ContentType = 'application/json; charset=utf-8'; $request.Accept = 'audio/wav'
+        $request.Headers[[Net.HttpRequestHeader]::Authorization] = 'Bearer ' + $token
+        $request.Timeout = 60000; $request.ReadWriteTimeout = 60000; $request.KeepAlive = $false
+        $request.AllowAutoRedirect = $false   # never carry the token to another address
+        $request.Proxy = $null                 # loopback only, never through a proxy
+        $request.ContentLength = $bytes.Length
+        try {
+            $up = $request.GetRequestStream()
+            try { $up.Write($bytes, 0, $bytes.Length) } finally { $up.Close() }
+            $response = $request.GetResponse()
+        } catch {
+            $ex = $_.Exception
+            while ($null -ne $ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+            if ($null -ne $ex -and $null -ne $ex.Response) { $response = $ex.Response }
+            else { Send-SemError 503 'voice-offline' ('TalkForge is not running at {0}. Start it with talkforge serve, then try again.' -f $s.Url); return }
+        }
+        $status = [int]$response.StatusCode
+        if ($status -ne 200) {
+            Write-SemLog 'WARN' ('TalkForge speech failed (HTTP {0})' -f $status)
+            if ($status -eq 401) { Send-SemError 502 'voice-token' 'TalkForge refused the token. Share the token TalkForge was started with.'; return }
+            if ($status -eq 503) { Send-SemError 503 'voice-files' 'TalkForge is missing voice files. Run populate-assets in TalkForge, then try again.'; return }
+            Send-SemError 502 'voice' ('TalkForge answered HTTP {0}.' -f $status); return
+        }
+        if ([string]$response.ContentType -notmatch '\Aaudio/') { Send-SemError 502 'voice' 'The TalkForge address answered, but not with audio. Check SEMAPHORE_VOICE_URL.'; return }
+        $ms = New-Object IO.MemoryStream
+        $src = $response.GetResponseStream()
+        try {
+            $buf = New-Object byte[] 65536
+            while (($n = $src.Read($buf, 0, $buf.Length)) -gt 0) {
+                $ms.Write($buf, 0, $n)
+                if ($ms.Length -gt $script:SemVoiceMaxBytes) { Send-SemError 502 'voice' 'TalkForge sent more audio than expected.'; return }
+            }
+        } finally { $src.Dispose() }
+        Send-SemBytes -Status 200 -ContentType 'audio/wav' -Bytes ($ms.ToArray())
+    } catch {
+        Write-SemLog 'WARN' ('TalkForge speech failed: ' + $_.Exception.GetType().Name)
+        if (-not $script:Sem.Responded) { Send-SemError 502 'voice' 'Speech failed. Check that TalkForge is running and the token is shared.' }
+    } finally {
+        $token = $null
+        if ($response) { try { $response.Close() } catch { } }
+        if ($request) { try { $request.Abort() } catch { } }
+    }
+}

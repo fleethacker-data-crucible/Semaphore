@@ -32,7 +32,7 @@
 # Playwright run of the example dashboard against "style-src 'self'" showed one style-src-attr
 # violation per tooltip, and none with this policy. React's style={} goes through the CSSOM and
 # needs nothing. worker-src: the CSV worker is a same-origin file (blob: kept for worker builds).
-$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 $script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
 # Hashed build outputs under /assets/ (contract 4, issue #78): a hash segment of 8+ letters/digits.
 $script:SemHashedAsset = '[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$'

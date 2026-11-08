@@ -93,3 +93,7 @@ Not tested, for Anthony to check on the target machine:
 3. The program-path pin: Semaphore's server and `Semaphore-CLI.bat` both run as `powershell.exe`, so they share the pin. A pairing first used from another program is refused until paired again.
 4. A real AWS session shared from Lazarette against real Athena. Lazarette does not broker short-lived AWS sessions by itself: the item holds whatever session IT put there, and renewing it is a vault edit.
 5. A Nautilus twin run with a mock Lazarette (Semaphore #63 acceptance).
+
+## TalkForge token for spoken answers
+
+The assistant can read answers aloud through TalkForge (). Semaphore needs the token TalkForge was started with. Share it from Lazarette as  (Settings > Tools > Semaphore), or set  in the environment or . The server reads it only when it speaks, sends it only to the configured loopback address (), and never shows or logs it.

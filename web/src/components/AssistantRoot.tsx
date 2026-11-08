@@ -3,12 +3,18 @@
 // over the page, can be dragged, and opens the panel when clicked, held, or activated with Enter.
 
 import { type KeyboardEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { CircleAlert, Sparkles, Square, SendHorizontal, SquarePen, X } from 'lucide-react';
+import { CircleAlert, Sparkles, Square, SendHorizontal, SquarePen, Volume2, VolumeOff, X } from 'lucide-react';
 import '../../vendor/binnacle/binnacle.js';
 import type { AiStatus } from '../lib/ai.ts';
 import { assistant, assistantOrbState, MAX_QUESTION, type PageOutline } from '../lib/assistant.ts';
 import { takePendingOpen } from '../lib/assistant-bus.ts';
 import { HOLD_MS, orbGesture, useOrbPrefs } from '../lib/orb-prefs.ts';
+import { voice } from '../lib/voice.ts';
+
+function useVoice() {
+  useSyncExternalStore(voice.subscribe, voice.snapshot, voice.snapshot);
+  return voice;
+}
 
 interface BinnacleOrb {
   el: HTMLElement;
@@ -61,6 +67,7 @@ function Orb() {
       y: window.innerHeight - 110,
       onActivate: () => {
         // A click (or Enter). With "press and hold" a quick click does nothing but say how.
+        voice.stop();
         if (talkRef.current === 'click') assistant.toggle();
         else B.voice.set(null, 0, 'Press and hold to talk');
       },
@@ -122,14 +129,17 @@ function Orb() {
   useEffect(() => {
     orbRef.current?.setTheme(prefs.theme);
   }, [prefs.theme]);
+  const v = useVoice();
   useEffect(() => {
+    if (v.speaking && !holding) return; // lib/voice.ts sets 'speaking' with the real audio level
     window.Binnacle?.voice.set(holding ? 'listening' : assistantOrbState(a.busy, a.open), 0);
-  }, [a.busy, a.open, holding]);
+  }, [a.busy, a.open, holding, v.speaking]);
   return null;
 }
 
 function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean; page: PageOutline | null; onClose: () => void }) {
   const a = useAssistant();
+  const v = useVoice();
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -160,14 +170,25 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
             {a.status}
           </p>
         </div>
+        <button type="button" aria-label={v.prefs.speak ? 'Stop reading answers aloud' : 'Read answers aloud'} aria-pressed={v.prefs.speak} onClick={() => v.setPrefs({ speak: !v.prefs.speak })} data-testid="assistant-speak" className={`grid size-8 place-items-center rounded-md hover:bg-panel-2 ${v.prefs.speak ? 'text-accent' : 'text-ink-2'}`}>
+          {v.prefs.speak ? <Volume2 size={16} /> : <VolumeOff size={16} />}
+        </button>
         <button type="button" aria-label="New chat" onClick={() => a.newChat()} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
           <SquarePen size={16} />
         </button>
-        <button type="button" aria-label="Close assistant" onClick={onClose} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
+        <button type="button" aria-label="Close assistant" onClick={() => {
+            voice.stop();
+            onClose();
+          }} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
           <X size={16} />
         </button>
       </header>
 
+      {v.error && v.prefs.speak && (
+        <p role="status" data-testid="assistant-speak-error" className="flex items-start gap-1.5 border-b border-line px-4 py-2 text-[12px] text-bad">
+          <CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /> {v.error}
+        </p>
+      )}
       <div ref={list} role="log" aria-live="polite" aria-label="Conversation" data-testid="assistant-log" className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {!a.messages.length ? (
           <div className="mx-auto max-w-[300px] pt-6 text-center">

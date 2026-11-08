@@ -70,3 +70,28 @@ test('hovering the orb shows no menu; its look and how you talk to it are set in
   await page.mouse.up();
   await expect(page.getByTestId('assistant-input')).toBeFocused();
 });
+
+test('spoken answers: the speaker reads answers through TalkForge and says plainly when it is not running', async ({ semaphore, page, problems }) => {
+  problems.allowNetwork(503, /\/api\/voice\/speak$/);
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
+  const dock = page.getByRole('complementary', { name: 'Semaphore assistant' });
+  const speaker = dock.getByRole('button', { name: 'Read answers aloud' });
+  await expect(speaker).toHaveAttribute('aria-pressed', 'false');
+  await speaker.click();
+  await expect(dock.getByRole('button', { name: 'Stop reading answers aloud' })).toHaveAttribute('aria-pressed', 'true');
+  await dock.getByTestId('assistant-input').fill('How do I export to Excel?');
+  await page.keyboard.press('Enter');
+  await expect(dock.getByTestId('assistant-speak-error')).toContainText('TalkForge is not running');
+
+  await dock.getByRole('button', { name: 'Close assistant' }).click();
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await dialog.getByRole('tab', { name: 'AI drafting' }).click();
+  const card = dialog.getByRole('region', { name: 'Spoken answers' });
+  await expect(card.getByTestId('voice-url')).toHaveText('http://127.0.0.1:25009');
+  await expect(card).toContainText('TALKFORGE_TOKEN');
+  await card.getByTestId('voice-test').click();
+  await expect(card.getByTestId('voice-test-result')).toContainText('TalkForge is not running');
+});

@@ -106,3 +106,17 @@ test('orb choices read from storage keep only known values, and a moved press is
   assert.equal(orbGesture({ x: 0, y: 0 }, { x: 3, y: 3 }, 100), 'press');
   assert.equal(orbGesture({ x: 0, y: 0 }, { x: 10, y: 0 }, HOLD_MS), 'drag');
 });
+
+test('voice choices keep only known values, and a failed piece shows the server sentence and stops', async () => {
+  const { parseVoicePrefs, Voice } = await import('../web/src/lib/voice.ts');
+  assert.deepEqual(parseVoicePrefs({ speak: true, voice: 'en_US-libritts-high', speed: 1.234 }), { speak: true, voice: 'en_US-libritts-high', speed: 1.23 });
+  assert.deepEqual(parseVoicePrefs({ speak: 'yes', voice: '../x', speed: 9 }), { speak: false, voice: '', speed: 2 });
+  const v = new Voice(async () => {
+    throw new ApiError(503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009.');
+  });
+  v.say('First sentence. Second sentence.');
+  assert.equal(v.speaking, true);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(v.speaking, false);
+  assert.match(v.error, /TalkForge is not running/);
+});

@@ -799,6 +799,7 @@ try {
     if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { Set-SemVaultRequest (Get-SemVaultForRequest -Req $Req -HomeDir $Ctx.Home) }
     if ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
     elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
+    elseif ($Req.Path -eq '/api/voice/speak') { $Client.SendTimeout = 90000; Invoke-SemVoiceSpeak -Req $Req -Root $Ctx.Root }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
 } catch {
     Write-SemLog 'ERROR' ('{0}: {1}' -f $Req.Path, $_.Exception.Message)

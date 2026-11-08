@@ -13,6 +13,7 @@ import { FEATURE_LIST, type FeatureKey, featureState, setPersonalFeature, usePer
 import { useModal } from '../lib/modal.ts';
 import type { SocialSettings } from '../lib/playbook.ts';
 import { ThemeCards } from './ThemeCards.tsx';
+import { VoiceCard } from './VoiceCard.tsx';
 
 export interface VaultStatus {
   paired: boolean;
@@ -280,6 +281,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
           {tab === 'lazarette' && <LazaretteTab />}
 
           {tab === 'ai' && (
+            <div className="grid gap-5">
             <Card title="AI drafting" description="Fairlead runs on this computer and holds no key of its own: the key lives in Lazarette. Without it, every draft comes from the local rules.">
               <Row label="Fairlead">
                 <span className="max-w-[420px] text-right text-sm" data-testid="ai-line">
@@ -289,6 +291,8 @@ export function SettingsDialog(p: SettingsDialogProps) {
               {p.ai?.configured && <Switch label="Draft with Fairlead" hint="Off uses the local rules, on this computer." checked={p.aiOn} onChange={p.onAi} />}
               {p.ai?.configured && p.aiOn && <Switch label="Send reviewed examples" hint="Sends reviewed briefs with a request so drafts match your team." checked={p.examplesOn} onChange={p.onExamples} />}
             </Card>
+            <VoiceCard />
+            </div>
           )}
 
           {tab === 'features' && (

@@ -517,6 +517,9 @@ function apiRoute(req, res, p, query, json, body) {
     vaultPaired = false;
     return sendJson(res, 200, vaultStatus());
   }
+  // Spoken answers (Intelligence.ps1): the mock has no TalkForge, so speech answers as the real server does when it is not running.
+  if (p === '/api/voice') return m === 'GET' ? sendJson(res, 200, { url: 'http://127.0.0.1:25009', problem: '', tokenSource: 'lazarette', tokenShare: 'TALKFORGE_TOKEN' }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/voice/speak') return m === 'POST' ? sendError(res, 503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009. Start it with talkforge serve, then try again.') : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');

@@ -9,6 +9,7 @@
 
 import { api, ApiError, describeError } from './api.ts';
 import type { AiStatus } from './ai.ts';
+import { voice } from './voice.ts';
 
 export interface AssistantMessage {
   id: number;
@@ -140,6 +141,7 @@ export class Assistant {
 
   newChat(): void {
     this.stop();
+    voice.stop();
     this.messages = [];
     this.status = 'New conversation';
     this.changed();
@@ -163,12 +165,15 @@ export class Assistant {
     const reply: AssistantMessage = { id: seq++, role: 'assistant', content: '', complete: false };
     this.messages = [...this.messages, user, reply].slice(-MAX_MESSAGES);
     this.draft = '';
+    voice.stop();
 
     const fromGuide = (why: string) => {
       const found = guideAnswer(question);
       const body = found.length ? found.map((g) => `${g.topic}: ${g.answer}`).join('\n\n') : 'I do not have an answer for that in the guide. Press ? for every shortcut and the phrasebook, or try asking about drafting, filters, exports, themes or Lazarette.';
       this.update(reply.id, { content: `${body}\n\n${why}`, complete: true, local: true });
       this.status = 'Ready';
+      // Guide answers are read aloud too; the note about where the answer came from is not.
+      if (voice.prefs.speak) voice.say(body);
     };
     if (!ai.status?.configured || !ai.on) {
       fromGuide(!ai.status?.configured ? 'Fairlead is not set up, so this answer comes from Semaphore\'s own guide.' : 'AI drafting is off in Settings, so this answer comes from Semaphore\'s own guide.');
@@ -194,6 +199,8 @@ export class Assistant {
       const answer = replyText(raw);
       if (!answer) throw new Error('The assistant returned no text.');
       this.update(reply.id, { content: answer, complete: true });
+      // Read aloud when the person turned it on (the speaker button), as in Lazarette.
+      if (voice.prefs.speak) voice.say(answer);
       this.status = 'Ready';
     } catch (e) {
       const stopped = controller.signal.aborted || (e instanceof DOMException && e.name === 'AbortError');

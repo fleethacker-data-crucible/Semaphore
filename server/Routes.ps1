@@ -396,6 +396,16 @@ function Invoke-SemRoute {
         [void](Unregister-SemVaultPairing)
         Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home); return
     }
+    if ($p -eq '/api/voice') {
+        if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Send-SemJson 200 (Get-SemVoiceStatus); return
+    }
+    if ($p -eq '/api/voice/speak') {
+        # Intelligence.ps1, on the worker pool: TalkForge can take seconds per sentence.
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        Start-SemWorkerRequest -Req $Req
+        return
+    }
     if ($p -eq '/api/ai') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Send-SemJson 200 (Get-SemAiStatus); return

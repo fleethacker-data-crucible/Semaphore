@@ -26,6 +26,8 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/client-log'                = 'The page reports its own script errors to the server log; a CLI reports its errors itself.'
     '/api/vault/pair'                = 'The Settings screen''s pairing box; the CLI equivalent is "vault pair", which reads the code without showing it.'
     '/api/vault/unpair'              = 'The Settings screen''s Unpair button; the CLI equivalent is "vault unpair".'
+    '/api/voice'                     = 'The Settings screen''s spoken answers card: the TalkForge address and where the token comes from.'
+    '/api/voice/speak'               = 'Relay for the page''s spoken answers: needs the browser session token and returns audio.'
 }
 
 function New-SemCommandInput {
