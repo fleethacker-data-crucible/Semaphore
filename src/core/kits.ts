@@ -42,6 +42,7 @@ import {
   type Tone,
 } from './hoist.ts';
 import { clampLayout, compact, DEFAULT_SIZE, findSlot, isValidLayout, MAX_Y, snapAll } from './layout.ts';
+import { type FlagWidget, parseWidget } from './widget.ts';
 
 export const KIT_VERSION = 1;
 
@@ -123,6 +124,8 @@ export interface KitFlag {
   reviewed: boolean;
   text?: string;
   learn?: false;
+  /** A custom flag's own chart code (src/core/widget.ts), carried as it is. */
+  widget?: FlagWidget;
 }
 
 export interface Kit {
@@ -289,6 +292,7 @@ function kitFlag(f: Flag, index: CatalogIndex, withLayout: boolean, warnings: st
   // Kits hold whole-cell layouts, so a flag placed freely rounds to the nearest cell and any hoist can take it.
   if (withLayout) out.layout = { x: Math.round(f.layout.x), y: Math.round(f.layout.y), w: Math.max(1, Math.round(f.layout.w)), h: Math.max(1, Math.round(f.layout.h)) };
   if (f.kind === 'text' && f.text) out.text = f.text.slice(0, KIT_LIMITS.textChars);
+  if (f.kind === 'custom' && f.widget) out.widget = { ...f.widget };
   if (f.learn === false) out.learn = false;
   return out;
 }
@@ -461,6 +465,12 @@ function parseKitFlag(raw: unknown, where: string, bad: Bad): KitFlag | null {
     else bad(`${where}: invalid layout.`);
   }
   if (kind === 'text') out.text = text(raw.text ?? '', KIT_LIMITS.textChars, `${where}: text`, bad, false);
+  if (kind === 'custom' && raw.widget !== undefined) {
+    const problems: string[] = [];
+    const widget = parseWidget(raw.widget, problems, where);
+    if (widget) out.widget = widget;
+    for (const p of problems) bad(p);
+  }
   if (raw.learn === false) out.learn = false;
   if (raw.binding !== undefined && raw.binding !== null) {
     const b = raw.binding;
@@ -889,6 +899,7 @@ function remapFlag(kf: KitFlag, id: string, resolver: Resolver, pageHasLast: boo
     notes: [],
   };
   if (kf.learn === false) base.learn = false;
+  if (kf.kind === 'custom' && kf.widget) base.widget = { ...kf.widget };
   const finish = (outcome: FlagOutcome): { flag: Flag; flagReport: FlagReport } => ({ flag: base, flagReport: { title: kf.title, kind: kf.kind, outcome, flagId: id, mappings, dropped } });
 
   if (kf.kind === 'text') {

@@ -7,9 +7,10 @@ import { compact, isValidLayout, snapAll } from './layout.ts';
 import type { RichKind } from './kinds.ts';
 import { parseModelSpec } from './predict/spec.ts';
 import type { ModelSpec } from './predict/types.ts';
+import { type FlagWidget, parseWidget } from './widget.ts';
 
-export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | RichKind;
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model'];
+export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'custom' | RichKind;
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'custom'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
@@ -106,6 +107,8 @@ export interface Flag {
   style?: FlagStyle;
   /** For `model` flags: which predictive model runs on the rows, and its settings (src/core/predict). */
   model?: ModelSpec;
+  /** For `custom` flags: the analyst's own chart code, run in a sandboxed frame (src/core/widget.ts). */
+  widget?: FlagWidget;
 }
 
 export interface Hoist {
@@ -313,6 +316,10 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (kind === 'model') {
     const model = parseModelSpec(raw.model, warnings, where);
     if (model) flag.model = model;
+  }
+  if (kind === 'custom') {
+    const widget = parseWidget(raw.widget, warnings, where);
+    if (widget) flag.widget = widget;
   }
   return flag;
 }

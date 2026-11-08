@@ -200,6 +200,7 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
     out.error ??= 'This flag has no answer.';
     return out;
   }
+  if (flag.kind === 'custom') return exportCustom(out, flag, result, index);
   const style = resolveStyle(design, flag.style);
   const c = paperColors();
   const colors = paletteColors(style, 'light', c.series);
@@ -280,6 +281,40 @@ export async function saveFlag(format: 'png' | 'svg' | 'csv', flag: ExportFlag):
   if (format === 'svg') saveBytes(`${stem}.svg`, flag.image.svg ?? '', 'image/svg+xml');
   else saveBytes(`${stem}.png`, flag.image.png, 'image/png');
   return `${stem}.${format}`;
+}
+
+/**
+ * A custom widget travels as its table and, when its frame is drawing on the page now, as the
+ * picture the frame hands back (ECharts getDataURL, or the widget's own SVG). Its code never runs here.
+ */
+async function exportCustom(out: ExportFlag, flag: Flag, result: FlagResult, index: CatalogIndex): Promise<ExportFlag> {
+  out.table = flagTable(flag, result, index);
+  const { widgetPicture } = await import('./widget-bus.ts');
+  const pic = await widgetPicture(flag.id);
+  if (pic) {
+    try {
+      out.image = await pictureImage(pic.url, Math.max(1, pic.width), Math.max(1, pic.height));
+    } catch {
+      /* the table alone */
+    }
+  }
+  return out;
+}
+
+/** A data: URL from a widget frame as export PNG bytes (and the SVG, when it was one). */
+async function pictureImage(url: string, width: number, height: number): Promise<ExportImage> {
+  const comma = url.indexOf(',');
+  const head = url.slice(0, comma);
+  const body = url.slice(comma + 1);
+  if (head.startsWith('data:image/svg+xml')) {
+    const svg = head.endsWith(';base64') ? atob(body) : decodeURIComponent(body);
+    return { png: await svgToPng(svg, width, height, paperColors().panel), width: width * 2, height: height * 2, svg };
+  }
+  // A PNG at twice the frame's size (the frame draws it with pixelRatio 2).
+  const bin = atob(body);
+  const png = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) png[i] = bin.charCodeAt(i);
+  return { png, width: width * 2, height: height * 2 };
 }
 
 /**

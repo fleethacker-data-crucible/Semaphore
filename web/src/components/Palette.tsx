@@ -1,7 +1,7 @@
 // The flag palette: drag a flag onto the hoist, or click to drop it in the first free slot.
 // "Smart flag" leaves the chart to Semaphore: say what you want and it picks the shape.
 
-import { AreaChart, BarChart3, BrainCircuit, CalendarDays, ChartBarDecreasing, ChartColumnStacked, ChartScatter, Filter, Gauge, Grid3x3, LineChart, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
+import { AreaChart, BarChart3, BrainCircuit, CalendarDays, ChartBarDecreasing, Code2, ChartColumnStacked, ChartScatter, Filter, Gauge, Grid3x3, LineChart, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FlagKind } from '../../../src/core/hoist.ts';
 import { KIND_MIME } from './Canvas.tsx';
@@ -26,10 +26,11 @@ export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint
   sunburst: { label: 'Sunburst', icon: SunMedium, hint: 'Rings of a breakdown' },
   stream: { label: 'Stream', icon: Waves, hint: 'Shares over time' },
   model: { label: 'Predict', icon: BrainCircuit, hint: 'Forecasts, simulations, models' },
+  custom: { label: 'Custom', icon: Code2, hint: 'Your own chart code' },
 };
 
 const ORDER: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
-const MORE: FlagKind[] = ['radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream'];
+const MORE: FlagKind[] = ['radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'custom'];
 
 export function Palette({ onAdd, onHome }: { onAdd: (kind: FlagKind | 'auto') => void; onHome: () => void }) {
   const item = (kind: FlagKind | 'auto', label: string, hint: string, Icon: LucideIcon, accent = false) => (

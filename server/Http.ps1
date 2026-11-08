@@ -32,8 +32,20 @@
 # Playwright run of the example dashboard against "style-src 'self'" showed one style-src-attr
 # violation per tooltip, and none with this policy. React's style={} goes through the CSSOM and
 # needs nothing. worker-src: the CSV worker is a same-origin file (blob: kept for worker builds).
-$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+# frame-src 'self': a custom widget's sandboxed frame (/sandbox/widget.html, below).
+$script:SemCsp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 $script:SemPermissionsPolicy = 'camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=()'
+# A custom widget's frame: everything under /sandbox/ (web/sandbox/widget.html and its bundle). The page
+# loads it only in <iframe sandbox="allow-scripts">, and the CSP's own sandbox directive makes the
+# document an opaque origin even when it is opened on its own, so it can never read the page's session
+# token, storage or DOM. default-src 'none' leaves it no network at all (no fetch, no images from
+# anywhere, no frames, no workers); 'unsafe-eval' is how the analyst's code runs (new Function),
+# inside that box only. frame-ancestors 'self': only Semaphore's own page may embed it. Its bundle is
+# loaded from the opaque origin, so these files say Cross-Origin-Resource-Policy: cross-origin (they
+# are the same static code for everyone and hold no data), and X-Frame-Options allows the same origin.
+$script:SemSandboxCsp = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+$script:SemSandboxFrameOptions = 'SAMEORIGIN'
+$script:SemSandboxResourcePolicy = 'cross-origin'
 # Hashed build outputs under /assets/ (contract 4, issue #78): a hash segment of 8+ letters/digits.
 $script:SemHashedAsset = '[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$'
 $script:SemImmutable = 'public, max-age=31536000, immutable'
@@ -158,7 +170,9 @@ function Get-SemHttpReason {
 
 function Get-SemSecurityHeaders {
     # The same set on every response. CacheControl, when given, replaces the no-store / no-cache choice.
-    param([bool]$NoStore = $true, [string]$CacheControl = '', [string]$Csp = '')
+    # -Sandbox: the custom widget frame's set (its CSP, and framing and loading from its opaque origin allowed).
+    param([bool]$NoStore = $true, [string]$CacheControl = '', [string]$Csp = '', [switch]$Sandbox)
+    if ($Sandbox) { $Csp = $script:SemSandboxCsp }
     if (-not $Csp) { $Csp = $script:SemCsp }
     $h = @(
         ('Content-Security-Policy: ' + $Csp),
@@ -169,22 +183,25 @@ function Get-SemSecurityHeaders {
         'Cross-Origin-Opener-Policy: same-origin',
         ('Permissions-Policy: ' + $script:SemPermissionsPolicy)
     )
+    if ($Sandbox) {
+        $h = @($h | ForEach-Object { $_.Replace('X-Frame-Options: DENY', ('X-Frame-Options: ' + $script:SemSandboxFrameOptions)).Replace('Cross-Origin-Resource-Policy: same-origin', ('Cross-Origin-Resource-Policy: ' + $script:SemSandboxResourcePolicy)) })
+    }
     if ($CacheControl) { $h += ('Cache-Control: ' + $CacheControl) }
     elseif ($NoStore) { $h += 'Cache-Control: no-store' } else { $h += 'Cache-Control: no-cache' }
     return $h
 }
 
 function Get-SemStaticCacheControl {
-    # index.html (and any .html) no-store; a hashed file under /assets/ immutable; anything else no-cache.
+    # index.html (and any .html) no-store; a hashed file under /assets/ or /sandbox/ immutable; anything else no-cache.
     param([string]$UrlPath, [string]$File)
     if ($File -and $File.EndsWith('.html', [StringComparison]::OrdinalIgnoreCase)) { return 'no-store' }
-    if ($UrlPath -cmatch '\A/assets/' -and ($UrlPath.Split('/')[-1]) -cmatch $script:SemHashedAsset) { return $script:SemImmutable }
+    if ($UrlPath -cmatch '\A/(assets|sandbox)/' -and ($UrlPath.Split('/')[-1]) -cmatch $script:SemHashedAsset) { return $script:SemImmutable }
     return 'no-cache'
 }
 
 function Send-SemBytes {
     # Writes to $Stream when given (a worker's client the main loop answers for), else the current request's stream.
-    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '', [IO.Stream]$Stream = $null)
+    param([int]$Status, [string]$ContentType, [byte[]]$Bytes, [bool]$NoStore = $true, [string[]]$ExtraHeaders = @(), [switch]$HeadOnly, [string]$CacheControl = '', [string]$Csp = '', [IO.Stream]$Stream = $null, [switch]$Sandbox)
     # ($stream and $Stream are one variable in PowerShell: $own remembers which case this is.)
     $own = ($null -eq $Stream)
     if ($own) { $Stream = $script:Sem.Stream }
@@ -195,7 +212,7 @@ function Send-SemBytes {
     if ($ContentType) { $lines += "Content-Type: $ContentType" }
     $lines += "Content-Length: $($Bytes.Length)"
     $lines += 'Connection: close'
-    $lines += (Get-SemSecurityHeaders -NoStore $NoStore -CacheControl $CacheControl -Csp $Csp)
+    $lines += (Get-SemSecurityHeaders -NoStore $NoStore -CacheControl $CacheControl -Csp $Csp -Sandbox:$Sandbox)
     $lines += $ExtraHeaders
     $head = [Text.Encoding]::ASCII.GetBytes(($lines -join "`r`n") + "`r`n`r`n")
     $stream.Write($head, 0, $head.Length)
@@ -283,11 +300,13 @@ function Get-SemBodyLimit {
       The body cap and the time the whole body may take, by route, decided before a byte of it is read:
         /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
         a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
+        /api/widgets          512 KB, 10 s (a library widget: 64 KB of code, JSON-escaped)
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
     if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
+    if ($Path -ceq '/api/widgets' -or $Path.StartsWith('/api/widgets/', [StringComparison]::Ordinal)) { return @{ MaxBytes = 524288; DeadlineMs = 10000; TooLarge = 'A library widget may be at most 512 KB as sent (its code at most 64 KB).' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
 }
 
@@ -418,6 +437,9 @@ function Send-SemStatic {
         if ($skin) { Send-SemBytes -Status 200 -ContentType 'text/css; charset=utf-8' -Bytes ([IO.File]::ReadAllBytes($skin)) -CacheControl 'no-store' -HeadOnly:$head; return }
     }
     $r = Resolve-SemStaticFile -WebRoot $script:Sem.WebRoot -Path $Req.Path
+    # /sandbox/ holds the custom widget frame: its own headers, and no app-route fallback to index.html.
+    $sandbox = $Req.Path.StartsWith('/sandbox/', [StringComparison]::Ordinal)
+    if ($sandbox -and $r.Kind -ne 'file') { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
     switch ($r.Kind) {
         'refused' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
         'missing' { Send-SemError 404 'not-found' 'Not found.' -HeadOnly:$head; return }
@@ -426,7 +448,7 @@ function Send-SemStatic {
             return
         }
         default {
-            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head
+            Send-SemBytes -Status 200 -ContentType (Get-SemMimeType $r.File) -Bytes ([IO.File]::ReadAllBytes($r.File)) -CacheControl (Get-SemStaticCacheControl -UrlPath $Req.Path -File $r.File) -HeadOnly:$head -Sandbox:$sandbox
         }
     }
 }

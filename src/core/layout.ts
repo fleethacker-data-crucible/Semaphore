@@ -32,6 +32,7 @@ export const DEFAULT_SIZE: Record<FlagKind, { w: number; h: number }> = {
   sunburst: { w: 4, h: 4 },
   stream: { w: 6, h: 4 },
   model: { w: 6, h: 5 },
+  custom: { w: 6, h: 5 },
 };
 
 export interface Placed {

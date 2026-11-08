@@ -281,6 +281,8 @@ export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Beha
   const notes: string[] = [];
   if (kind === 'text') return { kind, binding: null, behavior, notes };
   if (!binding) return { kind, binding, behavior, notes };
+  // A custom widget draws whatever its code draws: its fields are kept as asked.
+  if (kind === 'custom') return { kind, binding, behavior, notes };
   const b: Binding = { ...binding, metrics: [...binding.metrics], dimensions: [...binding.dimensions] };
   if (kind === 'filter') {
     if (b.dimensions.length === 0) return { kind, binding: null, behavior, notes: ['A picker needs a field to list.'] };
