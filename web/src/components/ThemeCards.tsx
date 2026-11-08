@@ -5,6 +5,7 @@
 import type { ReactNode } from 'react';
 import { Download, Monitor, Moon, RotateCcw, Sparkles, Sun, Upload } from 'lucide-react';
 import { setReduceMotionChoice, useReduceMotionChoice } from '../lib/motion.ts';
+import { setAssistantOrb, useAssistantOrb } from '../lib/assistant-bus.ts';
 import { theme, type ThemeSpec, useTheme } from '../lib/theme.ts';
 import { contrastRatio, edited, exportTheme as themeJson, isPreset as presetAsItComes, parseTheme, PRESETS, sameTheme, surprise } from '../lib/theme-presets.ts';
 import { notify } from '../lib/toasts.ts';
@@ -62,6 +63,7 @@ function swatch(p: ThemeSpec) {
 export function ThemeCards() {
   const spec = useTheme();
   const reduce = useReduceMotionChoice();
+  const orb = useAssistantOrb();
   const isPreset = presetAsItComes(spec);
   // An edited preset is named Custom, as in Lazarette.
   const set = (next: Partial<ThemeSpec>) => theme.replace(edited(spec, next));
@@ -211,7 +213,8 @@ export function ThemeCards() {
             <Toggle label="High contrast" hint="Stronger borders, text and focus rings." checked={spec.contrast === 'high'} onChange={(on) => set({ contrast: on ? 'high' : 'normal' })} />
           </div>
         </div>
-        <div className="mt-5">
+        <div className="mt-5 grid gap-5">
+          <Toggle label="Assistant orb" hint="A small animated orb that shows what the assistant is doing. Drag it anywhere; click it to open the assistant." checked={orb} onChange={setAssistantOrb} />
           <Toggle label="Reduce motion" hint="Turns off animations even if Windows allows them. Charts and page designs then arrive still." checked={reduce} onChange={setReduceMotionChoice} />
         </div>
       </Card>

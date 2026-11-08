@@ -4,7 +4,7 @@
 // The actions themselves come from the page's one action list, which the command palette shows too.
 
 import type { ReactNode } from 'react';
-import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, Paintbrush, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
+import { BookMarked, BookOpen, ChevronDown, CircleHelp, Database, Download, FileDown, Paintbrush, Sparkles, FilePlus2, FileText, FlaskConical, FolderOpen, GitBranch, MessagesSquare, Package, Redo2, ScrollText, Settings2, TerminalSquare, Undo2, Upload } from 'lucide-react';
 import { LIMITS } from '../../../src/core/hoist.ts';
 import type { Command } from '../lib/commands.ts';
 import type { Actions } from '../hooks/useCommands.ts';
@@ -121,6 +121,9 @@ export function Header(p: HeaderProps) {
         </button>
         <button type="button" onClick={p.onLeadership} className={pill} title="The leadership view: ask a question, get an answer">
           <MessagesSquare size={14} aria-hidden="true" className="text-brass" /> Leadership view
+        </button>
+        <button type="button" onClick={a.assistant.run} className={pill} title="Ask how to do something in Semaphore">
+          <Sparkles size={14} aria-hidden="true" className="text-brass" /> Assistant
         </button>
         <IconButton label="Page design" onClick={a.design.run}>
           <Paintbrush size={16} />

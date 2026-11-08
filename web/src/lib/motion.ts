@@ -52,8 +52,11 @@ export function reduceMotionChoice(): boolean {
 export function applyReduceMotionChoice(): void {
   if (typeof document === 'undefined') return;
   // The theme's Motion: Off (lib/theme.ts writes data-motion) counts the same as the switch.
-  if (readChoice() || document.documentElement.dataset.motion === 'off') document.documentElement.dataset.reduceMotion = 'true';
+  const off = readChoice() || document.documentElement.dataset.motion === 'off';
+  if (off) document.documentElement.dataset.reduceMotion = 'true';
   else delete document.documentElement.dataset.reduceMotion;
+  // The orb (vendor/binnacle) reads Lazarette's name for the same thing.
+  document.documentElement.dataset.reducedMotion = String(off);
 }
 
 export function setReduceMotionChoice(on: boolean): void {

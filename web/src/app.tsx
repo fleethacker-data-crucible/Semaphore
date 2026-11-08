@@ -42,16 +42,14 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
 import { BrowserOnlyNote, SessionScreen } from './components/SessionScreen.tsx';
-import { CommandPalette } from './components/CommandPalette.tsx';
 import { Header } from './components/Header.tsx';
 import { ConflictBar, TabChangeBar } from './components/ConflictBar.tsx';
 import { DraftMiss, type DraftMissInfo } from './components/DraftMiss.tsx';
-import { OpenHoistDialog } from './components/OpenHoistDialog.tsx';
 import { useSession } from './hooks/useSession.ts';
 import { usePersistence } from './hooks/usePersistence.ts';
 import { useBusy } from './hooks/useBusy.ts';
@@ -67,6 +65,7 @@ import type { QlikImportPlan } from './components/QlikImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
 import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
 import { applyReduceMotionChoice } from './lib/motion.ts';
+import { toggleAssistant, useAssistantOrb, useAssistantWanted } from './lib/assistant-bus.ts';
 import { chartLookOf, designAttrs, designVars, withoutChartLook } from '../../src/core/design.ts';
 import { cachedSliceKey, flagKeys as pageKeysFor, planSlice, relevantSelections } from './lib/relevance.ts';
 import { Inspector } from './components/Inspector.tsx';
@@ -161,6 +160,8 @@ export function App() {
   const [lineageOpen, setLineageOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [designOpen, setDesignOpen] = useState(false);
+  const assistantOrb = useAssistantOrb();
+  const assistantWanted = useAssistantWanted();
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
@@ -1002,6 +1003,7 @@ export function App() {
           import: () => importInput.current?.click(),
           download: exportHoist,
           share: () => setShareOpen(true),
+          assistant: toggleAssistant,
           design: () => setDesignOpen(true),
           brief: () => void briefMe(),
           kits: () => setKitsOpen(true),
@@ -1514,8 +1516,27 @@ export function App() {
         </Panel>
       )}
 
-      {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
-      {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
+      {openList && (
+        <Panel name="open hoist" onClose={() => setOpenList(null)}>
+          <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />
+        </Panel>
+      )}
+      {paletteOpen && (
+        <Panel name="command palette" onClose={() => setPaletteOpen(false)}>
+          <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+        </Panel>
+      )}
+      {(assistantOrb || assistantWanted) && (
+        <Suspense fallback={null}>
+          <AssistantRoot
+            orb={assistantOrb}
+            ai={ai}
+            aiOn={!!ai?.configured && useAi}
+            page={{ title: hoist.title, brief: hoist.brief, flags: hoist.flags.map((f) => ({ title: f.title, kind: f.kind, brief: f.brief })) }}
+          />
+        </Suspense>
+      )}
+
       {helpOpen && (
         <Panel name="help" onClose={() => setHelpOpen(false)}>
           <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />

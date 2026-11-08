@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import '../vendor/fleet/fleet.css';
+@import '../vendor/binnacle/binnacle.css';
 
 /* Skins (docs/SKINS.md). Every colour Semaphore draws comes from the tokens below (--bg, --ink,
    --accent ...). A skin is one set of values for them; <html data-skin> picks the skin and

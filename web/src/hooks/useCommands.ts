@@ -10,7 +10,7 @@ import { listItems, type StoredItem } from '../lib/api.ts';
 import type { Command } from '../lib/commands.ts';
 
 export type ActionId =
-  | 'new' | 'open' | 'import' | 'download' | 'share' | 'design' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
+  | 'new' | 'open' | 'import' | 'download' | 'share' | 'design' | 'assistant' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
   | 'playbook' | 'data' | 'leadership' | 'home' | 'undo' | 'redo' | 'ask' | 'draft-page' | 'starter' | 'experiment'
   | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals' | 'settings';
 
@@ -42,6 +42,7 @@ export function buildActions(d: CommandDeps): Actions {
     import: a('import', 'Import a hoist file…', { keywords: 'upload json' }),
     download: a('download', 'Download this hoist (JSON)', { keywords: 'export save file' }),
     share: a('share', 'Export or share…', { hint: 'PDF, Excel, PowerPoint, Word, HTML, CSV or JSON', keywords: 'export html pdf excel xlsx powerpoint pptx word docx csv json report download' }),
+    assistant: a('assistant', 'Semaphore assistant', { hint: 'Ask how to do something in Semaphore', keywords: 'help ask ai chat orb question how' }),
     design: a('design', 'Page design…', { hint: 'Colours, cards, backdrop, type and motion', keywords: 'look style theme palette colour color animation effects' }),
     brief: a('brief', 'Brief me', { hint: 'What this page says, as leadership would read it', keywords: 'summary briefing' }),
     kits: a('kits', 'Flag kits…', { hint: 'Save flags as a kit, or fly a kit on this page', keywords: 'template reuse' }),
