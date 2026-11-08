@@ -21,7 +21,8 @@ import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.t
 import { recordSkill } from '../lib/skills.ts';
 import { type HoistDesign, resolveStyle } from '../../../src/core/design.ts';
 import { FlagView } from './FlagView.tsx';
-import { sqlLanguage } from '../lib/sql-language.ts';
+import { dialectName, shownSql, sqlLanguage } from '../lib/sql-language.ts';
+import { useSqlPref } from '../lib/sql-pref.ts';
 
 export interface FlagCardProps {
   /** The page as planning sees it (lib/relevance.ts planSlice): the same object while that is unchanged. */
@@ -119,6 +120,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     () => (result && flag.kind !== 'filter' ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: ctx.today }, index) : []),
     [result, flag, index, ctx.today],
   );
+  const sqlPref = useSqlPref();
   const described = useMemo(() => (flag.kind === 'text' ? '' : describeFlag(flag, hoist, index).join(' ')), [flag, hoist, index]);
   const descId = useId();
   const lowConfidence = flag.status === 'drafted' && (flag.confidence ?? 1) < 0.6;
@@ -262,7 +264,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
       </header>
       <div key={flipped ? 'back' : 'front'} className={`relative min-h-0 flex-1 px-3 pb-2 pt-1 ${flipped ? 'flip-enter' : ''}`}>
         {flipped ? (
-          <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} />
+          <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} index={index} today={ctx.today} />
         ) : flag.kind === 'text' ? (
           <p className="scroll-thin h-full overflow-auto whitespace-pre-wrap text-sm text-ink-2">{flag.text || flag.brief || 'Write a note in the inspector.'}</p>
         ) : !flag.binding ? (
@@ -311,6 +313,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
       {flipped && result?.sql && (
         <footer aria-label="SQL language" className="shrink-0 border-t border-line bg-panel-2 px-3 py-1.5 text-[11px] text-ink">
           <span className="font-semibold">SQL language: </span>{sqlLanguage(result.sql).name}
+          {sqlPref !== 'source' && sqlPref !== result.sql.dialect && <span className="block text-ink-2">Shown below in {dialectName(sqlPref)}, your SQL language; it runs as {sqlLanguage(result.sql).name}.</span>}
           {result.origin === 'page' && <span className="block text-ink-2">Reference SQL; results calculated in this browser.</span>}
         </footer>
       )}
@@ -338,7 +341,9 @@ function Empty({ flag }: { flag: Flag }) {
   );
 }
 
-function Back({ flag, described, result, insights }: { flag: Flag; described: string; result: FlagResult | undefined; insights: string[] }) {
+function Back({ flag, described, result, insights, index, today }: { flag: Flag; described: string; result: FlagResult | undefined; insights: string[]; index: CatalogIndex; today: Date }) {
+  const pref = useSqlPref();
+  const view = result?.sql ? shownSql(result.sql, result.plan, index, today, pref) : null;
   return (
     <div className="scroll-thin h-full space-y-2 overflow-auto text-xs">
       <section>
@@ -370,9 +375,10 @@ function Back({ flag, described, result, insights }: { flag: Flag; described: st
           <h4 className="mb-0.5 font-semibold text-ink-2">
             SQL
           </h4>
-          <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px] text-ink">{prettySql(result.sql.sql)}</pre>
-          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).syntax}</p>
-          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).parameters}</p>
+          {view?.translated && <p className="mb-1 text-ink-2">In {dialectName(view.shown.dialect)}, your SQL language (Settings &gt; SQL). It runs as {sqlLanguage(result.sql).name}.</p>}
+          <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px] text-ink">{prettySql((view?.shown ?? result.sql).sql)}</pre>
+          <p className="mt-1 text-ink-2">{sqlLanguage(view?.shown ?? result.sql).syntax}</p>
+          <p className="mt-1 text-ink-2">{sqlLanguage(view?.shown ?? result.sql).parameters}</p>
           {result.sql.params.length > 0 && (
             <p className="mt-1 font-mono text-[11px] text-ink-3">
               Parameters: {result.sql.params.map((p, i) => `${i + 1}=${JSON.stringify(p.value)} (${p.type})`).join(', ')}

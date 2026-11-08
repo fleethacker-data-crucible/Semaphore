@@ -31,12 +31,17 @@ export interface RenderOptions {
    * for ODBC and OLE DB, which bind positionally whatever the database.
    */
   placeholders?: 'native' | 'question';
+  /**
+   * Write the SQL in another dialect than the source's: for showing it in the analyst's own SQL
+   * language (Settings > SQL). What runs is always rendered for the source.
+   */
+  dialect?: Dialect;
 }
 
 export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date(), options: RenderOptions = {}): RenderedSql {
   const source = index.source(plan.source);
   if (!source) throw new SqlError(`Unknown source "${plan.source}".`);
-  const dialect = source.dialect;
+  const dialect = options.dialect ?? source.dialect;
   if (!isSqlDialect(dialect)) throw new SqlError('This source uses an unsupported SQL dialect. Configure a supported SQL profile before generating a query.');
   const params: SqlParam[] = [];
   const bind = (p: SqlParam): string => {

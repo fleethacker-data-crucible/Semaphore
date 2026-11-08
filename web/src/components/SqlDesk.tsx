@@ -1,11 +1,16 @@
 // The SQL desk: for analysts who want to write their own query against a source on this computer's
 // server, the lake included. It runs through the same /api/query as flags, so the same guard (one
 // SELECT, nothing that writes), row cap and, for the lake, the same cost guard and cache apply.
+// Analysts write in their own SQL language (Settings > SQL, or the picker here): what they write is
+// translated into the source's dialect before it runs, and the translated text is shown first.
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Download, History, Play, TerminalSquare, X } from 'lucide-react';
 import { ApiError, type QueryResponse, runServerQuery, type ServerSource } from '../lib/api.ts';
 import { useModal } from '../lib/modal.ts';
+import { dialectForKind, SQL_DIALECTS, type SourceKind } from '../../../src/core/catalog.ts';
+import { DIALECT_NAMES, translateSql } from '../../../src/core/sql-translate.ts';
+import { setSqlPref, type SqlPref, useSqlPref } from '../lib/sql-pref.ts';
 
 const HISTORY_KEY = 'semaphore.sqldesk';
 const ROW_CAP = 5000;
@@ -55,13 +60,21 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
   const [error, setError] = useState<{ text: string; approve?: boolean } | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState(readHistory);
+  const pref = useSqlPref();
+  const target = (() => {
+    const s = sources.find((x) => x.id === source);
+    return s ? (s.provider === 'athena' ? 'ansi' : dialectForKind(s.kind as SourceKind)) : 'ansi';
+  })();
+  // What actually runs: the SQL as written, translated into the source's dialect when the person writes in another.
+  const translation = useMemo(() => (pref === 'source' || !sql.trim() ? null : translateSql(sql.trim(), pref, target)), [pref, sql, target]);
+  const toRun = translation ? translation.sql : sql.trim();
 
   const run = async (approve = false) => {
     if (!sql.trim() || !source) return;
     setRunning(true);
     setError(null);
     try {
-      const r = await runServerQuery(source, sql.trim(), [], ROW_CAP, { approve });
+      const r = await runServerQuery(source, toRun, [], ROW_CAP, { approve });
       setResult(r);
       remember(source, sql.trim());
       setHistory(readHistory());
@@ -117,6 +130,17 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
               </select>
             )}
             <History size={14} className="text-ink-3" aria-hidden />
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-2">
+              I write in
+              <select value={pref} onChange={(e) => setSqlPref(e.target.value as SqlPref)} aria-label="SQL language you write in" className="min-h-8 rounded-md border border-line bg-panel px-2 py-1 text-xs">
+                <option value="source">{DIALECT_NAMES[target]} (this source's)</option>
+                {SQL_DIALECTS.filter((d) => d !== target).map((d) => (
+                  <option key={d} value={d}>
+                    {DIALECT_NAMES[d]}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <textarea
             data-autofocus
@@ -134,6 +158,19 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
             placeholder={'SELECT region, SUM(labor_cost) AS cost\nFROM work_orders\nWHERE opened_on >= DATE \'2026-01-01\'\nGROUP BY region'}
             className="block w-full rounded-md border border-line bg-panel-2 p-2 font-mono text-xs"
           />
+          {translation && (
+            <details open={translation.changed} className="rounded-md border border-line p-2 text-xs" data-testid="sql-translation">
+              <summary className="cursor-pointer font-semibold">
+                {translation.changed ? `Runs as ${DIALECT_NAMES[target]}: translated from ${DIALECT_NAMES[pref as keyof typeof DIALECT_NAMES]}` : `Nothing to translate for ${DIALECT_NAMES[target]}`}
+              </summary>
+              {translation.changed && <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-panel-2 p-2 font-mono text-[11px]">{translation.sql}</pre>}
+              {translation.notes.map((n) => (
+                <p key={n} className="mt-1 text-warn">
+                  {n}
+                </p>
+              ))}
+            </details>
+          )}
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => run()} disabled={running || !sql.trim() || !source} className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-panel disabled:opacity-40">
               <Play size={14} /> {running ? 'Running…' : 'Run'}

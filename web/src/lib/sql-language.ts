@@ -1,5 +1,7 @@
-import type { Dialect } from '../../../src/core/catalog.ts';
-import type { RenderedSql } from '../../../src/core/sql.ts';
+import type { CatalogIndex, Dialect } from '../../../src/core/catalog.ts';
+import type { QueryPlan } from '../../../src/core/planner.ts';
+import { type RenderedSql, renderSql } from '../../../src/core/sql.ts';
+import type { SqlPref } from './sql-pref.ts';
 
 const languages: Record<Dialect, { name: string; syntax: string }> = {
   postgres: { name: 'PostgreSQL', syntax: 'Double quotes name columns and tables. date_trunc groups dates; LIMIT caps rows.' },
@@ -24,3 +26,18 @@ export function sqlLanguage(sql: RenderedSql): { name: string; syntax: string; p
           : '@p1, @p2 and so on mark values supplied separately. The parameters below are not pasted into the SQL.';
   return { ...language, parameters };
 }
+
+/**
+ * The flag's SQL as the person reads it: in their SQL language (Settings > SQL) when they chose one
+ * and it differs from the source's, else as it runs. `runs` is always what the source receives.
+ */
+export function shownSql(runs: RenderedSql, plan: QueryPlan, index: CatalogIndex, today: Date, pref: SqlPref): { shown: RenderedSql; translated: boolean } {
+  if (pref === 'source' || pref === runs.dialect) return { shown: runs, translated: false };
+  try {
+    return { shown: renderSql(plan, index, today, { dialect: pref }), translated: true };
+  } catch {
+    return { shown: runs, translated: false };
+  }
+}
+
+export const dialectName = (d: Dialect): string => languages[d].name;

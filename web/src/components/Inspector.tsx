@@ -17,6 +17,8 @@ import { BriefEditor, BriefHints, BriefLegend, Understood } from './BriefEditor.
 import { useFlagResult } from './FlagCard.tsx';
 import { KIND_META } from './Palette.tsx';
 import { StylePanel } from './LazyPanels.tsx';
+import { dialectName, shownSql } from '../lib/sql-language.ts';
+import { useSqlPref } from '../lib/sql-pref.ts';
 
 export interface InspectorProps {
   hoist: Hoist;
@@ -53,6 +55,8 @@ export function Inspector(p: InspectorProps) {
     () => (result ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: p.ctx.today }, index) : []),
     [result, flag, index, p.ctx.today],
   );
+  const sqlPref = useSqlPref();
+  const sqlView = useMemo(() => (result?.sql ? shownSql(result.sql, result.plan, index, p.ctx.today, sqlPref) : null), [result, index, p.ctx.today, sqlPref]);
   const reasons = useMemo(() => annotateBrief(flag.brief, index).reasons, [flag.brief, index]);
   // Only fields in the table this flag reads can affect it.
   const firstMetric = flag.binding?.metrics[0] ? index.metric(flag.binding.metrics[0]) : undefined;
@@ -301,7 +305,8 @@ export function Inspector(p: InspectorProps) {
           {details && (
             <div className="mt-2 space-y-2">
               <pre className="scroll-thin max-h-56 overflow-auto rounded-md bg-panel-2 p-2 font-mono text-[11px]">{JSON.stringify({ binding: flag.binding, behavior: flag.behavior }, null, 2)}</pre>
-              {result?.sql && <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px]">{result.sql.sql}</pre>}
+              {sqlView && sqlView.translated && <p className="text-[11px] text-ink-2">In {dialectName(sqlView.shown.dialect)}, your SQL language (Settings &gt; SQL). It runs as {dialectName(result!.sql!.dialect)}.</p>}
+              {sqlView && <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px]">{sqlView.shown.sql}</pre>}
               {result && (
                 <p className="text-[11px] text-ink-3">
                   {result.display.rows.length} rows shown · {result.origin === 'page' ? 'answered in this page' : 'from the server'} in {result.ms} ms

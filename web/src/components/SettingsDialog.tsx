@@ -14,6 +14,7 @@ import { useModal } from '../lib/modal.ts';
 import type { SocialSettings } from '../lib/playbook.ts';
 import { ThemeCards } from './ThemeCards.tsx';
 import { VoiceCard } from './VoiceCard.tsx';
+import { SqlLanguageCard } from './SqlLanguageCard.tsx';
 
 export interface VaultStatus {
   paired: boolean;
@@ -46,7 +47,7 @@ export interface SettingsDialogProps {
   onEnd: () => void;
 }
 
-type TabId = 'appearance' | 'lazarette' | 'ai' | 'features' | 'session';
+type TabId = 'appearance' | 'lazarette' | 'ai' | 'sql' | 'features' | 'session';
 
 const btn = 'inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[var(--fl-control-border)] px-2.5 text-sm hover:border-accent disabled:opacity-40';
 
@@ -207,6 +208,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
   const tabs: Array<{ id: TabId; label: string }> = [
     { id: 'appearance', label: 'Appearance' },
     ...(p.hasServer ? [{ id: 'lazarette' as const, label: 'Lazarette' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
+    { id: 'sql', label: 'SQL' },
     { id: 'features', label: 'Features' },
     ...(p.hasServer ? [{ id: 'session' as const, label: 'Session' }] : []),
   ];
@@ -294,6 +296,8 @@ export function SettingsDialog(p: SettingsDialogProps) {
             <VoiceCard />
             </div>
           )}
+
+          {tab === 'sql' && <SqlLanguageCard />}
 
           {tab === 'features' && (
             <Card title="For you, in this browser" description="What is already kept stays, and comes back when you turn a feature on. A feature the deployment turned off stays off.">

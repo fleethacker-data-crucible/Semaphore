@@ -80,3 +80,23 @@ test('the Settings tabs move with the arrow keys and remember nothing between op
   await dialog.getByRole('checkbox', { name: /^Reduce motion/ }).uncheck();
   await expect(page.locator('html')).not.toHaveAttribute('data-reduce-motion', 'true');
 });
+
+test('Settings > SQL: flag SQL is shown in the chosen language and says what it runs as', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await dialog.getByRole('tab', { name: 'SQL' }).click();
+  await dialog.getByRole('radio', { name: /^T-SQL \(SQL Server/ }).click();
+  await expect(dialog.getByRole('radio', { name: /^T-SQL \(SQL Server/ })).toHaveAttribute('aria-checked', 'true');
+  await dialog.getByRole('button', { name: 'Back to the page' }).click();
+  const card = page.locator('[data-flag-card]', { hasText: 'Labor cost by region' }).first();
+  await card.getByRole('button', { name: 'Flip over: what this shows and the SQL' }).click();
+  await expect(card).toContainText('your SQL language');
+  await expect(card.locator('pre')).toContainText('[');
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await dialog.getByRole('tab', { name: 'SQL' }).click();
+  await dialog.getByRole('radio', { name: 'As each source speaks' }).click();
+  await dialog.getByRole('button', { name: 'Back to the page' }).click();
+  await expect(card).not.toContainText('your SQL language');
+});
