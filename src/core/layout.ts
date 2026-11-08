@@ -13,6 +13,15 @@ export const DEFAULT_SIZE: Record<FlagKind, { w: number; h: number }> = {
   pie: { w: 4, h: 4 },
   table: { w: 12, h: 5 },
   text: { w: 4, h: 2 },
+  radar: { w: 4, h: 4 },
+  scatter: { w: 6, h: 4 },
+  heatmap: { w: 6, h: 4 },
+  calendar: { w: 12, h: 3 },
+  waterfall: { w: 6, h: 4 },
+  pareto: { w: 6, h: 4 },
+  sankey: { w: 6, h: 5 },
+  sunburst: { w: 4, h: 4 },
+  stream: { w: 6, h: 4 },
 };
 
 export interface Placed {

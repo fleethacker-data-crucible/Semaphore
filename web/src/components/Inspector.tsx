@@ -7,7 +7,8 @@ import { Check, Copy, Flag as FlagIcon, MessagesSquare, Sparkles, Trash2, X } fr
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
-import type { Behavior, Flag, FlagKind, Hoist } from '../../../src/core/hoist.ts';
+import { type Behavior, type Flag, FLAG_KINDS, type FlagKind, type Hoist } from '../../../src/core/hoist.ts';
+import { CHART_KINDS, fitRichKind, isRichKind, KIND_NEEDS } from '../../../src/core/kinds.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { annotateBrief, type Suggestion, usedKinds } from '../../../src/core/intelligence/annotate.ts';
 import { flushAccepts, shortDate, useReviewedAt } from '../lib/accept.ts';
@@ -44,7 +45,7 @@ export interface InspectorProps {
   onSaveFlag: (format: 'png' | 'svg' | 'csv', result: FlagResult) => void;
 }
 
-const KINDS: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
+const KINDS = FLAG_KINDS;
 
 export function Inspector(p: InspectorProps) {
   const { flag, hoist, index } = p;
@@ -56,6 +57,8 @@ export function Inspector(p: InspectorProps) {
     [result, flag, index, p.ctx.today],
   );
   const sqlPref = useSqlPref();
+  // A richer kind whose fields do not fit is drawn as the nearest kind that does; say so here.
+  const kindNote = isRichKind(flag.kind) && flag.binding ? fitRichKind(flag.kind, flag.binding, index).note : undefined;
   const sqlView = useMemo(() => (result?.sql ? shownSql(result.sql, result.plan, index, p.ctx.today, sqlPref) : null), [result, index, p.ctx.today, sqlPref]);
   const reasons = useMemo(() => annotateBrief(flag.brief, index).reasons, [flag.brief, index]);
   // Only fields in the table this flag reads can affect it.
@@ -189,6 +192,7 @@ export function Inspector(p: InspectorProps) {
                   type="button"
                   role="radio"
                   aria-checked={on}
+                  title={isRichKind(k) ? `${KIND_META[k].hint}. Needs ${KIND_NEEDS[k]}.` : KIND_META[k].hint}
                   onClick={() => {
                     p.onAutoKind(false);
                     p.onChange({ kind: k });
@@ -201,6 +205,11 @@ export function Inspector(p: InspectorProps) {
               );
             })}
           </div>
+          {kindNote && (
+            <p className="text-[11.5px] leading-5 text-warn" data-testid="kind-note">
+              {kindNote}
+            </p>
+          )}
         </section>
 
         <Suspense fallback={null}>
@@ -320,7 +329,7 @@ export function Inspector(p: InspectorProps) {
         {result && flag.kind !== 'filter' && flag.kind !== 'text' && (
           <section aria-label="Save this flag" className="flex flex-wrap items-center gap-1 border-t border-line pt-3">
             <span className="mr-1 text-xs font-semibold text-ink-2">Save as</span>
-            {(['bar', 'line', 'area', 'pie'].includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : (['csv'] as const)).map((f) => (
+            {(CHART_KINDS.includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : (['csv'] as const)).map((f) => (
               <button key={f} type="button" onClick={() => p.onSaveFlag(f, result)} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
                 {f}
               </button>

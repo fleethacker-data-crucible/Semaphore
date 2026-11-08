@@ -15,6 +15,15 @@ const KIND_NAMES: Record<Flag['kind'], string> = {
   table: 'A table of',
   filter: 'A picker listing',
   text: 'A note',
+  radar: 'A spider chart of',
+  scatter: 'A scatter of',
+  heatmap: 'A heatmap of',
+  calendar: 'A calendar of',
+  waterfall: 'A waterfall of',
+  pareto: 'A Pareto chart of',
+  sankey: 'A flow (Sankey) of',
+  sunburst: 'A sunburst of',
+  stream: 'A stream chart of',
 };
 
 const AGG_WORDS: Record<string, string> = {

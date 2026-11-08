@@ -3,7 +3,8 @@
 // the draft is still validated against the catalog, and that nothing is built when the switch is off.
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { draftFlag, draftHoist, EXAMPLE_LIMITS, type IntelligenceProvider, OpenAICompatibleProvider, selectExamples } from '../src/core/intelligence/index.ts';
+import { draftFlag, draftHoist, EXAMPLE_LIMITS, type IntelligenceProvider, selectExamples } from '../src/core/intelligence/index.ts';
+import { OpenAICompatibleProvider } from '../src/core/intelligence/remote.ts';
 import type { DraftFlagRequest, DraftHoistRequest, WorkedExample } from '../src/core/intelligence/contract.ts';
 import { learnFromHoist, type PlaybookEntry, retireEntry } from '../src/core/playbook.ts';
 import { type AiStatus, draftingProvider, examplesFor } from '../web/src/lib/ai.ts';

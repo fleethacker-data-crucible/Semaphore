@@ -1,7 +1,7 @@
 // The flag palette: drag a flag onto the hoist, or click to drop it in the first free slot.
 // "Smart flag" leaves the chart to Semaphore: say what you want and it picks the shape.
 
-import { AreaChart, BarChart3, Filter, Gauge, LineChart, PieChart, Sparkles, Table2, Type } from 'lucide-react';
+import { AreaChart, BarChart3, CalendarDays, ChartBarDecreasing, ChartColumnStacked, ChartScatter, Filter, Gauge, Grid3x3, LineChart, PieChart, Radar, Sparkles, SunMedium, Table2, Type, Waves, Workflow } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FlagKind } from '../../../src/core/hoist.ts';
 import { KIND_MIME } from './Canvas.tsx';
@@ -16,9 +16,19 @@ export const KIND_META: Record<FlagKind, { label: string; icon: LucideIcon; hint
   table: { label: 'Table', icon: Table2, hint: 'Rows and columns' },
   filter: { label: 'Picker', icon: Filter, hint: 'Filter the page' },
   text: { label: 'Note', icon: Type, hint: 'Words, no data' },
+  radar: { label: 'Spider', icon: Radar, hint: 'Profiles across measures' },
+  scatter: { label: 'Scatter', icon: ChartScatter, hint: 'Two measures against each other' },
+  heatmap: { label: 'Heatmap', icon: Grid3x3, hint: 'A grid of two fields' },
+  calendar: { label: 'Calendar', icon: CalendarDays, hint: 'Day by day across the year' },
+  waterfall: { label: 'Waterfall', icon: ChartColumnStacked, hint: 'Steps up and down to a total' },
+  pareto: { label: 'Pareto', icon: ChartBarDecreasing, hint: 'The few that make most of it' },
+  sankey: { label: 'Sankey', icon: Workflow, hint: 'Flows from one field to another' },
+  sunburst: { label: 'Sunburst', icon: SunMedium, hint: 'Rings of a breakdown' },
+  stream: { label: 'Stream', icon: Waves, hint: 'Shares over time' },
 };
 
 const ORDER: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
+const MORE: FlagKind[] = ['radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream'];
 
 export function Palette({ onAdd, onHome }: { onAdd: (kind: FlagKind | 'auto') => void; onHome: () => void }) {
   const item = (kind: FlagKind | 'auto', label: string, hint: string, Icon: LucideIcon, accent = false) => (
@@ -52,6 +62,10 @@ export function Palette({ onAdd, onHome }: { onAdd: (kind: FlagKind | 'auto') =>
       <ul className="flex flex-col gap-1.5">
         {item('auto', 'Smart flag', 'Describe it; Semaphore picks the chart', Sparkles, true)}
         {ORDER.map((k) => item(k, KIND_META[k].label, KIND_META[k].hint, KIND_META[k].icon))}
+      </ul>
+      <h2 className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-ink-3">More charts</h2>
+      <ul className="flex flex-col gap-1.5" aria-label="More charts">
+        {MORE.map((k) => item(k, KIND_META[k].label, KIND_META[k].hint, KIND_META[k].icon))}
       </ul>
     </nav>
   );

@@ -9,6 +9,7 @@ import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
 import { contrastRatio, type FlagStyle } from '../../../src/core/design.ts';
 import { formatNumber } from '../../../src/core/describe.ts';
 import { type Flag, type TimeGrain, type Tone, toneFor } from '../../../src/core/hoist.ts';
+import { fitRichKind, isRichKind } from '../../../src/core/kinds.ts';
 import type { FlagResult } from './data.ts';
 
 export interface ChartColors {
@@ -80,7 +81,7 @@ function gradient(color: string, sideways: boolean, from: number, to: number) {
   return { type: 'linear', x: 0, y: 0, x2: sideways ? 1 : 0, y2: sideways ? 0 : 1, colorStops: [{ offset: 0, color: withAlpha(color, sideways ? to : from) }, { offset: 1, color: withAlpha(color, sideways ? from : to) }] };
 }
 
-function legendFor(style: FlagStyle, seriesCount: number, ink2: string): { legend: Option | undefined; top: number; right: number; bottom: number } {
+export function legendFor(style: FlagStyle, seriesCount: number, ink2: string): { legend: Option | undefined; top: number; right: number; bottom: number } {
   const place = style.legend ?? 'auto';
   const none = { legend: undefined, top: 10, right: 12, bottom: 4 };
   if (place === 'off' || (place === 'auto' && seriesCount < 2)) return none;
@@ -124,6 +125,15 @@ function pieOption(input: ChartInput, base: Option, x: { key: string; grain?: Ti
   };
 }
 
+type RichBuilder = (input: ChartInput, base: Option) => Option;
+let richBuilder: RichBuilder | null = null;
+/** chart-kinds.ts registers itself here when chart-extras.ts loads (Chart.tsx loadExtras). */
+export function setRichBuilder(f: RichBuilder): void {
+  richBuilder = f;
+}
+/** Whether the richer kinds can be drawn yet. */
+export const richReady = (): boolean => richBuilder !== null;
+
 /** The chart for a flag that has a field of its own to draw along. */
 export function flagChartOption(input: ChartInput): Option {
   const { flag, result, index, selections, style, c, colors } = input;
@@ -162,6 +172,14 @@ export function flagChartOption(input: ChartInput): Option {
     color: [...colors],
   };
   if (flag.kind === 'pie') return pieOption(input, base, x);
+  // Until chart-extras.ts loads the richer kinds draw nothing; the card asks for them (FlagView).
+  if (isRichKind(flag.kind)) {
+    // Fields that do not fit the kind (changed in the inspector, say) draw as the nearest kind that does.
+    const fit = fitRichKind(flag.kind, b, index);
+    if (fit.kind !== flag.kind) return flagChartOption({ ...input, flag: { ...flag, kind: fit.kind === 'kpi' ? 'bar' : fit.kind } });
+    if (!richBuilder) return { ...base, series: [] };
+    return richBuilder(input, base);
+  }
 
   // Long or many category names read better down the side than squeezed along the bottom.
   const longest = Math.max(0, ...categories.map((v) => formatDim(v, x.grain).length));

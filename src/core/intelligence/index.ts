@@ -22,7 +22,7 @@ import { LocalRulesProvider } from './local-rules.ts';
 export * from './contract.ts';
 export { EXAMPLE_LIMITS, type ExampleOptions, selectExamples } from './examples.ts';
 export { LocalRulesProvider } from './local-rules.ts';
-export { ContractProvider, DatabricksProvider, OpenAICompatibleProvider } from './remote.ts';
+// The remote providers are imported from ./remote.ts directly, so the page can load them on first use (web/src/lib/ai.ts).
 
 /**
  * Reviewed examples for a draft request: the analyst's switch is on and these are the playbook's

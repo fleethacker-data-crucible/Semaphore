@@ -6,6 +6,7 @@
 // the planning slice of the page, and `selections` only those this flag can use.
 
 import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { CHART_KINDS } from '../../../src/core/kinds.ts';
 import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, Flag as FlagIcon, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles, Table2 } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
@@ -44,7 +45,7 @@ export interface FlagCardProps {
 
 type Load = { state: 'idle' } | { state: 'loading'; last?: FlagResult } | { state: 'ready'; result: FlagResult } | { state: 'error'; error: string; approve?: () => void };
 
-const CHART_KINDS = new Set(['bar', 'line', 'area', 'pie']);
+const CHART_KIND_SET = new Set<string>(CHART_KINDS);
 
 function formatBytes(n: number): string {
   if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
@@ -146,7 +147,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     return undefined;
   }, [own.binding, own.status, own.kind, own.id, hoist.id]);
 
-  const chartLike = CHART_KINDS.has(flag.kind) && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
+  const chartLike = CHART_KIND_SET.has(flag.kind) && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
   const shownFlag = asTable && chartLike ? { ...flag, kind: 'table' as const } : flag;
   const reviewedLabel = reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed';
 

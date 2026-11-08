@@ -17,7 +17,8 @@ import { toXlsx } from '../../../src/core/export/xlsx.ts';
 import { type Flag, toneFor } from '../../../src/core/hoist.ts';
 import type { FrozenFlag } from '../../../src/core/reports.ts';
 import { compressionSupported } from '../../../src/core/export/zip.ts';
-import { chartToSvg, paperColors } from '../components/Chart.tsx';
+import { chartToSvg, loadExtras, paperColors } from '../components/Chart.tsx';
+import { CHART_KINDS, isRichKind } from '../../../src/core/kinds.ts';
 import { chartCategories, flagChartOption, formatDim, gaugeOption } from './chart-option.ts';
 import type { FlagResult } from './data.ts';
 
@@ -66,7 +67,7 @@ async function svgToPng(svg: string, width: number, height: number, background: 
 }
 
 const hasOwnField = (result: FlagResult) => result.plan.dimensions.some((d) => result.plan.own.includes(d.key));
-const isChart = (flag: Flag, result: FlagResult) => ['bar', 'line', 'area', 'pie'].includes(flag.kind) && (flag.binding?.metrics.length ?? 0) > 0 && hasOwnField(result);
+const isChart = (flag: Flag, result: FlagResult) => CHART_KINDS.includes(flag.kind) && (flag.binding?.metrics.length ?? 0) > 0 && hasOwnField(result);
 
 function imageHeight(flag: Flag): number {
   return Math.max(360, Math.min(620, Math.round((IMAGE_WIDTH * flag.layout.h * 56) / (flag.layout.w * 100))));
@@ -78,6 +79,8 @@ function imageHeight(flag: Flag): number {
  * the real numbers with `percent` set, so Excel stacks them to 100% itself.
  */
 function chartNumbers(flag: Flag, result: FlagResult, option: Record<string, unknown>, colors: readonly string[], style: FlagStyle): ExportChart | null {
+  // The richer kinds have no editable Office chart to match, so they travel as the picture and the table.
+  if (isRichKind(flag.kind)) return null;
   const series = (option.series ?? []) as Array<Record<string, unknown>>;
   const valueOf = (d: unknown) => {
     const v = typeof d === 'object' && d !== null ? (d as { value?: unknown }).value : d;
@@ -205,6 +208,7 @@ export async function exportFlagOf(frozen: Pick<FrozenFlag, 'flag' | 'error'> & 
     return { png: await svgToPng(svg, width, height, c.panel), width: width * 2, height: height * 2, svg };
   };
   if (isChart(flag, result)) {
+    if (isRichKind(flag.kind)) await loadExtras();
     const option = flagChartOption({ flag, result, index, selections: {}, style: { ...style, zoom: false }, c, colors, ...font });
     out.image = await draw(option, IMAGE_WIDTH, imageHeight(flag));
     out.chart = chartNumbers(flag, result, option, colors, style);

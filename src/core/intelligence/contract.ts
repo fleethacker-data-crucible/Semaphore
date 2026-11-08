@@ -4,6 +4,7 @@
 // exception is a cleaning suggestion the analyst asks for: one field's distinct values (TaskRequest).
 
 import type { Catalog, CatalogIndex } from '../catalog.ts';
+import { fitRichKind, isRichKind } from '../kinds.ts';
 import {
   type Behavior,
   type Binding,
@@ -179,7 +180,7 @@ export function validateFlagDraft(raw: unknown, index: CatalogIndex, fallbackKin
     notes.push('Colour rules were left out: the brief did not ask for any.');
   }
   if (warnings.length) confidence = Math.min(confidence, 0.4);
-  const shaped = fitShape(kind, binding, behavior);
+  const shaped = fitShape(kind, binding, behavior, index);
   const by = answeredBy(raw);
   return {
     ...shaped,
@@ -270,7 +271,7 @@ export function keepOneSource(binding: Binding, behavior: Behavior, index: Catal
  * Make a draft's kind and binding agree: a KPI has no fields, a pie and a picker have one, a
  * picker has no metrics and filters the page, and a text flag binds nothing.
  */
-export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Behavior): { kind: FlagKind; binding: Binding | null; behavior: Behavior; notes: string[] } {
+export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Behavior, index?: CatalogIndex): { kind: FlagKind; binding: Binding | null; behavior: Behavior; notes: string[] } {
   const notes: string[] = [];
   if (kind === 'text') return { kind, binding: null, behavior, notes };
   if (!binding) return { kind, binding, behavior, notes };
@@ -296,6 +297,11 @@ export function fitShape(kind: FlagKind, binding: Binding | null, behavior: Beha
   if (kind === 'pie' && b.dimensions.length > 1) {
     notes.push('A pie shows one field; extra fields were left out.');
     b.dimensions = b.dimensions.slice(0, 1);
+  }
+  if (isRichKind(kind)) {
+    const fit = fitRichKind(kind, b, index);
+    kind = fit.kind;
+    if (fit.note) notes.push(fit.note);
   }
   if (b.sort && !b.metrics.includes(b.sort.by) && !b.dimensions.some((d) => (d.grain ? `${d.field}@${d.grain}` : d.field) === b.sort!.by)) delete b.sort;
   return { kind, binding: b, behavior, notes };

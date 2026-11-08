@@ -10,7 +10,6 @@ import { findInsights } from '../../../src/core/insights.ts';
 import { type Edition, editionDue, editionId, type FrozenFlag, type ReportSchedule } from '../../../src/core/reports.ts';
 import { type Briefing, briefingFacts } from '../../../src/core/briefing.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
-import { writeBriefingWithAi } from '../../../src/core/intelligence/tasks.ts';
 import { loadItem } from './api.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from './data.ts';
 import type { PlaybookState } from './playbook.ts';
@@ -102,10 +101,12 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
 }
 
 /** A briefing for frozen answers: written by the AI when it is on and holds up, else Semaphore's own sentences. */
-export function briefFrozen(flags: readonly FrozenFlag[], title: string, index: CatalogIndex, provider: IntelligenceProvider): Promise<Briefing> {
+export async function briefFrozen(flags: readonly FrozenFlag[], title: string, index: CatalogIndex, provider: IntelligenceProvider): Promise<Briefing> {
   const facts = briefingFacts(
     flags.map((f) => ({ flag: f.flag, insights: f.insights, ...(f.result ? { totals: (f.result as FlagResult).display.totals } : {}) })),
     index,
   );
+  // tasks.ts loads on first use rather than with the page (web/size-budget.json).
+  const { writeBriefingWithAi } = await import('../../../src/core/intelligence/tasks.ts');
   return writeBriefingWithAi(provider, title, facts);
 }

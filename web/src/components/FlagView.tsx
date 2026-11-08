@@ -13,7 +13,8 @@ import { type Behavior, type Threshold, type Tone, type Flag, toneFor } from '..
 import { chartCategories, flagChartOption, formatDim, gaugeOption, isSelected } from '../lib/chart-option.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { reducedMotion } from '../lib/motion.ts';
-import { EChart, themeColors, themeMode } from './Chart.tsx';
+import { EChart, themeColors, themeMode, useExtras } from './Chart.tsx';
+import { isRichKind } from '../../../src/core/kinds.ts';
 
 export interface FlagViewProps {
   flag: Flag;
@@ -178,12 +179,14 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
   }, [rows, b.metrics, flag.behavior, series]);
 
   const style = useMemo(() => resolveStyle(design, flag.style), [design, flag.style]);
+  const rich = isRichKind(flag.kind);
+  const extras = useExtras(rich);
   const option = useMemo<EChartsCoreOption>(() => {
     const c = themeColors();
     return flagChartOption({ flag, result, index, selections, style, c, colors: paletteColors(style, themeMode(), c.series), ...(design?.font ? { fontFamily: FONT_STACK[design.font] } : {}) });
     // themeKey is a dependency so a theme switch re-reads the colour tokens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flag, result, index, selections, themeKey, style, design?.font]);
+  }, [flag, result, index, selections, themeKey, style, design?.font, extras]);
 
   const fieldLabel = index.field(x.field)?.label ?? x.field;
   const drills = flag.behavior.onClick === 'drill';
@@ -213,6 +216,8 @@ function ChartFlag({ flag, result, index, selections, onSelect, themeKey, descri
             clickable
               ? (e) => {
                   // A treemap numbers its marks from its root, so a mark's own value comes first.
+                  // The richer kinds carry the value on each mark that stands for one; the rest are not clickable.
+                  if (rich && e.raw === undefined) return;
                   const v = e.raw !== undefined ? (e.raw as Cell) : flag.kind === 'pie' ? (rows[e.dataIndex]?.dims[x.key] ?? null) : (categories[e.dataIndex] ?? null);
                   onSelect(x.key, v, false);
                 }

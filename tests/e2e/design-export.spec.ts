@@ -164,3 +164,27 @@ test('Page design shows the skin\'s own cards as Standard until another style is
   await cards.getByRole('button', { name: 'Standard' }).click();
   await expect(page.locator('[data-design-card="standard"]')).toHaveCount(1);
 });
+
+test('the richer chart kinds draw from the inspector, and one whose fields do not fit says why', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  await expect(page.getByRole('list', { name: 'More charts' }).getByRole('button', { name: /^Spider/ })).toBeVisible();
+  const card = page.locator('[data-flag-card]', { hasText: 'Labor cost by region' }).first();
+  await card.locator('h3').click();
+  const inspector = page.getByRole('complementary', { name: 'Flag inspector' });
+  const drawn = async () => {
+    await expect(card.locator('[role="img"] svg').first()).toBeVisible();
+    await expect.poll(() => card.locator('[role="img"] svg path').count()).toBeGreaterThan(4);
+    await page.waitForTimeout(400);
+    await expect(card.getByText('could not be drawn')).toHaveCount(0);
+  };
+  for (const kind of ['Pareto', 'Waterfall', 'Spider']) {
+    await inspector.getByRole('radio', { name: kind, exact: true }).click();
+    await expect(inspector.getByRole('radio', { name: kind, exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(inspector.getByTestId('kind-note')).toHaveCount(0);
+    await drawn();
+  }
+  await inspector.getByRole('radio', { name: 'Sankey', exact: true }).click();
+  await expect(inspector.getByTestId('kind-note')).toContainText('sankey needs two fields');
+  await drawn();
+});

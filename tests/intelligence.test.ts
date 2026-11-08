@@ -5,17 +5,15 @@ import type { Flag, Hoist } from '../src/core/hoist.ts';
 import {
   applyFlagDraft,
   applyHoistDraft,
-  ContractProvider,
   draftFlag,
   draftHoist,
   LocalRulesProvider,
   MODEL_CONFIDENCE_CAP,
-  OpenAICompatibleProvider,
   summarizeCatalog,
   validateFlagDraft,
 } from '../src/core/intelligence/index.ts';
 import { draftFlagLocally } from '../src/core/intelligence/local-rules.ts';
-import type { FetchLike } from '../src/core/intelligence/remote.ts';
+import { ContractProvider, type FetchLike, OpenAICompatibleProvider } from '../src/core/intelligence/remote.ts';
 import { isValidLayout } from '../src/core/layout.ts';
 import { planFlag } from '../src/core/planner.ts';
 import { flag, loadCatalog, loadHoist, loadIndex } from './fixtures.ts';

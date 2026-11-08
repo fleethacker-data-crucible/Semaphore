@@ -20,7 +20,7 @@ echarts.use([SVGRenderer]);
 let extras: Promise<unknown> | null = null;
 let extrasReady = false;
 /** Loads the forms in chart-extras.ts, once. */
-function loadExtras(): Promise<unknown> {
+export function loadExtras(): Promise<unknown> {
   extras ??= import('./chart-extras.ts').then(() => {
     extrasReady = true;
   });
@@ -29,7 +29,22 @@ function loadExtras(): Promise<unknown> {
 
 function needsExtras(option: EChartsCoreOption): boolean {
   const o = option as { series?: Array<{ type?: string }>; dataZoom?: unknown };
-  return !!o.dataZoom || (o.series ?? []).some((s) => s.type === 'gauge' || s.type === 'funnel' || s.type === 'treemap');
+  return !!o.dataZoom || (o.series ?? []).some((s) => !!s.type && EXTRA_SERIES.has(s.type));
+}
+const EXTRA_SERIES = new Set(['gauge', 'funnel', 'treemap', 'radar', 'scatter', 'heatmap', 'sankey', 'sunburst', 'themeRiver']);
+
+/** True once chart-extras.ts has loaded; asks for it when `wanted`, and re-renders when it lands. */
+export function useExtras(wanted: boolean): boolean {
+  const [ready, setReady] = useState(extrasReady);
+  useEffect(() => {
+    if (!wanted || extrasReady) return;
+    let live = true;
+    loadExtras().then(() => live && setReady(true), () => {});
+    return () => {
+      live = false;
+    };
+  }, [wanted]);
+  return ready || extrasReady;
 }
 
 export interface ChartClick {

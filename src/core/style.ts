@@ -28,9 +28,9 @@ export const SHAPE_LABEL: Record<Shape, string> = {
 /** Kinds a shape can be drawn as; a learnt kind outside this list is never applied. */
 const KINDS_FOR: Record<Shape, FlagKind[]> = {
   number: ['kpi', 'table'],
-  trend: ['line', 'area', 'bar', 'table'],
-  category: ['bar', 'pie', 'table'],
-  'two-categories': ['bar', 'table'],
+  trend: ['line', 'area', 'bar', 'calendar', 'table'],
+  category: ['bar', 'pie', 'radar', 'waterfall', 'pareto', 'table'],
+  'two-categories': ['bar', 'heatmap', 'sankey', 'sunburst', 'radar', 'stream', 'table'],
 };
 
 export const MIN_EVIDENCE = 2;

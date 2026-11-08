@@ -22,7 +22,6 @@ import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
 import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } from '../../src/core/qlik.ts';
 import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
-import { readQlikExpressionWithAi } from '../../src/core/intelligence/tasks.ts';
 import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
@@ -654,7 +653,8 @@ export function App() {
     [catalog, server, setCatalog, ctx, runBusy, sayBusy],
   );
 
-  const readQlikWithAi = useCallback((label: string, expression: string) => readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
+  // The model's smaller jobs (tasks.ts) load when one is first asked for, not with the page.
+  const readQlikWithAi = useCallback(async (label: string, expression: string) => (await import('../../src/core/intelligence/tasks.ts')).readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
   const addMeasures = useCallback((metrics: Metric[]) => setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] }), [catalog, setCatalog]);
 
   // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.

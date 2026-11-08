@@ -16,6 +16,7 @@
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
+import { fitRichKind, isRichKind, KIND_WORDS as RICH_WORDS } from '../kinds.ts';
 import { reachOf } from '../manyjoin.ts';
 import type { Behavior, Binding, Comparison, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
 import { suggestKind } from '../shape.ts';
@@ -236,7 +237,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   let kindText = text;
   for (const [s0, e0] of blocked) kindText = kindText.slice(0, s0) + ' '.repeat(e0 - s0) + kindText.slice(e0);
   let kindWord: FlagKind | null = null;
-  for (const [re, k] of KIND_WORDS) if (re.test(kindText)) {
+  for (const [re, k] of [...RICH_WORDS, ...KIND_WORDS]) if (re.test(kindText)) {
     kindWord = k;
     break;
   }
@@ -303,6 +304,11 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   if (kind === 'pie' && a.dims.length > 1) {
     notes.push('A pie shows one field; extra fields were left out.');
     a.dims.splice(1);
+  }
+  if (isRichKind(kind)) {
+    const fit = fitRichKind(kind, { metrics: a.metrics, dimensions: a.dims, filters }, index);
+    kind = fit.kind;
+    if (fit.note) notes.push(fit.note);
   }
 
   const binding: Binding = { metrics: a.metrics, dimensions: a.dims, filters };
