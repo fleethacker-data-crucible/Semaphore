@@ -68,6 +68,12 @@ export interface AskLog {
   updated: string;
 }
 
+/**
+ * The key a drafted (not reviewed) answer is counted under in the same weekly ask file, so the share
+ * of answers that were reviewed can be worked out (answer-quality.ts). No playbook entry has this id.
+ */
+export const DRAFTED_ASK = '~drafted';
+
 export const askLogId = (user: string, week: string) => `asks-${userSlug(user)}-${week}`;
 
 export function isAskLog(raw: unknown): raw is AskLog {

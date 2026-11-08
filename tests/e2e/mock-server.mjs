@@ -531,6 +531,104 @@ function docRoute(req, res, kind, id, query, body) {
   }
 }
 
+// Alerts (server/Alerts.ps1): one file per alert in <home>/alerts; the check applies the same rules as
+// Update-SemAlertState (fires once per change into red, optionally once back to normal, older readings ignored).
+function alertList() {
+  const dir = docDir('alerts');
+  const out = [];
+  for (const n of readdirSync(dir).filter((x) => x.endsWith('.json') && !x.startsWith('.')).sort()) {
+    try {
+      const a = JSON.parse(readFileSync(path.join(dir, n), 'utf8'));
+      if (a && a.version === 1 && a.kind === 'alert' && Array.isArray(a.events)) out.push({ ...a, id: n.slice(0, -5) });
+    } catch {
+      /* skipped, as the server skips it */
+    }
+  }
+  return out;
+}
+function alertStep(a, value, asOf, source, now = new Date()) {
+  if (a.lastAsOf && asOf < a.lastAsOf) return null;
+  const at = now.toISOString();
+  delete a.pending;
+  a.lastChecked = at;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const r = a.rule;
+  const red = r.op === 'lt' ? value < r.value : r.op === 'lte' ? value <= r.value : r.op === 'gt' ? value > r.value : value >= r.value;
+  const next = red ? 'red' : 'normal';
+  const stamp = at.replace(/[^0-9]/g, '').slice(0, 17);
+  let fired = null;
+  if (next === 'red' && a.state !== 'red') fired = { id: `${stamp}-r`, kind: 'red', at, value, asOf, source };
+  else if (next === 'normal' && a.state === 'red' && a.notifyClear === true) fired = { id: `${stamp}-c`, kind: 'clear', at, value, asOf, source };
+  a.state = next;
+  a.lastValue = value;
+  a.lastAsOf = asOf;
+  if (fired) {
+    a.events = [...a.events, fired].slice(-50);
+    a.updated = at;
+  }
+  return fired;
+}
+function alertRoute(req, res, id, json, body) {
+  const dir = docDir('alerts');
+  if (id === null) return req.method === 'GET' ? sendJsonText(res, 200, JSON.stringify(alertList())) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (id === 'check') {
+    if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const source = json.source === 'refresh' ? 'refresh' : 'page';
+    const alerts = alertList();
+    const fired = [];
+    for (const r of (Array.isArray(json.readings) ? json.readings : []).slice(0, 500)) {
+      if (!r || typeof r.entryId !== 'string' || typeof r.metric !== 'string' || !/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$/.test(String(r.asOf))) continue;
+      for (const a of alerts) {
+        if (a.entryId !== r.entryId || a.metric !== r.metric) continue;
+        const before = JSON.stringify(a);
+        const event = alertStep(a, r.value, r.asOf, source);
+        if (JSON.stringify(a) !== before) saveDoc(dir, a.id, Buffer.from(JSON.stringify(a)));
+        if (event) fired.push({ alertId: a.id, event });
+      }
+    }
+    return sendJson(res, 200, { fired, alerts });
+  }
+  if (!validId(id)) return sendError(res, 400, 'bad-id', 'Invalid alert id: use 1 to 64 letters, digits, _ or -.');
+  const file = path.join(dir, `${id}.json`);
+  if (req.method === 'GET') return existsSync(file) ? sendJsonText(res, 200, readFileSync(file, 'utf8')) : sendError(res, 404, 'not-found', `No alert '${id}'.`);
+  if (req.method === 'PUT') {
+    const r = json && json.rule;
+    if (!json || json.version !== 1 || json.kind !== 'alert' || !r || !['lt', 'lte', 'gt', 'gte'].includes(r.op) || typeof r.value !== 'number' || !Array.isArray(json.events)) return sendError(res, 400, 'invalid', 'An alert has its red rule.');
+    saveDoc(dir, id, body);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (req.method === 'DELETE') return removeDoc(dir, id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No alert '${id}'.`);
+  return sendError(res, 405, 'method', 'Method not allowed.');
+}
+
+// Briefing delivery (server/Mail.ps1). The mock has no Outlook: GET /api/mail says so, and a draft request is
+// answered as the server answers on a computer without Outlook. Nothing is ever sent.
+const NO_OUTLOOK = { available: false, code: 'outlook-missing', reason: 'Outlook is not installed on this computer (there is no Outlook.Application), so no draft can be made. Save the briefing as an email file instead.' };
+function mailRoute(req, res, p, json) {
+  const dir = docDir('mail');
+  const settings = readJsonObject(path.join(dir, 'user-mock.json'))?.j ?? { version: 1, recipients: [], schedule: { enabled: false, weekday: 1, time: '08:00', open: false }, lastScheduled: '', lastResult: '' };
+  if (p === '/api/mail') {
+    if (req.method !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const latest = readJsonObject(path.join(dir, 'latest-briefing.json'))?.j;
+    return sendJson(res, 200, { outlook: NO_OUTLOOK, settings, latest: latest ? { at: latest.at, subject: latest.subject } : null, outbox: path.join(dir, 'outbox') });
+  }
+  if (p === '/api/mail/settings' && req.method === 'PUT') {
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const recipients = (Array.isArray(json.recipients) ? json.recipients : []).filter((x) => typeof x === 'string' && /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/.test(x.trim())).map((x) => x.trim()).slice(0, 50);
+    const next = { ...settings, recipients, ...(json.schedule ? { schedule: json.schedule } : {}) };
+    saveDoc(dir, 'user-mock', Buffer.from(JSON.stringify(next)));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/mail/briefing' && req.method === 'PUT') {
+    if (!json || !json.subject || !json.html) return sendError(res, 400, 'invalid', 'A briefing has a subject and an HTML body.');
+    saveDoc(dir, 'latest-briefing', Buffer.from(JSON.stringify({ version: 1, at: new Date().toISOString(), ...json })));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/mail/outlook-draft' && req.method === 'POST') return sendJson(res, 200, { ok: false, code: NO_OUTLOOK.code, error: NO_OUTLOOK.reason });
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
 // Page snapshots (Invoke-SemSnapRoute, server/Routes.ps1): <home>/snapshots/<hoistId>/<snapId>.json (what
 // it is) and <snapId>.hoist.json (the page, verbatim). One automatic snapshot per 10 minutes, the last 30
 // automatic ones kept with every named one (200 at most).
@@ -1183,6 +1281,8 @@ function apiRoute(req, res, p, query, json, body) {
   }
   const doc = /^\/api\/(hoists|catalogs|playbook|snapshots|questions|team)(?:\/([^/]*))?$/.exec(p);
   if (doc) return docRoute(req, res, doc[1], p === `/api/${doc[1]}` ? null : (doc[2] ?? ''), query, body);
+  if (p === '/api/alerts' || p.startsWith('/api/alerts/')) return alertRoute(req, res, p === '/api/alerts' ? null : p.slice('/api/alerts/'.length), json, body);
+  if (p === '/api/mail' || p.startsWith('/api/mail/')) return mailRoute(req, res, p, json);
   if (p === '/api/refresh-report') {
     const file = path.join(docDir('snapshots'), '.last-refresh.json');
     if (m === 'GET') return existsSync(file) ? sendJsonText(res, 200, readFileSync(file, 'utf8')) : sendError(res, 404, 'not-found', 'No refresh has run yet.');
@@ -1291,7 +1391,7 @@ function handle(req, res, body) {
       return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
-      for (const k of [...KINDS, 'widgets', 'maps']) {
+      for (const k of [...KINDS, 'widgets', 'maps', 'alerts', 'mail']) {
         rmSync(path.join(homeDir, k), { recursive: true, force: true });
         mkdirSync(path.join(homeDir, k), { recursive: true });
       }

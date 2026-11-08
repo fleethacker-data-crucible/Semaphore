@@ -51,6 +51,9 @@
 #   POST /api/local/script-run { plan | id, params }, POST /api/local/export { table, format }, GET /api/local/sources
 #   Pipelines (Pipeline.ps1, docs/PIPELINES.md): GET /api/pipelines, GET|PUT|DELETE /api/pipelines/<id>,
 #   POST /api/pipelines/<id>/run { from?, force? }, GET /api/pipelines/<id>/runs[/<run>]
+#   Alerts (Alerts.ps1): GET /api/alerts, GET|PUT|DELETE /api/alerts/<id>, POST /api/alerts/check { source, readings }
+#   Briefing delivery (Mail.ps1, never sends): GET /api/mail, PUT /api/mail/settings, PUT /api/mail/briefing,
+#   POST /api/mail/outlook-draft { subject, html, to, attachment, open }
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
@@ -878,6 +881,23 @@ function Invoke-SemRoute {
         $id = $null
         if ($p -ne '/api/maps') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
         Invoke-SemMapRoute -Req $Req -Id $id
+        return
+    }
+    if ($p -eq '/api/alerts/check') {
+        # The page's values from refreshed snapshots, checked against every alert on those flags (Alerts.ps1).
+        Invoke-SemAlertRoute -Req $Req -Id 'check'
+        return
+    }
+    if ($p -match '^/api/(alerts)(?:/([^/]*))?$') {
+        # Alerts on reviewed flags (Alerts.ps1).
+        $id = $null
+        if ($p -ne '/api/alerts') { $id = $Matches[2]; if ($null -eq $id) { $id = '' } }
+        Invoke-SemAlertRoute -Req $Req -Id $id
+        return
+    }
+    if ($p -eq '/api/mail' -or $p -eq '/api/mail/settings' -or $p -eq '/api/mail/briefing' -or $p -eq '/api/mail/outlook-draft') {
+        # Briefing delivery: Outlook drafts and the weekly schedule (Mail.ps1). Never sends.
+        Invoke-SemMailRoute -Req $Req
         return
     }
     if ($p -eq '/api/client-log') {
