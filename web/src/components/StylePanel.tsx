@@ -4,7 +4,9 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Palette as PaletteIcon, RotateCcw } from 'lucide-react';
 import { type FlagStyle, type HoistDesign, MAX_CORNERS, resolveStyle } from '../../../src/core/design.ts';
+import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Flag } from '../../../src/core/hoist.ts';
+import type { PivotHeat, PivotSpec } from '../../../src/core/pivot-spec.ts';
 import { Choice, Group, PalettePicker, Slider, Switch } from './StyleControls.tsx';
 
 export interface StylePanelProps {
@@ -15,11 +17,26 @@ export interface StylePanelProps {
   onStyle: (style: FlagStyle | undefined) => void;
   onUseForPage: () => void;
   onOpenDesign: () => void;
+  /** Pivot flags: heat shading lives with the pivot's settings. */
+  onPivot?: (pivot: PivotSpec | undefined) => void;
+  index?: CatalogIndex;
+}
+
+const HEAT = [{ id: 'off', label: 'Off' }, { id: 'row', label: 'By row' }, { id: 'column', label: 'By column' }, { id: 'table', label: 'Whole table' }] as const;
+
+/** The pivot settings with one measure's heat shading changed ('off' removes it). */
+export function withHeat(pivot: PivotSpec | undefined, measure: string, heat: PivotHeat | 'off'): PivotSpec | undefined {
+  const next: Record<string, PivotHeat> = { ...(pivot?.heat ?? {}) };
+  if (heat === 'off') delete next[measure];
+  else next[measure] = heat;
+  const { heat: _old, ...rest } = pivot ?? {};
+  const out: PivotSpec = Object.keys(next).length ? { ...rest, heat: next } : rest;
+  return Object.keys(out).length ? out : undefined;
 }
 
 const MOTION = [{ id: 'none', label: 'None' }, { id: 'calm', label: 'Calm' }, { id: 'lively', label: 'Lively' }] as const;
 
-export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onOpenDesign }: StylePanelProps) {
+export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onOpenDesign, onPivot, index }: StylePanelProps) {
   const [open, setOpen] = useState(false);
   const own = flag.style ?? {};
   const shown = resolveStyle(design, flag.style);
@@ -87,6 +104,16 @@ export function StylePanel({ flag, design, hasSeries, onStyle, onUseForPage, onO
               ) : (
                 <Choice label="Size" value={shown.kpiSize ?? 'medium'} options={[{ id: 'small', label: 'S' }, { id: 'medium', label: 'M' }, { id: 'large', label: 'L' }, { id: 'huge', label: 'XL' }]} onChange={(kpiSize) => set({ kpiSize })} />
               )}
+            </Group>
+          )}
+
+          {k === 'pivot' && (
+            <Group title="Heat shading">
+              <PalettePicker look={own} inherit onChange={set} />
+              {(flag.binding?.metrics ?? []).map((m) => (
+                <Choice key={m} label={index?.metric(m)?.label ?? m} value={flag.pivot?.heat?.[m] ?? 'off'} options={HEAT} onChange={(v) => onPivot?.(withHeat(flag.pivot, m, v))} />
+              ))}
+              {!flag.binding?.metrics.length && <p className="text-[11px] text-ink-3">Add a measure to shade its cells.</p>}
             </Group>
           )}
 

@@ -16,7 +16,7 @@
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
-import { fitRichKind, isRichKind, KIND_WORDS as RICH_WORDS } from '../kinds.ts';
+import { fitPivot, fitRichKind, isRichKind, KIND_WORDS as RICH_WORDS } from '../kinds.ts';
 import type { ModelSpec } from '../predict/types.ts';
 import { DATE_MODELS, MODEL_WORDS } from '../predict/words.ts';
 import { reachOf } from '../manyjoin.ts';
@@ -85,6 +85,8 @@ export const GRAIN_WORDS: Array<[RegExp, TimeGrain]> = [
 ];
 
 export const KIND_WORDS: Array<[RegExp, FlagKind]> = [
+  // Read before the chart words, so "matrix of cost by region" is a pivot, not a heatmap.
+  [/\b(pivot|pivot table|crosstab|cross-tab|cross tab|matrix of)\b|\bby\s+[a-z][a-z' -]*?\s+across\s+[a-z]/, 'pivot'],
   [/\b(table|list|rows|grid|spreadsheet)\b/, 'table'],
   [/\b(pie|donut|doughnut|share of|mix)\b/, 'pie'],
   [/\barea\b(?!\s+(manager|office))/, 'area'],
@@ -239,7 +241,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   let kindText = text;
   for (const [s0, e0] of blocked) kindText = kindText.slice(0, s0) + ' '.repeat(e0 - s0) + kindText.slice(e0);
   let kindWord: FlagKind | null = null;
-  for (const [re, k] of [...RICH_WORDS, ...KIND_WORDS]) if (re.test(kindText)) {
+  for (const [re, k] of [KIND_WORDS[0]!, ...RICH_WORDS, ...KIND_WORDS.slice(1)]) if (re.test(kindText)) {
     kindWord = k;
     break;
   }
@@ -341,6 +343,11 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
     binding.sort = { by: `${t.field}@${t.grain}`, dir: 'asc' };
   } else if (kind === 'bar' || kind === 'table') {
     binding.sort = { by: a.metrics[0]!, dir: 'desc' };
+  }
+  if (kind === 'pivot') {
+    const fit = fitPivot(binding);
+    kind = fit.kind;
+    if (fit.note) notes.push(fit.note);
   }
 
   let confidence = 0.8;

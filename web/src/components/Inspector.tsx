@@ -48,6 +48,7 @@ export interface InspectorProps {
 const KINDS = FLAG_KINDS;
 // Inspector > Model loads with the model list, only when a model flag is selected.
 const ModelPanel = lazy(() => import('./ModelPanel.tsx'));
+const PivotPanel = lazy(() => import('./PivotPanel.tsx'));
 
 export function Inspector(p: InspectorProps) {
   const { flag, hoist, index } = p;
@@ -219,6 +220,11 @@ export function Inspector(p: InspectorProps) {
             <ModelPanel flag={flag} index={index} onChange={p.onChange} />
           </Suspense>
         )}
+        {flag.kind === 'pivot' && (
+          <Suspense fallback={null}>
+            <PivotPanel flag={flag} index={index} onChange={p.onChange} />
+          </Suspense>
+        )}
 
         <Suspense fallback={null}>
         <StylePanel
@@ -226,6 +232,8 @@ export function Inspector(p: InspectorProps) {
           design={hoist.design}
           hasSeries={(result?.plan.own.length ?? 0) > 1}
           onStyle={(style) => p.onChange({ style }, `style-${flag.id}`)}
+          onPivot={(pivot) => p.onChange({ pivot }, `style-${flag.id}`)}
+          index={index}
           onUseForPage={p.onUseForPage}
           onOpenDesign={p.onOpenDesign}
         />

@@ -33,6 +33,8 @@ export interface FlagViewProps {
 
 // Model flags load their view, the model list and the chart builder on first use (lib/predict.ts).
 const ModelFlag = lazy(() => import('./ModelFlag.tsx'));
+// Pivot flags load the pivot maths and their view with the first one (PivotFlag.tsx).
+const PivotFlag = lazy(() => import('./PivotFlag.tsx'));
 
 export function ModelView(props: { flag: Flag; result: FlagResult | undefined; index: CatalogIndex; themeKey: string; today: Date; design?: HoistDesign }) {
   return (
@@ -47,6 +49,12 @@ export function FlagView(props: FlagViewProps) {
   if (flag.kind === 'model') return <ModelView flag={flag} result={props.result} index={props.index} themeKey={props.themeKey} today={props.today ?? new Date()} {...(props.design ? { design: props.design } : {})} />;
   if (flag.kind === 'kpi') return <Kpi {...props} />;
   if (flag.kind === 'filter') return <Picker {...props} />;
+  if (flag.kind === 'pivot' && props.result.plan.own.length && flag.binding?.metrics.length)
+    return (
+      <Suspense fallback={<p className="p-2 text-xs text-ink-3">Loading the pivot…</p>}>
+        <PivotFlag {...props} />
+      </Suspense>
+    );
   if (flag.kind === 'table' || (flag.binding?.metrics.length ?? 0) === 0) return <Table {...props} />;
   // A chart needs a field of its own to draw along. When the plan has none (the only field was
   // dropped, say, as unrelated to the metric's table) show the number rather than fail the page.
