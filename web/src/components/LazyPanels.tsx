@@ -7,6 +7,7 @@ import { lazy } from 'react';
 
 export const DataPanel = lazy(() => import('./DataPanel.tsx').then((m) => ({ default: m.DataPanel })));
 export const QlikImport = lazy(() => import('./QlikImport.tsx').then((m) => ({ default: m.QlikImport })));
+export const ModelImport = lazy(() => import('./ModelImport.tsx').then((m) => ({ default: m.ModelImport })));
 export const SqlDesk = lazy(() => import('./SqlDesk.tsx').then((m) => ({ default: m.SqlDesk })));
 export const KitsPanel = lazy(() => import('./KitsPanel.tsx').then((m) => ({ default: m.KitsPanel })));
 export const LineageView = lazy(() => import('./LineageView.tsx').then((m) => ({ default: m.LineageView })));

@@ -1,0 +1,80 @@
+{
+  "name": "Fleet Maintenance",
+  "compatibilityLevel": 1567,
+  "model": {
+    "culture": "en-US",
+    "dataSources": [
+      { "type": "structured", "name": "SQL/fleet-sql01;Maintenance", "connectionDetails": { "protocol": "tds", "address": { "server": "fleet-sql01", "database": "Maintenance" } } }
+    ],
+    "tables": [
+      {
+        "name": "Work Orders",
+        "description": "One row per work order.",
+        "columns": [
+          { "name": "Work Order", "dataType": "int64", "sourceColumn": "wo_id", "summarizeBy": "none" },
+          { "name": "Hull", "dataType": "string", "sourceColumn": "hull_no" },
+          { "name": "Region", "dataType": "string", "sourceColumn": "region", "description": "Where the work was done." },
+          { "name": "Opened", "dataType": "dateTime", "sourceColumn": "opened_on" },
+          { "name": "Labor", "dataType": "decimal", "sourceColumn": "labor_cost", "displayFolder": "Costs" },
+          { "name": "Parts", "dataType": "decimal", "sourceColumn": "parts_cost", "displayFolder": "Costs" },
+          { "type": "calculated", "name": "Loaded Labor", "dataType": "double", "expression": "'Work Orders'[Labor] * 1.1" }
+        ],
+        "partitions": [
+          {
+            "name": "Work Orders",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Sql.Database(\"fleet-sql01\", \"Maintenance\"),",
+                "    ops_work_orders = Source{[Schema=\"ops\",Item=\"work_orders\"]}[Data]",
+                "in",
+                "    ops_work_orders"
+              ]
+            }
+          }
+        ],
+        "measures": [
+          { "name": "Labor Cost", "expression": "SUM('Work Orders'[Labor])", "formatString": "\\$#,0.00", "displayFolder": "Costs" },
+          { "name": "Parts Cost", "expression": "SUM('Work Orders'[Parts])", "formatString": "\\$#,0" },
+          { "name": "Orders", "expression": "COUNTROWS('Work Orders')" },
+          { "name": "Average Labor", "expression": "AVERAGE('Work Orders'[Labor])", "formatString": "\\$#,0.00" },
+          { "name": "Largest Job", "expression": "MAX('Work Orders'[Labor])" },
+          { "name": "Cost per Order", "expression": ["DIVIDE(", "  [Labor Cost] + [Parts Cost],", "  [Orders]", ")"], "formatString": "\\$#,0.00" },
+          { "name": "Labor Margin", "expression": "([Labor Cost] - [Parts Cost]) / [Labor Cost]", "formatString": "0.0%" },
+          { "name": "Gulf Labor", "expression": "CALCULATE(SUM('Work Orders'[Labor]), 'Work Orders'[Region] = \"Gulf\")" },
+          { "name": "Labor Last Year", "expression": "CALCULATE([Labor Cost], DATEADD('Work Orders'[Opened], -1, YEAR))" },
+          { "name": "Rank", "expression": "RANKX(ALL('Work Orders'[Region]), [Labor Cost])" },
+          { "name": "Spread", "expression": "VAR hi = MAX('Work Orders'[Labor]) RETURN hi - MIN('Work Orders'[Labor])" }
+        ]
+      },
+      {
+        "name": "Hulls",
+        "columns": [
+          { "name": "Hull No", "dataType": "string", "sourceColumn": "hull_no" },
+          { "name": "Ship Class", "dataType": "string", "sourceColumn": "ship_class" },
+          { "name": "Home Yard", "dataType": "string", "sourceColumn": "home_yard" }
+        ],
+        "partitions": [
+          { "name": "Hulls", "source": { "type": "query", "query": "SELECT * FROM ops.hulls", "dataSource": "SQL/fleet-sql01;Maintenance" } }
+        ],
+        "hierarchies": [
+          { "name": "Yard drill", "levels": [ { "name": "Hull", "ordinal": 2, "column": "Hull No" }, { "name": "Yard", "ordinal": 0, "column": "Home Yard" }, { "name": "Class", "ordinal": 1, "column": "Ship Class" } ] }
+        ]
+      },
+      {
+        "name": "Region Targets",
+        "columns": [
+          { "name": "Region", "dataType": "string", "sourceColumn": "region" },
+          { "name": "Target", "dataType": "double", "sourceColumn": "target" }
+        ],
+        "partitions": [ { "name": "Region Targets", "source": { "type": "calculated", "expression": "DATATABLE(\"Region\", STRING, \"Target\", DOUBLE, {{\"Gulf\", 100}})" } } ]
+      }
+    ],
+    "relationships": [
+      { "name": "wo-hull", "fromTable": "Work Orders", "fromColumn": "Hull", "toTable": "Hulls", "toColumn": "Hull No" },
+      { "name": "targets", "fromTable": "Work Orders", "fromColumn": "Region", "toTable": "Region Targets", "toColumn": "Region", "fromCardinality": "many", "toCardinality": "many" }
+    ]
+  }
+}

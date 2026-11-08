@@ -411,7 +411,7 @@ export function starterHoistLocally(index: CatalogIndex, table?: string): HoistD
   const metrics = cat.metrics.filter((m) => tableOf(m) === subject);
   const fields = cat.fields.filter((f) => f.table === subject);
   // Headline order: a row count, totals, averages, distinct counts.
-  const rank = { count: 0, sum: 1, avg: 2, count_distinct: 3, max: 4, min: 5 } as const;
+  const rank = { count: 0, sum: 1, avg: 2, count_distinct: 3, max: 4, min: 5, formula: 6 } as const;
   const headline = [...metrics].sort((x, y) => rank[x.agg] - rank[y.agg]).slice(0, 4);
   const main = metrics.find((m) => m.agg === 'sum') ?? headline[0]!;
   const date = fields.find((f) => f.type === 'date');

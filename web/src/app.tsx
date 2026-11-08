@@ -26,7 +26,7 @@ import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, describeError, listItems, loadItem, profileTable, type StoredItem } from './lib/api.ts';
+import { api, describeError, listItems, loadItem, type ProfileTable, profileTable, type ServerSource, type StoredItem } from './lib/api.ts';
 import { notify } from './lib/toasts.ts';
 import { confirm } from './lib/confirm.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
@@ -39,7 +39,7 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, ModelImport, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
@@ -59,6 +59,7 @@ import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
 import { LayoutBar } from './components/LayoutBar.tsx';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
+import type { ModelImportPlan } from './components/ModelImport.tsx';
 import { formatDim } from './lib/chart-option.ts';
 import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
 import { applyReduceMotionChoice } from './lib/motion.ts';
@@ -101,6 +102,13 @@ function newId(prefix = 'f'): string {
 
 function blankHoist(): Hoist {
   return { version: 1, id: newId('h'), title: 'Untitled hoist', brief: '', grid: { cols: GRID_COLS }, filters: [], flags: [], updated: new Date().toISOString() };
+}
+
+/** One profiled server table into the catalog: Semaphore's proposal of its fields and measures. */
+function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
+  const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
+  const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+  return proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
 }
 
 function initialCatalog(): Catalog {
@@ -154,6 +162,7 @@ export function App() {
   const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -606,11 +615,7 @@ export function App() {
     (source: string, table: string) =>
       runBusy(`Profiling ${table}…`, async () => {
       try {
-        const p = await profileTable(source, table);
-        const s = server?.sources.find((x) => x.id === source);
-        const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
-        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
+        const proposal = profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -635,10 +640,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            const s = server?.sources.find((x) => x.id === t.source);
-            const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
-            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
+            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
@@ -689,6 +691,37 @@ export function App() {
       return out.length ? out : ['Nothing was imported: map a connection and pick a table, or add expressions.'];
     },
     [catalog, server, setCatalog, ctx, runBusy, sayBusy],
+  );
+
+  // Import a dbt project or Power BI model (ModelImport.tsx): profile each picked table, then carry the
+  // model's names, measures, links and drill paths across (src/core/model-import.ts, loaded here).
+  const importModel = useCallback(
+    async (plan: ModelImportPlan): Promise<string[]> => {
+      const { applyModelImport } = await import('../../src/core/model-import.ts');
+      const out: string[] = [];
+      const placed: Array<{ model: string; source: string; table: string }> = [];
+      let cat = catalog;
+      const ran = await runBusy('Importing the model…', async () => {
+        for (const t of plan.tables) {
+          sayBusy(`Profiling ${t.table}…`);
+          try {
+            const p = await profileTable(t.source, t.table);
+            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            placed.push({ model: t.model, source: t.source, table: p.table });
+            out.push(`${t.model}: ${p.table} profiled, ${p.columns.length} columns.`);
+          } catch (e) {
+            out.push(`${t.model}: ${t.table} could not be profiled. ${describeError(e)}`);
+          }
+        }
+        const r = applyModelImport(cat, plan.read, placed);
+        setCatalog(r.catalog);
+        notify('Model import done: check the new measures and fields under Data.', { tone: 'success' });
+        out.push(...r.lines);
+        return true;
+      });
+      return ran ? out : ['Another import or draft is still running. Try again when it has finished.'];
+    },
+    [catalog, server, setCatalog, runBusy, sayBusy],
   );
 
   // The model's smaller jobs (tasks.ts) load when one is first asked for, not with the page.
@@ -1053,7 +1086,7 @@ export function App() {
           signals: () => setSignalOpen(true),
           sql: () => setSqlOpen(true),
           lineage: () => setLineageOpen(true),
-          qlik: () => setQlikOpen(true),
+          models: () => setModelOpen(true),
           playbook: () => setPlaybookOpen(true),
           data: () => setDataOpen(true),
           leadership: () => setView('ask'),
@@ -1499,9 +1532,9 @@ export function App() {
             onRemoveSource={removeSource}
             onProfile={profile}
             onLoadExample={loadExample}
-            onImportQlik={() => {
+            onImportModel={() => {
               setDataOpen(false);
-              setQlikOpen(true);
+              setModelOpen(true);
             }}
           />
         </Panel>
@@ -1568,6 +1601,12 @@ export function App() {
       {sqlOpen && server && (
         <Panel name="SQL desk" onClose={() => setSqlOpen(false)}>
           <SqlDesk sources={server.sources} onClose={() => setSqlOpen(false)} />
+        </Panel>
+      )}
+
+      {modelOpen && (
+        <Panel name="Model import" onClose={() => setModelOpen(false)}>
+          <ModelImport sources={server?.sources ?? []} busy={busy} onImport={importModel} onQlik={() => (setModelOpen(false), setQlikOpen(true))} onClose={() => setModelOpen(false)} />
         </Panel>
       )}
 

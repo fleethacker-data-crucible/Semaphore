@@ -1,0 +1,28 @@
+table Hulls
+
+	column 'Hull No'
+		dataType: string
+		sourceColumn: hull_no
+
+	column 'Ship Class'
+		dataType: string
+		sourceColumn: ship_class
+
+	column 'Home Yard'
+		dataType: string
+		sourceColumn: home_yard
+
+	hierarchy 'Fleet'
+		level Class
+			column: 'Ship Class'
+		level Hull
+			column: 'Hull No'
+
+	partition Hulls = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("fleet-sql01", "Maintenance"),
+				    hulls = Source{[Schema="ops",Item="hulls"]}[Data]
+				in
+				    hulls

@@ -1,0 +1,14 @@
+relationship 7a3e2c10-aaaa-4bbb-8ccc-1234567890ab
+	crossFilteringBehavior: bothDirections
+	fromColumn: 'Work Orders'.Hull
+	toColumn: Hulls.'Hull No'
+
+relationship 1b2c3d4e-0000-4bbb-8ccc-1234567890ab
+	isActive: false
+	fromColumn: 'Work Orders'.Region
+	toColumn: Hulls.'Home Yard'
+
+
+relationship 9c8b7a65-0000-4bbb-8ccc-1234567890ab
+	fromColumn: 'Work Orders'.Opened
+	toColumn: LocalDateTable_6f1c.Date
