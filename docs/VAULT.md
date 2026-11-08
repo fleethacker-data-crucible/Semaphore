@@ -9,7 +9,7 @@ Database passwords, AWS sessions and Foundry tokens can come from Lazarette inst
 3. Back in Lazarette, under **Semaphore**, share each item under the variable name its source asks for (below), for example the maintenance database's item as `SMDATS_PASSWORD` and its login as `SMDATS_USER`.
 4. `Semaphore-CLI.bat vault status` shows whether Semaphore is paired, whether Lazarette is running and unlocked, and which names are shared. Names only, never a value.
 
-Lazarette must be running and unlocked when a flag queries a source that uses it. Semaphore itself can start hidden: nothing is asked in its console.
+Lazarette must be running and unlocked when a flag queries a source that uses it, unless Lazarette Lite answers instead (below). Semaphore itself can start hidden: nothing is asked in its console.
 
 ## sources.json
 
@@ -52,6 +52,19 @@ The `vaultItem` on a source in a **browser catalog** (`examples/fleet-maintenanc
 
 **AI keys never come to Semaphore.** AI provider secrets (OpenAI, Anthropic, Azure OpenAI and so on) are Lazarette items shared with Fairlead only (Lazarette `docs/FAIRLEAD.md`). Fairlead holds them in memory and calls the provider. Semaphore gets a **client token that Fairlead issues** (`fl-…`): it is scoped to Semaphore, revocable in Fairlead > Clients, and useless outside Fairlead. Semaphore refuses anything that is not in the `fl-` format (`Test-SemAiKeyShape`), so a provider key pasted by mistake is never stored or sent.
 
+## Lazarette Lite fallback (secret-only)
+
+When Lazarette is not installed or not running, secret-only sources can fall back to Lazarette Lite (Windows Credential Manager) instead of failing with `501 vault-unavailable`:
+
+- Point `LAZARETTE_PATH` at the Lite folder (the one with `LazaretteLite.psd1` at its root and `lib\Lazarette.ps1` inside). Semaphore dot-sources Lite's shim and reads each needed variable name with `Get-LazaretteSecret -Service <name>` â€” the user defaults to the service, the Fairlead convention: a Lite item is named by the variable itself, for example `SMDATS_PASSWORD`. Lite is always open (Windows unlocks Credential Manager with the session); there is no lock, no pairing and no peer API.
+- Only one error falls back: Lazarette not running (`501 vault-unavailable`). A pairing, lock, rate-limit or seal error never falls back to Lite â€” falling back there would hide a real Lazarette problem behind a different store's answer.
+- What falls back: every role, because each role is a separate variable name in this architecture. ODBC / OLE DB `password` and `user`, Athena / Redshift `accessKeyId`, `secretAccessKey` and `sessionToken` (optional), Foundry `token` â€” each is one whole secret from Lite. No `-Field` is ever passed, so the old objection (Lite `-Field` always throws) does not apply here; no per-role-item schema change was needed.
+- Missing names in Lite use the same per-name handling as the peer path: an optional role leaves a note (for example no `user` in Lite signs in with the user in the DSN), a required role stops the request with `424 vault-not-shared` naming the Lite store. If two Lite items share one service name, Lite refuses and Semaphore treats the name as missing.
+- Lite limits that still apply: one secret per item, at most 2,560 bytes, no TOTP, no attachments, no history. The Fairlead client key (`Fairlead/Semaphore`) is untouched by this fallback: it already lives in Credential Manager and is not a vault item.
+- `GET /api/vault` reports `lite: true` and `store: "lite"` when Lite is answering for the names the sources name (Lazarette down); `store: "lazarette"` when Lazarette answers; `lite: false` otherwise. The request log notes which store answered.
+
+Tests: `tests/server/VaultLite.Tests.ps1`, against a fake Lite folder on disk (fake only, no real Credential Manager) and the fake Lazarette on loopback from `tests/server/Vault.Tests.ps1`.
+
 ## How it works
 
 - For each `/api/query` or `/api/profile` on a source with a `vault` block, the main loop calls `Resolve-SemVaultSecrets` (the one seam). It sends `POST /peer/tools/v1/secrets` to `127.0.0.1:8765` (or `LAZARETTE_PORT`) with `X-Fleet-Peer: lazarette-tool/1`, the source's names and the purpose `Semaphore query on source <id>`, and an HMAC-SHA256 proof over a fresh nonce keyed by the pairing secret, which never crosses the socket. Lazarette's answer is sealed (AES-256-CBC + HMAC-SHA256 under a key from the pairing secret and the nonce); the client checks the seal before reading it. Lazarette logs every read under Semaphore's name and the purpose.
@@ -71,6 +84,7 @@ Each answer carries a sentence the analyst can act on; the flag shows it.
 | Not paired (no pairing file here, or Lazarette removed it) | 424 `vault-not-paired` | Pair Semaphore in Lazarette (Settings > Tools), then run `Semaphore-CLI.bat vault pair`. |
 | A different program used the pairing | 424 `vault-other-program` | Pair Semaphore again from the program that should hold it. |
 | A required name not shared, or empty | 424 `vault-not-shared` | Source 'maint' needs SMDATS_PASSWORD (it is not shared with Semaphore). Share the item under that name. |
+| A required name not in Lazarette Lite (Lazarette down, Lite answering) | 424 `vault-not-shared` | Source 'maint' needs SMDATS_PASSWORD from Lazarette Lite. Put the item in Lite under that name. |
 | Too many failed requests, clock skew | 424 `vault-refused` | Lazarette's own sentence. |
 | Anything else (a seal that does not check, a malformed answer) | 424 `vault-error` | Lazarette could not give the secrets for source 'maint': ... |
 

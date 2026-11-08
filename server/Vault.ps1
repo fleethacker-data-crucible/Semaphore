@@ -17,6 +17,9 @@
 # Roles per provider ($script:SemVaultRoles). A required role with no value stops the request with a sentence;
 # an optional role with no value leaves a note (in the log, on the query answer and on a connect error).
 #
+# Lazarette Lite fallback (secret-only, docs/VAULT.md): when Lazarette is not running, Resolve-SemVaultSecrets
+# falls back to Lazarette Lite by variable name (Get-SemVaultLiteSecrets below). Only the
+# vault-unavailable error falls back; pairing, lock, rate-limit and seal errors never do.
 # The main loop reads the secrets for the one source a request names (Resolve-SemVaultSecrets, the one seam)
 # and hands the values to the worker with that request. They live in memory for that request only, are
 # never logged, returned or written, and are scrubbed from error text (Get-SemVaultSafeText).
@@ -181,6 +184,66 @@ function Get-SemVaultPurpose {
 }
 
 # ---------------------------------------------------------------------------
+# Lazarette Lite fallback (secret-only, docs/VAULT.md)
+# ---------------------------------------------------------------------------
+# When Lazarette is not running, secret-only sources can resolve from Lazarette Lite
+# (Windows Credential Manager) instead of failing with 501 vault-unavailable. Lite is
+# found only through LAZARETTE_PATH, pointing at the Lite folder (LazaretteLite.psd1 at
+# its root, lib\Lazarette.ps1 the shim). The shim is dot-sourced and read by variable
+# name: Get-LazaretteSecret -Service <name> (the user defaults to the service, the
+# Fairlead convention: a Lite item is named by the variable itself, e.g. SMDATS_PASSWORD).
+# One secret per item, at most 2,560 bytes, no custom fields. Each Athena/Redshift role
+# is a separate variable name in this architecture (accessKeyId, secretAccessKey,
+# sessionToken), so the old -Field objection does not apply: no -Field is ever passed.
+# A pairing, lock, rate-limit or seal error NEVER falls back: only 'Lazarette is not
+# running' does, the same predicate ConvertTo-SemVaultError maps to 501 vault-unavailable.
+function Get-SemVaultLiteRoot {
+    # The Lazarette Lite folder LAZARETTE_PATH names, or $null when it does not point at one.
+    $root = $env:LAZARETTE_PATH
+    if (-not $root) { return $null }
+    if (-not (Test-Path -LiteralPath (Join-Path $root 'LazaretteLite.psd1'))) { return $null }
+    if (-not (Test-Path -LiteralPath (Join-Path $root 'lib\Lazarette.ps1'))) { return $null }
+    return $root
+}
+
+function Get-SemVaultLiteSecrets {
+    # @{ Values = @{ role = string }; Notes = @(); Store = 'lite' } from Lite, @{ Error = ... }
+    # when Lite is present but a required name is missing, or $null when there is no Lite
+    # here (the caller then keeps the Lazarette error). A Get-LazaretteSecret throw means the
+    # name is missing in Lite (Lite throws on missing, ambiguous or empty); that is the same
+    # per-name handling as the peer path: optional role -> note, required role -> absent error.
+    param($Needs, [string]$SourceId)
+    $root = Get-SemVaultLiteRoot
+    if ($null -eq $root) { return $null }
+    try { . (Join-Path $root 'lib\Lazarette.ps1') } catch { return $null }
+    $values = @{}
+    $notes = New-Object System.Collections.Generic.List[string]
+    $absent = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $Needs.Roles) {
+        $v = $null
+        try { $v = Get-LazaretteSecret -Service $r.Name } catch { $v = $null }
+        if ($null -ne $v -and ([string]$v).Length -gt 0) { $values[$r.Role] = [string]$v; continue }
+        if ($r.Optional) { $notes.Add((Get-SemVaultEmptyNote -SourceId $SourceId -Role $r.Role -Name $r.Name -State 'missing')) }
+        else { $absent.Add(('{0} ({1})' -f $r.Name, (Get-SemVaultStateText 'missing'))) }
+    }
+    if ($absent.Count -gt 0) {
+        return @{ Error = @{ Status = 424; Code = 'vault-not-shared'; Message = ("Source '{0}' needs {1} from Lazarette Lite. Put the item in Lazarette Lite under that name (LAZARETTE_PATH points at the Lite folder)." -f $SourceId, ($absent -join ', ')) } }
+    }
+    Write-SemLog 'INFO' ("Source '{0}' read its secrets from Lazarette Lite (Lazarette is not running)." -f $SourceId)
+    foreach ($n in $notes) { Write-SemLog 'WARN' $n }
+    return @{ Values = $values; Notes = $notes.ToArray(); Store = 'lite' }
+}
+
+function Get-SemVaultLiteNames {
+    # The variable names Lazarette Lite has (names only, never a value), or @() when there is
+    # no Lite folder here or the shim will not load. For GET /api/vault.
+    $root = Get-SemVaultLiteRoot
+    if ($null -eq $root) { return @() }
+    try { . (Join-Path $root 'lib\Lazarette.ps1') } catch { return @() }
+    try { return @((Get-LiteItemNames) | ForEach-Object { [string]$_.Service }) } catch { return @() }
+}
+
+# ---------------------------------------------------------------------------
 # Status (GET /api/vault, vault status): names and states only, never a value
 # ---------------------------------------------------------------------------
 function Get-SemVaultStatus {
@@ -200,8 +263,26 @@ function Get-SemVaultStatus {
         $sources.Add([ordered]@{ id = $s.id; shares = $roles })
     }
     $init = Initialize-SemVault
-    $out = [ordered]@{ tool = $script:SemVaultTool; paired = [bool]$init.Paired; running = (Test-SemVaultRunning); locked = $null; problem = $init.Problem; sources = $sources.ToArray(); shared = @(); notShared = @() }
-    if (-not $out.running) { $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.'; if (-not $out.paired) { $out.problem += ' ' + $init.Problem } }
+    $out = [ordered]@{ tool = $script:SemVaultTool; paired = [bool]$init.Paired; running = (Test-SemVaultRunning); locked = $null; lite = $false; store = $null; problem = $init.Problem; sources = $sources.ToArray(); shared = @(); notShared = @() }
+    if (-not $out.running) {
+        $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.'
+        if (-not $out.paired) { $out.problem += ' ' + $init.Problem }
+        # Lazarette Lite fallback: when Lite answers for the names the sources name, say so
+        # (shared/notShared from Lite, store 'lite'). The values are never read here.
+        $liteNames = Get-SemVaultLiteNames
+        if ($liteNames.Count -gt 0 -and $names.Count -gt 0) {
+            $out.lite = $true
+            $out.store = 'lite'
+            $liteShared = New-Object System.Collections.Generic.List[string]
+            $liteMissing = New-Object System.Collections.Generic.List[object]
+            foreach ($n in $names) {
+                if (@($liteNames | Where-Object { $_.ToUpperInvariant() -eq $n.ToUpperInvariant() }).Count -gt 0) { $liteShared.Add($n) } else { $liteMissing.Add([ordered]@{ name = $n; state = 'missing' }) }
+            }
+            $out.shared = $liteShared.ToArray()
+            $out.notShared = $liteMissing.ToArray()
+            $out.problem += ' Lazarette Lite is answering for some of these names.'
+        }
+    }
     if (-not $out.paired -or -not $out.running -or $names.Count -eq 0) { return $out }
     $shared = New-Object System.Collections.Generic.List[string]
     $missing = New-Object System.Collections.Generic.List[object]
@@ -224,6 +305,7 @@ function Get-SemVaultStatus {
     }
     $out.locked = $false
     $out.problem = $null
+    $out.store = 'lazarette'
     $out.shared = $shared.ToArray()
     $out.notShared = $missing.ToArray()
     return $out
@@ -242,7 +324,18 @@ function Resolve-SemVaultSecrets {
     $names = @($needs.Roles | ForEach-Object { $_.Name })
     $got = $null
     try { $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names $names -Purpose (Get-SemVaultPurpose $id) }
-    catch { return @{ Error = (ConvertTo-SemVaultError -Message ([string]$_.Exception.Message) -SourceId $id) } }
+    catch {
+        $msg = [string]$_.Exception.Message
+        # Lazarette Lite fallback (secret-only): only when Lazarette is not running at all
+        # (ConvertTo-SemVaultError maps 'Lazarette is not running*' to 501 vault-unavailable).
+        # A pairing, lock, rate-limit or seal error never falls back: falling back there would
+        # hide a real Lazarette problem behind a different store's answer.
+        if ($msg -like 'Lazarette is not running*') {
+            $lite = Get-SemVaultLiteSecrets -Needs $needs -SourceId $id
+            if ($null -ne $lite) { return $lite }
+        }
+        return @{ Error = (ConvertTo-SemVaultError -Message $msg -SourceId $id) }
+    }
     $values = @{}
     $notes = New-Object System.Collections.Generic.List[string]
     $absent = New-Object System.Collections.Generic.List[string]

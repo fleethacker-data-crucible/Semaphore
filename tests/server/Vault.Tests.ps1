@@ -127,9 +127,15 @@ Describe 'No Lazarette engine in Semaphore' {
     }
     It 'dot-sources no Lazarette engine file and calls no engine function anywhere in server/' {
         $bad = @()
+        # Lazarette Lite fallback (docs/VAULT.md): server/Vault.ps1 may name the Lite shim
+        # (Get-LazaretteSecret, LAZARETTE_PATH, lib\Lazarette.ps1). Lite is not the Lazarette
+        # engine: it holds no vault key and loads no engine file. The engine-only functions
+        # stay forbidden in every file, including Vault.ps1.
+        $liteOk = @('Lazarette\.ps1', 'Get-LazaretteSecret\b', 'LAZARETTE_PATH')
         foreach ($f in $script:ServerFiles) {
             $text = [IO.File]::ReadAllText($f.FullName)
             foreach ($rx in @('Lazarette\.ps1', 'Get-LazaretteSecret\b', 'Unlock-LazaretteVault', 'Test-LazaretteVaultUnlocked', 'Get-LazaretteItemNames', 'Lock-LazaretteVault', 'LAZARETTE_PATH')) {
+                if ($f.Name -eq 'Vault.ps1' -and $liteOk -contains $rx) { continue }
                 if ($text -match $rx) { $bad += ('{0}: {1}' -f $f.Name, $rx) }
             }
         }
@@ -144,6 +150,8 @@ Describe 'No Lazarette engine in Semaphore' {
             foreach ($d in $dots) {
                 $text = $d.Extent.Text
                 if ($text -match '^\.\s+\$Ctx\.[A-Za-z]+Path$') { continue }   # the worker loads the files Initialize-SemWorkers names
+                $fn = $d; while ($null -ne $fn -and $fn -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $fn = $fn.Parent }
+                if ($null -ne $fn -and $fn.Name -in @('Get-SemVaultLiteSecrets', 'Get-SemVaultLiteNames')) { continue }   # the Lite fallback shim (docs/VAULT.md), loaded from the folder LAZARETTE_PATH names
                 $isPs1 = { param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -like '*.ps1' }
                 $consts = @($d.FindAll($isPs1, $true) | ForEach-Object { $_.Value })
                 if ($consts.Count -eq 0) {
