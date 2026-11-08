@@ -5,7 +5,7 @@
 // their labels, keys and synonyms. Loaded with the Data panel and when a brief defines a measure.
 
 import type { CatalogIndex, Metric } from './catalog.ts';
-import { type FormulaNode, parseFormula, printFormula } from './formula.ts';
+import { type FormulaNode, formulaRefs, parseFormula, printFormula } from './formula.ts';
 
 export type MeasureProposal = { ok: true; metric: Metric; sentence: string } | { ok: false; error: string };
 
@@ -101,4 +101,19 @@ function guessFormat(node: FormulaNode, format: (key: string) => Metric['format'
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** The measures with every formula that reads a measure no longer among them taken out, until none does. */
+export function dropBrokenFormulas(metrics: readonly Metric[]): Metric[] {
+  let out = [...metrics];
+  for (let n = -1; n !== out.length; ) {
+    n = out.length;
+    const keys = new Set(out.map((m) => m.key));
+    out = out.filter((m) => {
+      if (m.agg !== 'formula') return true;
+      const p = parseFormula(m.formula ?? '');
+      return p.ok && formulaRefs(p.node).every((k) => keys.has(k));
+    });
+  }
+  return out;
 }

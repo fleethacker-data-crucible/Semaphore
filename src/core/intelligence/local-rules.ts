@@ -133,7 +133,8 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
 
   // "cost per hull = labor cost / hulls": once the calculated measure exists, the brief means it,
   // not the measures its definition names.
-  const def = /([a-z][a-z0-9 '-]{0,60}?)\s*(?:=|\bis defined as\b)\s*([^.;]{1,200})/.exec(text);
+  // The definition runs to the end of the clause, or to what the brief says next ("… by region").
+  const def = /([a-z][a-z0-9 '-]{0,60}?)\s*(?:=|\bis defined as\b)\s*([^.;]{1,200}?)(?=(?<!divided|multiplied)\s(?:by|for|per|across|over the|in the|last|as an?)\s|[.;]|\s*$)/.exec(text);
   if (def && mentions(def[1]!, index).some((m) => m.kind === 'metric' && index.metric(m.key)?.agg === 'formula')) {
     const at = def.index + def[0].length - def[2]!.length;
     blocked.push([at, at + def[2]!.length]);

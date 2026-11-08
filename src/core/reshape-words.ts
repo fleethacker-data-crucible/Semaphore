@@ -13,6 +13,7 @@
 import { type Catalog, type CatalogIndex, type Field, indexCatalog, type Metric, pruneCatalog } from './catalog.ts';
 import { type CleaningStep, cleanType } from './cleaning.ts';
 import type { Cell } from './crossfilter.ts';
+import { dropBrokenFormulas } from './formula-words.ts';
 import type { QueryPlan } from './planner.ts';
 import { type Bucket, BUCKETS_MAX, newField, SPLIT_MAX, tileBounds, UNPIVOT_MAX } from './reshape.ts';
 
@@ -164,13 +165,9 @@ export function undoStep(catalog: Catalog, id: string): Catalog {
   const left = new Set(pruned.fields.map((f) => f.key));
   const tables = new Set(pruned.fields.map((f) => `${f.source}|${f.table}`));
   // Measures on what went: a field gone, or a row count of a table gone.
-  let metrics = pruned.metrics.filter((m) => (m.field ? left.has(m.field) : m.agg !== 'count' || !m.table || tables.has(`${m.source}|${m.table}`)));
-  // Formulas built on a measure that went go too, until nothing else does.
-  for (let n = -1; n !== metrics.length; ) {
-    n = metrics.length;
-    const keys = new Set(metrics.map((m) => m.key));
-    metrics = metrics.filter((m) => m.agg !== 'formula' || (m.formula ?? '').split(/[^A-Za-z0-9_.]+/).filter((t) => /^[A-Za-z_]/.test(t)).every((t) => keys.has(t)));
-  }
+  const kept = pruned.metrics.filter((m) => (m.field ? left.has(m.field) : m.agg !== 'count' || !m.table || tables.has(`${m.source}|${m.table}`)));
+  // Formulas built on a measure that went go too.
+  const metrics = dropBrokenFormulas(kept);
   return { ...pruned, metrics };
 }
 

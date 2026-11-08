@@ -152,6 +152,8 @@ export function App() {
   const [browserNoteHidden, setBrowserNoteHidden] = useState(false);
   // "Why it didn't draft" (#69): kept until the flag's brief changes.
   const [draftMiss, setDraftMiss] = useState<DraftMissInfo | null>(null);
+  // A brief that defines a measure ("cost per hull = labor cost / hulls") offers it, to accept or leave.
+  const [measureOffer, setMeasureOffer] = useState<{ flagId: string; brief: string; metric: Metric; sentence: string } | null>(null);
   const [dataOpen, setDataOpen] = useState(false);
   const [qlikOpen, setQlikOpen] = useState(false);
   const [sqlOpen, setSqlOpen] = useState(false);
@@ -426,6 +428,11 @@ export function App() {
 
   const draftSelected = useCallback(async () => {
     if (!selected) return;
+    if (/=|\bdivided by\b|\bdifference between\b|\bas an? (?:percent|share)/i.test(selected.brief)) {
+      const p = (await import('../../src/core/formula-words.ts')).proposeMeasure(selected.brief, index);
+      const known = p.ok && index.catalog.metrics.some((m) => m.label.toLowerCase() === p.metric.label.toLowerCase());
+      setMeasureOffer(p.ok && !known ? { flagId: selected.id, brief: selected.brief, metric: p.metric, sentence: p.sentence } : null);
+    }
     const provider = draftingProvider(index, ai, useAi);
     await runBusy(provider.local ? 'Drafting…' : `Drafting with ${provider.label}…`, async () => {
       const outcome = await draftFlag(provider, hoist, selected, index, { auto: autoKinds[selected.id] ?? selected.status === 'empty', style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
@@ -1378,6 +1385,29 @@ export function App() {
         </main>
         {selected && (
           <div className="flex h-full min-h-0 w-[360px] shrink-0 flex-col">
+            {measureOffer?.flagId === selected.id && measureOffer.brief === selected.brief && (
+              <section aria-label="Calculated measure" className="space-y-1.5 border-b border-l border-line bg-accent-soft p-3 text-sm">
+                <p className="font-semibold">Add a calculated measure?</p>
+                <p data-testid="measure-offer">{measureOffer.sentence}</p>
+                <p className="text-xs text-ink-2">Worked out for each row, and for the total, from their own totals; nothing shows where it would divide by zero.</p>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCatalog({ ...catalog, metrics: [...catalog.metrics, measureOffer.metric] });
+                      setMeasureOffer(null);
+                      setRedraftFor(selected.id);
+                    }}
+                    className="min-h-8 rounded-md bg-accent px-2.5 text-xs font-semibold text-panel"
+                  >
+                    Add {measureOffer.metric.label}
+                  </button>
+                  <button type="button" onClick={() => setMeasureOffer(null)} className="min-h-8 rounded-md border border-line bg-panel px-2.5 text-xs">
+                    Not now
+                  </button>
+                </div>
+              </section>
+            )}
             {miss && (
               <DraftMiss
                 miss={miss}
