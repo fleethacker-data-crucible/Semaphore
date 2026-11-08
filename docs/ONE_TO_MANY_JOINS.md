@@ -6,6 +6,10 @@ right. This adds the opposite direction: a measure on the **one** side (`custome
 count of customers) split or filtered by a field on the **many** side (`orders.status`). Nothing is
 counted twice.
 
+Measures from several tables in one flag (a formula over jobs and hulls) are read one query per
+table and lined up by their groups (docs/CALCULATED-MEASURES.md, "Inputs in different tables"); each
+of those tables is a base in the sense used here, with its own many side.
+
 Code: `src/core/manyjoin.ts` (planning, SQL derived table, in-page rows). Small hooks in
 `planner.ts`, `sql.ts`, `engine.ts`, `crossfilter.ts`, `describe.ts` and `web/src/lib/data.ts`.
 
@@ -109,6 +113,11 @@ GROUP BY "mx"."g0" LIMIT 50000
 * Cleaning steps on a many-side field run once, in an inner query of the block, and the group value
   passes through the outer query unchanged. Values are bound in the order they appear in the text,
   which the `?` dialects need.
+* Fields made by a cleaning step (split, merge, bucket, quartiles) on a many-side table are computed
+  in a derived table of that table inside the block, `(SELECT "s".*, <expression> AS "sem_made0" FROM
+  "orders" AS "s") AS "m0"`, so quartiles rank the many-side table's own rows, in all nine dialects. A
+  reshaped (unpivoted) table on the many side is read as its derived table of `UNION ALL`s. The block
+  is still `DISTINCT`, so nothing is counted twice and splits still overlap.
 * A dedupe step on the base table still applies. On many-side tables it is moot: the block is
   already distinct.
 
@@ -125,7 +134,8 @@ Access has no `COUNT(DISTINCT ...)`; as before, a `count_distinct` metric is ref
 ## In the page
 
 `engine.ts` builds the same distinct set from the rows in memory (`prepareManyRows`): it expands the
-many-side tables, applies the many-side filters and cleaning, cuts dates to grain, keeps the distinct
+many-side tables (a reshaped one built from its stored table), reads made fields over their own
+table's rows, applies the many-side filters and cleaning, cuts dates to grain, keeps the distinct
 `(key, group)` pairs, and expands each base row to the groups it belongs to. A base row with none
 goes to the blank group (LEFT) or is dropped (semi-join). The tests run the generated `ansi` SQL on
 SQLite for real and compare the rows to the engine's, for sums, counts, averages, extremes,

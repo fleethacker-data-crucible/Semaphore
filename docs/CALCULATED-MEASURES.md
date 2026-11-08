@@ -32,6 +32,38 @@ own aggregates. So it is the same in the in-page engine and in all nine SQL dial
 - division by zero, or an input with no value, shows nothing (null);
 - ranking and top N by a formula happen in the page, never at the source.
 
+**Inputs in different tables** (src/core/across.ts). Cost per hull with labor cost on jobs and hulls
+on a hulls table, or labor cost plus parts cost from two fact tables: the tables are never joined to
+each other (that would repeat each one's rows once per row of the other). The flag is planned as one
+query per table, a *drill-across*:
+
+- each table's query asks for its own inputs, grouped by the same fields, with the same filters, page
+  selections and comparison window, each reaching those fields through its own relationships (a
+  shared regions or calendar table). A total with no split needs no relationship at all;
+- the rows are lined up by the group values, like a full outer join. A group one table has and the
+  other does not gets nothing for the other's inputs, so a formula that needs both shows nothing
+  there; the flag's notes say how many groups that is ("2 of these groups are found in only some of
+  jobs, hulls ..."). Each table's query also counts its rows, which is how a group with no rows there
+  is told apart from one whose values are blank;
+- in SQL it is one statement: each table's `SELECT ... GROUP BY`, with `NULL` for the other tables'
+  aggregates, joined with `UNION ALL` and grouped once more by the same columns (`MAX` of the one
+  value each group has per table). Placeholders are numbered across the parts; only the outer
+  statement has `TOP`, `LIMIT` or `FETCH FIRST`. The in-page engine runs each part and lines the rows
+  up the same way; the SQLite SQL is checked against it in tests;
+- totals come from each table's own totals; a distinct count's total is read with one more
+  statement grouped by nothing (one part per table again). Comparisons, shares, pivot levels (one
+  statement per level), ranking and top N in the page, drill, exports, snapshots (the lined-up rows
+  re-add like any others), lineage (both tables and their joins) and the readback ("Worked out from
+  jobs and hulls, lined up by Region ...") all follow;
+- page selections apply locally only when every table is pre-split by the field; a field one table
+  cannot reach does not apply, with a note;
+- refused, with the field and table named: a split or filter field one of the tables cannot reach
+  ("From hulls: "Status" is in a table not related to hulls"), a page filter that does not reach one
+  of them, and a many-side ambiguity from one of them (the one-to-many joins' message). Inputs in two
+  different sources are still refused.
+
+The planning of these flags loads on first use, so the start of the page does not grow with it.
+
 **From a sentence.** On Data > Measures, *Define a measure in words*, or in a flag's brief:
 
 - `cost per hull = labor cost / hulls`
@@ -87,8 +119,13 @@ dialect's division or rounding can differ. Access has no window functions: when 
 Semaphore reads the field's values and counts, works out each group's upper bound by the same rule,
 and the SQL is a `Switch` over those bounds (a group no value falls in takes the bound before it).
 
-**Limits.** A made field or reshaped table cannot be on the many side of a one-to-many split, and
-quartile groups are read only on charts of their own table. Mixed date formats are still cleaned in
-data held in the page only.
+**On the many side of a one-to-many split** (docs/ONE_TO_MANY_JOINS.md), a made field is computed
+inside the many-side block, in a derived table of its own table (`(SELECT s.*, <made field> AS
+sem_made0 FROM orders AS s)`), so equal-count groups rank the many-side table's own rows; a reshaped
+table there is its derived table of `UNION ALL`s. Customers are still counted once per group.
+
+**Limits.** Equal-count groups are read on charts of their own table or from the many side of a
+one-to-many split, never through a many-to-one join (they would rank the joined rows). Mixed date
+formats are still cleaned in data held in the page only.
 
 The readers and SQL for these fixes load only for a catalog that has them (src/core/reshape-impl.ts).

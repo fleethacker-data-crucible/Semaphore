@@ -145,10 +145,11 @@ test('buckets and quartiles on the many side: quartiles rank the orders’ own r
   assert.deepEqual(size.by, { '0-25': 100, '26+': 700, null: 300 });
   const small = both(catalog, { metrics: ['credit', 'customers'], filters: [{ field: keys.size!, op: 'eq', values: ['0-25'] }] }, 'customers');
   assert.deepEqual(small.by, { '': 1 });
-  // Order totals 10, 10, 20, 30, 40, 50, 60, 99: two orders per quartile, whoever placed them.
+  // Order totals 10, 10 (the order entered twice ties, and shares a group), 20, 30, 40, 50, 60, 99:
+  // two orders per quartile over the orders' own rows, whoever placed them.
   const q = both(catalog, { metrics: ['credit'], dimensions: [{ field: keys.quartile! }] });
   assert.deepEqual(q.by, { Q1: 100, Q2: 100, Q3: 600, Q4: 400, null: 300 });
-  assert.match(q.sql, /NTILE\(4\) OVER .+ FROM "orders" AS "s"\) AS "m0"/);
+  assert.match(q.sql, /RANK\(\) OVER .+ FROM "orders" AS "s"\) AS "m0"/);
 });
 
 test('a reshaped table on the many side: its rows built from the stored table, then split by', () => {
