@@ -1,0 +1,9 @@
+Arrow IPC files copied read-only from the data-noodler repo (workspace sample data), used as
+cross-checks for the Arrow reader. Each NAME.arrow is workspace/.../NAME/part-000000.arrow and
+NAME.dataset.json is the dataset.json written next to it (row count and column types).
+
+  SAMPLE_*                    data-noodler/workspace/sample-data/SAMPLE_*/
+  CLEAN_FUEL_BY_CLASS_MONTH   data-noodler/workspace/smpg/fleet-fuel-review/data/clean/CLEAN_FUEL_BY_CLASS_MONTH/
+
+The 142 MB FUEL_LOG Arrow file and its source CSV are read in place when present
+(data-noodler/workspace/smpg/fleet-fuel-review/data/imported/FUEL_LOG and .../data/raw/fuel-log.csv).
