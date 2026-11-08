@@ -25,11 +25,14 @@ export type SourceKind =
   | 'azure-sql'
   | 'azure-synapse'
   | 'foundry'
+  /** Semaphore's built-in local database (server/LocalDb.ps1): SQLite, the engine that ships with Windows. */
+  | 'local'
   | 'other';
 
 /** The SQL profile a source kind uses; unknown kinds fall back to the ansi profile. */
 export function dialectForKind(kind: SourceKind): Dialect {
-  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark' };
+  // TODO(sqlite dialect): map local to 'sqlite' once sql.ts and sql-translate.ts render SQLite; ansi until then.
+  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark', local: 'ansi' };
   return map[kind] ?? 'ansi';
 }
 

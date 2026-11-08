@@ -29,6 +29,16 @@
 #   GET    /api/ai                        AI status, never the key            (Intelligence.ps1)
 #   POST   /api/ai/check                  is Fairlead reachable with the key  (Intelligence.ps1, worker pool)
 #   POST   /api/ai/v1/chat/completions    drafting request passed to Fairlead (Intelligence.ps1, worker pool)
+#   The local database (LocalDb.ps1, docs/LOCAL-DATABASE.md):
+#   GET    /api/local/tables                         { tables: [{ name, rows, columns, bytes, source, importedAt }], ... }
+#   POST   /api/local/import          raw file body  X-File-Name (percent-encoded), X-Table?, X-Sheet?, X-Replace: 1?
+#          streamed to <home>\local\incoming by an import job (never held in memory) -> 202 { job }
+#   POST   /api/local/import-path { path, sheet?, table?, replace? }   reads the file in place -> 202 { job }
+#   POST   /api/local/sheets  { path }               the sheets of a workbook or the tables of a SQLite file
+#   GET    /api/local/import-status/<job>            { state, rows, bytes, totalBytes, table, error, ... }
+#   POST   /api/local/import-cancel { job }          stops a running import (nothing is published)
+#   DELETE /api/local/tables/<name>                  drops the table
+#   POST   /api/local/tables/<name>/rename { name }  renames it
 # =============================================================================
 
 $script:SemDocMaxBytes = 2097152      # 2 MB per hoist or catalog
@@ -414,6 +424,11 @@ function Invoke-SemRoute {
         # Intelligence.ps1, on the worker pool: a model can take a minute and must not block heartbeats.
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Start-SemWorkerRequest -Req $Req
+        return
+    }
+    if ($p -eq '/api/local/tables' -or $p -eq '/api/local/import' -or $p -eq '/api/local/import-path' -or $p -eq '/api/local/sheets' -or $p -eq '/api/local/import-cancel' -or $p.StartsWith('/api/local/')) {
+        # The local database (LocalDb.ps1): imports run on their own runspaces, the rest is quick.
+        Invoke-SemLocalRoute -Req $Req
         return
     }
     Send-SemError 404 'not-found' 'Unknown API route.'

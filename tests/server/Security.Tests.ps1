@@ -537,10 +537,12 @@ Describe 'SQL guard and parameters' {
     It 'lists sources without their connection strings' {
         $r = Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)
         $j = $r.Body | ConvertFrom-Json
-        @($j.sources).Count | Should -Be 2
+        @($j.sources).Count | Should -Be 3   # two from sources.json, then the built-in local database
         $j.sources[0].id | Should -Be 'maint'
+        $j.sources[2].id | Should -Be 'local'
+        $j.sources[2].kind | Should -Be 'local'
         $j.sources[0].placeholders | Should -Be 'question'
-        $r.Body | Should -Not -Match 'DSN=|PWD='
+        $r.Body | Should -Not -Match 'DSN=|PWD=|Data Source='
     }
 
     It 'checks and quotes identifiers like catalog.ts isIdentifier()' {

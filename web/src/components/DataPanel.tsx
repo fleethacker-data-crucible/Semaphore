@@ -12,6 +12,8 @@ import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
 import { useModal } from '../lib/modal.ts';
 import { recordSkill, takeDataTab } from '../lib/skills.ts';
 import { EmptyState, emptyActionClass } from './EmptyState.tsx';
+import { LocalDbSection } from './LocalDbSection.tsx';
+import { LOCAL_SOURCE_ID } from '../lib/localdb.ts';
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -83,12 +85,15 @@ function Sources(p: DataPanelProps) {
   const [tables, setTables] = useState<Record<string, string[] | string>>({});
   const [pick, setPick] = useState<Record<string, string>>({});
   const inCatalog = new Set(p.catalog.sources.map((s) => s.id));
+  // The built-in local database has its own section (LocalDbSection); the rest come from sources.json.
+  const hasLocal = p.server?.sources.some((s) => s.id === LOCAL_SOURCE_ID) ?? false;
+  const remoteSources = (p.server?.sources ?? []).filter((s) => s.id !== LOCAL_SOURCE_ID);
   const addFiles = (files: FileList) => {
     p.onAddCsv(files);
     recordSkill('csv');
   };
   useEffect(() => {
-    for (const s of p.server?.sources ?? []) {
+    for (const s of remoteSources) {
       if (tables[s.id]) continue;
       profileTables(s.id).then(
         (r) => setTables((t) => ({ ...t, [s.id]: r.tables.map((x) => x.name) })),
@@ -162,7 +167,7 @@ function Sources(p: DataPanelProps) {
           </button>
         )}
         {p.server ? (
-          (p.server.sources.length ? p.server.sources : []).map((s) => {
+          remoteSources.map((s) => {
             const t = tables[s.id];
             return (
               <div key={s.id} className="space-y-1.5 rounded-lg border border-line px-3 py-2">
@@ -199,7 +204,8 @@ function Sources(p: DataPanelProps) {
         ) : (
           <p className="text-xs text-ink-3">Databases (ODBC and OLE DB) are reached through the Semaphore server. Start Semaphore with Launch-Semaphore.bat and list them in sources.json.</p>
         )}
-        {p.server && p.server.sources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
+        {p.server && remoteSources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
+        {hasLocal && <LocalDbSection busy={p.busy} onProfile={p.onProfile} />}
         {p.busy && <p className="text-xs text-accent">{p.busy}</p>}
       </section>
 

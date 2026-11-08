@@ -31,6 +31,9 @@
 //                                               limiter, client log and save counter cleared, the
 //                                               vault state back to the --vault default. Presence is
 //                                               kept (the calling page's tab is still open).
+//   The local database (server/LocalDb.ps1) is a small in-memory table store here: uploads and path imports of CSV
+//   text are counted and listed, profiled through /api/profile { source: 'local' }, renamed and dropped; a \\host
+//   path is refused as the real server refuses a share that is not in localShares. Reset empties it.
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -440,7 +443,8 @@ function docRoute(req, res, kind, id, query, body) {
 function info() {
   // Get-SemInfo (server/Routes.ps1): `social` carries the deployment's feature switches from
   // config/settings.json (signalBook, impact, teamLog, showAskers, bz); all on here.
-  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '', social: { signalBook: true, impact: true, teamLog: true, showAskers: true, bz: true } };
+  // The built-in local database is always a source (Get-SemSources).
+  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [{ id: 'local', label: 'Local database', kind: 'local', provider: 'local', placeholders: 'question', vault: false }], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '', social: { signalBook: true, impact: true, teamLog: true, showAskers: true, bz: true } };
 }
 function aiStatus() {
   return {
@@ -469,6 +473,108 @@ function clientLogRoute(req, res, json, body) {
   clientLog.push(entry);
   log(json.level === 'error' ? 'ERROR' : 'WARN', `Browser: ${entry.message}${entry.view ? ` (view ${entry.view})` : ''}`);
   send(res, 204, '', null);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Local database (server/LocalDb.ps1), in memory: name -> { columns: [{ name, type }], rows: string[][], source }
+// ---------------------------------------------------------------------------------------------
+const localTables = new Map();
+const localJobs = new Map();
+const LOCAL_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const LOCAL_EXT = /\.(csv|tsv|txt|tab|xlsx|xlsm|sqlite|sqlite3|db|parquet|pq|arrow|feather|ipc)(\.gz)?$/i;
+
+function localSafeName(file) {
+  let s = String(file).replace(/\.gz$/i, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'table';
+  if (/^[0-9]/.test(s)) s = `t_${s}`;
+  let name = s;
+  for (let i = 2; [...localTables.keys()].some((k) => k.toLowerCase() === name.toLowerCase()); i++) name = `${s}_${i}`;
+  return name;
+}
+function localImportText(file, text, source) {
+  const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length === 0) return { state: 'failed', error: 'The file is empty: there is no header row.' };
+  const delim = [',', ';', '\t', '|'].sort((a, b) => lines[0].split(b).length - lines[0].split(a).length)[0];
+  const head = lines[0].split(delim).map((h) => h.trim().replace(/[^A-Za-z0-9_ ]+/g, '_') || 'column');
+  const rows = lines.slice(1).map((l) => l.split(delim));
+  const columns = head.map((name, i) => ({ name, type: rows.every((r) => r[i] === undefined || r[i] === '' || /^-?\d+(\.\d+)?$/.test(r[i])) ? 'REAL' : /^\d{4}-\d\d-\d\d$/.test(rows[0]?.[i] ?? '') ? 'DATE' : 'TEXT' }));
+  const table = localSafeName(file);
+  localTables.set(table, { columns, rows, source, importedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), bytes: text.length });
+  return { state: 'done', table, rows: rows.length, columns: columns.length };
+}
+function localJob(file, result) {
+  const job = randomBytes(16).toString('hex');
+  localJobs.set(job, { job, file, phase: 'done', bytes: 0, totalBytes: 0, tables: [], ms: 1, warnings: [], error: null, table: null, rows: 0, columns: 0, ...result });
+  return job;
+}
+function localProfile(res, table) {
+  if (!table) return sendJson(res, 200, { tables: [...localTables.keys()].sort().map((name) => ({ name, schema: null })) });
+  const t = localTables.get(table);
+  if (!t) return sendError(res, 422, 'query-failed', `The source rejected the query: no such table: ${table}`);
+  const kind = (type) => (type === 'REAL' ? 'number' : type === 'DATE' ? 'date' : 'string');
+  return sendJson(res, 200, {
+    table,
+    rows: t.rows.length,
+    columns: t.columns.map((c, i) => ({ name: c.name, type: kind(c.type), distinct: kind(c.type) === 'number' ? null : new Set(t.rows.map((r) => r[i])).size, samples: [...new Set(t.rows.map((r) => r[i]).filter(Boolean))].slice(0, 5) })),
+  });
+}
+function localRoute(req, res, p, json, body) {
+  const m = req.method;
+  if (p === '/api/local/tables') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const tables = [...localTables.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, t]) => ({ name, type: 'table', rows: t.rows.length, columns: t.columns, bytes: t.bytes, source: t.source, path: null, format: 'csv', importedAt: t.importedAt, etag: null, fileBytes: t.bytes }));
+    return sendJson(res, 200, { tables, databaseBytes: 8192 + tables.reduce((n, t) => n + t.bytes, 0), engine: 'SQLite (mock)', columnar: false });
+  }
+  if (p === '/api/local/import') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    let name = '';
+    try {
+      name = decodeURIComponent(String(req.headers['x-file-name'] ?? ''));
+    } catch {
+      name = '';
+    }
+    if (!name) return sendError(res, 400, 'bad-name', 'The upload needs an X-File-Name header with the file name.');
+    if (!LOCAL_EXT.test(name)) return sendError(res, 415, 'unsupported', 'Semaphore imports .csv, .tsv, .txt, .xlsx, .sqlite, .db, .parquet, .arrow and .feather files (also gzipped).');
+    const job = localJob(name, localImportText(name, body.toString('utf8'), `${name} (uploaded)`));
+    return sendJson(res, 202, { job, file: name, bytes: body.length });
+  }
+  if (p === '/api/local/import-path') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const raw = typeof json?.path === 'string' ? json.path.trim() : '';
+    if (!raw) return sendError(res, 400, 'bad-path', 'Give the path of a file.');
+    const unc = /^\\\\([^\\]+)\\/.exec(raw);
+    if (unc) return sendError(res, 403, 'path-refused', `Semaphore does not open files on \\\\${unc[1]}: opening a network path sends your Windows sign-in (NTLM) to that computer. Ask whoever looks after Semaphore to add "${unc[1]}" to localShares in config\\settings.local.json, or copy the file to this computer.`);
+    if (!existsSync(raw) || !statSync(raw).isFile()) return sendError(res, 403, 'path-refused', `No such file: ${raw}`);
+    const file = path.basename(raw);
+    const job = localJob(file, localImportText(file, readFileSync(raw, 'utf8'), raw));
+    return sendJson(res, 202, { job, file, path: raw });
+  }
+  if (p === '/api/local/sheets') return m === 'POST' ? sendJson(res, 200, { format: 'csv', sheets: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/local/import-cancel') return m === 'POST' ? sendJson(res, 200, { ok: true, cancelled: false }) : sendError(res, 405, 'method', 'Method not allowed.');
+  const st = /^\/api\/local\/import-status\/([^/]+)$/.exec(p);
+  if (st) {
+    const j = localJobs.get(st[1]);
+    return j ? sendJson(res, 200, j) : sendError(res, 404, 'not-found', 'No such import.');
+  }
+  const tm = /^\/api\/local\/tables\/([^/]+)(\/rename)?$/.exec(p);
+  if (tm) {
+    const name = tm[1];
+    if (!LOCAL_NAME.test(name)) return sendError(res, 400, 'bad-table', 'Not a table name.');
+    if (!localTables.has(name)) return sendError(res, 404, 'not-found', `No table '${name}'.`);
+    if (tm[2]) {
+      if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+      const to = typeof json?.name === 'string' ? json.name : '';
+      if (!LOCAL_NAME.test(to)) return sendError(res, 400, 'bad-table', 'A table name has 1 to 64 letters, digits or _, and starts with a letter or _.');
+      if (to.toLowerCase() !== name.toLowerCase() && localTables.has(to)) return sendError(res, 400, 'local-db', `A table named "${to}" is already in the local database.`);
+      const t = localTables.get(name);
+      localTables.delete(name);
+      localTables.set(to, t);
+      return sendJson(res, 200, { ok: true, name: to });
+    }
+    if (m !== 'DELETE') return sendError(res, 405, 'method', 'Method not allowed.');
+    localTables.delete(name);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
 
 function apiRoute(req, res, p, query, json, body) {
@@ -503,6 +609,7 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/query' || p === '/api/profile') {
     if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
     if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    if (p === '/api/profile' && json.source === 'local') return localProfile(res, typeof json.table === 'string' ? json.table : '');
     return sendError(res, 404, 'unknown-source', `No source '${String(json.source ?? '')}' on this computer.`);
   }
   if (p === '/api/vault') return m === 'GET' ? sendJson(res, 200, vaultStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
@@ -524,6 +631,7 @@ function apiRoute(req, res, p, query, json, body) {
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
+  if (p.startsWith('/api/local/')) return localRoute(req, res, p, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
 
@@ -557,6 +665,8 @@ function handle(req, res, body) {
       clientLog.length = 0;
       clientLogTimes.length = 0;
       saves = 0;
+      localTables.clear();
+      localJobs.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
     }
@@ -590,7 +700,8 @@ function handle(req, res, body) {
   }
   if (p === '/api' || p.startsWith('/api/')) {
     let json = null;
-    if (body.length > 0) {
+    // A local-database upload is the raw file, not JSON (server/Http.ps1 leaves it in the socket).
+    if (body.length > 0 && p !== '/api/local/import') {
       const text = body.toString('utf8');
       if (!text.trimStart().startsWith('{')) return sendError(res, 400, 'bad-json', 'Request body must be a JSON object.');
       try {

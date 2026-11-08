@@ -8,6 +8,8 @@
 #   * Headers must arrive within 5 s (32 KB cap); bodies are capped at 8 MB (2 MB for a document PUT,
 #     checked before the body is read or parsed) and must arrive within 30 s for /api/query, 10 s for
 #     every other route (Get-SemBodyLimit). Transfer-Encoding and duplicate Content-Length are rejected.
+#     POST /api/local/import is the exception: its body (a file, up to settings localImportMaxGB) is not read
+#     here at all; the import job streams it to disk after the gate has passed (LocalDb.ps1).
 #   * Every request: loopback caller, Host 127.0.0.1:<port> or localhost:<port>, Origin (when
 #     present) the same origin; otherwise 403.
 #   * /api/*: header X-Semaphore-Session must equal the session token (constant-time compare),
@@ -49,6 +51,7 @@ if ($null -eq $script:Sem) {
         Workers = $null; Pool = $null; WorkerContext = $null
         OnOpenBrowser = $null; OpenRequested = $false; LaunchCodes = @{}
         Presence = @{ AutoStop = $false; TimeoutSec = 90; GraceSec = 5; FirstSec = 120; Tabs = @{}; BusyEnd = [datetime]::MinValue; EverSeen = $false }
+        LocalShares = @(); LocalMaxBytes = [long]21474836480; LocalJobs = $null; LocalPool = $null
     }
 }
 
@@ -259,6 +262,12 @@ function Read-SemHttpRequest {
     $len = $req.ContentLength
     $limits = Get-SemBodyLimit -Path $req.Path
     if ($len -gt $limits.MaxBytes) { Send-SemError 413 'too-large' $limits.TooLarge; return $null }
+    if ($limits.Streamed) {
+        # The body stays in the socket: the import job reads it to a file (LocalDb.ps1), never into memory.
+        $req.BodyStreamed = $true
+        $req.Client = $Client
+        return $req
+    }
     $body = New-Object byte[] 0
     if ($len -gt 0) {
         $body = New-Object byte[] $len
@@ -283,9 +292,14 @@ function Get-SemBodyLimit {
       The body cap and the time the whole body may take, by route, decided before a byte of it is read:
         /api/query            8 MB, 30 s   (a planned query with up to 2000 parameters)
         a document PUT        2 MB, 10 s   (the document cap, applied before the JSON is parsed)
+        /api/local/import     settings localImportMaxGB (20 GB), streamed to disk by the import job, never read here
         everything else       8 MB, 10 s   (loopback: a slow body is a stuck client, not a slow link)
     #>
     param([string]$Path)
+    if ($Path -eq '/api/local/import') {
+        $cap = [long]$script:Sem.LocalMaxBytes; if ($cap -le 0) { $cap = [long]21474836480 }
+        return @{ MaxBytes = $cap; DeadlineMs = 0; Streamed = $true; TooLarge = ('The file is larger than {0} GB, the local import limit (settings localImportMaxGB).' -f [Math]::Round($cap / 1GB, 1)) }
+    }
     if ($Path -eq '/api/query') { return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 30000; TooLarge = 'Request body is larger than 8 MB.' } }
     if ($Path -cmatch $script:SemDocRouteRx) { return @{ MaxBytes = 2097152; DeadlineMs = 10000; TooLarge = 'A document may be at most 2 MB.' } }
     return @{ MaxBytes = $script:SemMaxBody; DeadlineMs = 10000; TooLarge = 'Request body is larger than 8 MB.' }
@@ -306,19 +320,22 @@ function ConvertFrom-SemRequestHead {
         $name = $Matches[1]; $value = $Matches[2].Trim()
         if ($name -eq 'Content-Length') {
             $clCount++
-            if ($value -notmatch '^\d{1,10}$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Bad Content-Length.' } }
+            if ($value -notmatch '^\d{1,13}$') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Bad Content-Length.' } }
             $contentLength = [long]$value
         }
         if ($name -eq 'Transfer-Encoding') { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Transfer-Encoding is not supported.' } }
         if ($headers.ContainsKey($name)) { $headers[$name] = $headers[$name] + ', ' + $value } else { $headers[$name] = $value }
     }
     if ($clCount -gt 1) { return @{ ErrorStatus = 400; ErrorCode = 'bad-request'; ErrorMessage = 'Duplicate Content-Length.' } }
-    if ($contentLength -gt $script:SemMaxBody) { return @{ ErrorStatus = 413; ErrorCode = 'too-large'; ErrorMessage = 'Request body is larger than 8 MB.' } }
     $path = $target; $query = ''
     $qi = $target.IndexOf('?')
     if ($qi -ge 0) { $path = $target.Substring(0, $qi); $query = $target.Substring($qi + 1) }
+    # Every route but the streamed local import is capped at 8 MB here; Read-SemHttpRequest applies the route's own cap.
+    $cap = [long]$script:SemMaxBody
+    if ($path -eq '/api/local/import') { $cap = [long](Get-SemBodyLimit -Path $path).MaxBytes }
+    if ($contentLength -gt $cap) { $msg = 'Request body is larger than 8 MB.'; if ($path -eq '/api/local/import') { $msg = (Get-SemBodyLimit -Path $path).TooLarge }; return @{ ErrorStatus = 413; ErrorCode = 'too-large'; ErrorMessage = $msg } }
     if ($path -cnotmatch '^/[A-Za-z0-9._~/@+-]*\z') { return @{ ErrorStatus = 400; ErrorCode = 'bad-path'; ErrorMessage = 'Bad request path.' } }
-    return @{ Method = $method; Path = $path; Query = $query; Headers = $headers; ContentLength = [int]$contentLength; Body = (New-Object byte[] 0); Json = $null; RemoteAddress = $RemoteAddress; Client = $null }
+    return @{ Method = $method; Path = $path; Query = $query; Headers = $headers; ContentLength = [long]$contentLength; Body = (New-Object byte[] 0); Json = $null; RemoteAddress = $RemoteAddress; Client = $null }
 }
 
 # ---------------------------------------------------------------------------
@@ -473,6 +490,7 @@ function Get-SemActiveWorkerCount {
 function Test-SemBusy {
     if ($script:Sem.SyncBusy) { return $true }
     if ((Get-SemActiveWorkerCount) -gt 0) { return $true }
+    if ($null -ne $script:Sem.LocalJobs -and (Get-SemLocalRunningJobCount) -gt 0) { return $true }   # an import (LocalDb.ps1)
     return $false
 }
 
