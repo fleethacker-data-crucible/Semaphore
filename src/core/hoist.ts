@@ -1,11 +1,17 @@
 // A hoist is a dashboard; a flag is one block on it. In naval signalling a hoist is the set of
 // flags flown together to send one message, and each flag carries one part of it.
 
-import type { CatalogIndex } from './catalog.ts';
-import { compact, isValidLayout } from './layout.ts';
+import type { CatalogIndex, FieldType } from './catalog.ts';
+import { type FlagStyle, type HoistDesign, parseDesign, parseFlagStyle } from './design.ts';
+import { compact, isValidLayout, snapAll } from './layout.ts';
+import type { RichKind } from './kinds.ts';
+import { parsePivotSpec, type PivotSpec } from './pivot-spec.ts';
+import { parseModelSpec } from './predict/spec.ts';
+import type { ModelSpec } from './predict/types.ts';
+import { type FlagWidget, parseWidget } from './widget.ts';
 
-export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text';
-export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
+export type FlagKind = 'kpi' | 'bar' | 'line' | 'area' | 'pie' | 'table' | 'filter' | 'text' | 'model' | 'pivot' | 'custom' | RichKind;
+export const FLAG_KINDS: readonly FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text', 'radar', 'scatter', 'heatmap', 'calendar', 'waterfall', 'pareto', 'sankey', 'sunburst', 'stream', 'model', 'pivot', 'custom'];
 
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 export const TIME_GRAINS: readonly TimeGrain[] = ['day', 'week', 'month', 'quarter', 'year'];
@@ -68,6 +74,10 @@ export interface Behavior {
   thresholds: Threshold[];
 }
 
+/** How flags move on the grid (layout.ts): on whole cells with gaps kept, anywhere, or tidied up. */
+export type LayoutMode = 'snap' | 'free' | 'auto';
+export const LAYOUT_MODES: readonly LayoutMode[] = ['snap', 'free', 'auto'];
+
 export interface Layout {
   x: number;
   y: number;
@@ -94,6 +104,14 @@ export interface Flag {
   text?: string;
   /** false: the analyst marked this flag "do not learn", so the playbook never takes it. */
   learn?: boolean;
+  /** How this flag is drawn, over the page's design. Never changes what it means. */
+  style?: FlagStyle;
+  /** For `model` flags: which predictive model runs on the rows, and its settings (src/core/predict). */
+  model?: ModelSpec;
+  /** For `pivot` flags: percentages, heat shading and the default order (src/core/pivot.ts). */
+  pivot?: PivotSpec;
+  /** For `custom` flags: the analyst's own chart code, run in a sandboxed frame (src/core/widget.ts). */
+  widget?: FlagWidget;
 }
 
 export interface Hoist {
@@ -102,12 +120,15 @@ export interface Hoist {
   title: string;
   /** The brief for the whole dashboard. Flag briefs refine it and win where they disagree. */
   brief: string;
-  grid: { cols: number };
+  /** `mode` is left out for snap, the default. */
+  grid: { cols: number; mode?: LayoutMode };
   /** Fixed filters every flag inherits, e.g. "fiscal year 2026". */
   filters: Filter[];
   flags: Flag[];
   /** An experiment page: the analyst is trying things out, so the playbook and the team style never learn from it. */
   experiment?: boolean;
+  /** How the page looks: palette, cards, backdrop, font and chart defaults. */
+  design?: HoistDesign;
   updated: string;
 }
 
@@ -201,12 +222,13 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     return { hoist: null, warnings: ['Not a Semaphore hoist (version 1).'] };
   }
   const cols = isObject(raw.grid) && isInt(raw.grid.cols) && raw.grid.cols >= 4 && raw.grid.cols <= 24 ? raw.grid.cols : GRID_COLS;
+  const mode: LayoutMode = isObject(raw.grid) && LAYOUT_MODES.includes(raw.grid.mode as LayoutMode) ? (raw.grid.mode as LayoutMode) : 'snap';
   const flags: Flag[] = [];
   const ids = new Set<string>();
   const rawFlags = Array.isArray(raw.flags) ? raw.flags : [];
   if (rawFlags.length > LIMITS.flags) warnings.push(`Only the first ${LIMITS.flags} of ${rawFlags.length} flags were loaded.`);
   rawFlags.slice(0, LIMITS.flags).forEach((rf, i) => {
-    const flag = parseFlag(rf, cols, index, warnings, `Flag ${i + 1}`);
+    const flag = parseFlag(rf, cols, index, warnings, `Flag ${i + 1}`, mode);
     if (!flag) return;
     if (ids.has(flag.id)) {
       warnings.push(`Flag ${i + 1}: duplicate id "${flag.id}", dropped.`);
@@ -216,30 +238,33 @@ export function parseHoist(raw: unknown, index?: CatalogIndex): ParseResult {
     flags.push(flag);
   });
   const filters = parseFilters(raw.filters, index, warnings, 'Hoist filters');
-  if (!isValidLayout(flags, cols)) {
-    const fixed = new Map(compact(flags).map((p) => [p.id, p.layout]));
+  if (!isValidLayout(flags, cols, mode)) {
+    // Snap keeps the gaps the analyst left; only the overlapping flags move down. Auto tidies as it always has.
+    const fixed = new Map((mode === 'auto' ? compact(flags) : snapAll(flags, cols)).map((p) => [p.id, p.layout]));
     for (const f of flags) f.layout = fixed.get(f.id) ?? f.layout;
     warnings.push('Some flags overlapped, so they were moved down to fit.');
   }
   const brief = str(raw.brief);
   if (brief.length > LIMITS.briefChars) warnings.push(`The hoist brief was cut to ${LIMITS.briefChars} characters.`);
+  const design = parseDesign(raw.design);
   return {
     hoist: {
       version: 1,
       id: str(raw.id).slice(0, 64) || 'hoist',
       title: str(raw.title).slice(0, LIMITS.titleChars) || 'Untitled hoist',
       brief: brief.slice(0, LIMITS.briefChars),
-      grid: { cols },
+      grid: mode === 'snap' ? { cols } : { cols, mode },
       filters,
       flags,
       ...(raw.experiment === true ? { experiment: true } : {}),
+      ...(design ? { design } : {}),
       updated: str(raw.updated).slice(0, 40) || new Date(0).toISOString(),
     },
     warnings: capWarnings(warnings),
   };
 }
 
-function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, warnings: string[], where: string): Flag | null {
+function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, warnings: string[], where: string, mode: LayoutMode = 'snap'): Flag | null {
   if (!isObject(raw)) {
     warnings.push(`${where}: not an object, dropped.`);
     return null;
@@ -255,7 +280,7 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
     warnings.push(`${where}: unknown kind "${String(raw.kind)}", dropped.`);
     return null;
   }
-  const layout = parseLayout(raw.layout, cols);
+  const layout = parseLayout(raw.layout, cols, mode);
   if (!layout) {
     warnings.push(`${where}: invalid layout, dropped.`);
     return null;
@@ -270,7 +295,8 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
     binding = parseBinding(raw.binding, index, warnings, where);
     if (!binding) status = 'error';
     else if (warnings.length > before && status === 'ready') status = 'drafted';
-  } else if (status === 'ready' && kind !== 'text') {
+  } else if (status === 'ready' && kind !== 'text' && !(kind === 'model' && isObject(raw.model) && Array.isArray(raw.model.inputs) && raw.model.inputs.length > 0)) {
+    // A model on hand-entered inputs (Monte Carlo, sensitivity) needs no rows.
     status = 'empty';
   }
   const confidence = typeof raw.confidence === 'number' && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : undefined;
@@ -288,16 +314,34 @@ function parseFlag(raw: unknown, cols: number, index: CatalogIndex | undefined, 
   if (confidence !== undefined) flag.confidence = confidence;
   if (kind === 'text') flag.text = str(raw.text).slice(0, 20000);
   if (raw.learn === false) flag.learn = false;
+  const style = parseFlagStyle(raw.style);
+  if (style) flag.style = style;
+  if (kind === 'model') {
+    const model = parseModelSpec(raw.model, warnings, where);
+    if (model) flag.model = model;
+  }
+  if (kind === 'pivot') {
+    const pivot = parsePivotSpec(raw.pivot);
+    if (pivot) flag.pivot = pivot;
+  }
+  if (kind === 'custom') {
+    const widget = parseWidget(raw.widget, warnings, where);
+    if (widget) flag.widget = widget;
+  }
   return flag;
 }
 
-function parseLayout(raw: unknown, cols: number): Layout | null {
+function parseLayout(raw: unknown, cols: number, mode: LayoutMode = 'snap'): Layout | null {
   if (!isObject(raw)) return null;
   const { x, y, w, h } = raw;
-  if (!isInt(x) || !isInt(y) || !isInt(w) || !isInt(h)) return null;
-  if (x < 0 || y < 0 || w < 1 || h < 1 || h > 24 || y > 1000) return null;
-  const width = Math.min(w, cols);
-  return { x: Math.min(x, cols - width), y, w: width, h };
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  // Free layouts sit on eighth-cell steps; the others on whole cells.
+  if (mode === 'free' ? ![x, y, w, h].every(num) : !isInt(x) || !isInt(y) || !isInt(w) || !isInt(h)) return null;
+  const step = (v: number) => (mode === 'free' ? Math.round(v * 8) / 8 : v);
+  const [sx, sy, sw, sh] = [step(x as number), step(y as number), step(w as number), step(h as number)];
+  if (sx < 0 || sy < 0 || sw < 1 || sh < 1 || sh > 24 || sy > 1000) return null;
+  const width = Math.min(sw, cols);
+  return { x: Math.min(sx, cols - width), y: sy, w: width, h: sh };
 }
 
 export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warnings: string[], where: string): Binding | null {
@@ -341,7 +385,16 @@ export function parseBinding(raw: unknown, index: CatalogIndex | undefined, warn
     if (metrics.includes(by) || dimensions.some((d) => dimensionKey(d) === by)) binding.sort = { by, dir: raw.sort.dir };
     else warnings.push(`${where}: sort on "${by}", which the flag does not show, removed.`);
   }
-  if (isInt(raw.limit) && raw.limit > 0) binding.limit = Math.min(raw.limit, 10000);
+  if (isInt(raw.limit) && raw.limit > 0) {
+    binding.limit = Math.min(raw.limit, 10000);
+    // A "top N" with no order would cut arbitrary rows (SQL TOP/LIMIT with no ORDER BY), so it
+    // ranks by the first measure, highest first, as the team style does (style.ts).
+    if (!binding.sort && metrics[0]) {
+      // Not a warning: a warning would mark a reviewed flag as drafted again on load. The order shows in
+      // the flag's plain-English line.
+      binding.sort = { by: metrics[0], dir: 'desc' };
+    }
+  }
   if (COMPARISONS.includes(raw.compare as Comparison)) binding.compare = raw.compare as Comparison;
   else if (raw.compare !== undefined) warnings.push(`${where}: unknown comparison "${String(raw.compare).slice(0, 40)}" removed.`);
   if (raw.share === true) binding.share = true;
@@ -373,6 +426,17 @@ export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warn
       warnings.push(`${where}: filter on "${f.field}" lists more than ${LIMITS.filterValues} values, removed.`);
       continue;
     }
+    // With a catalog, values must read as the field's type: a date as YYYY-MM-DD (longer text
+    // whose first ten characters are a date is read as that day), true/false for a yes-or-no
+    // field. Otherwise the engine would never match and SQL would fail later, with no warning.
+    // An empty text means "blank" (a drill into the blank bar) and is allowed on any type.
+    if (field && op !== 'last') {
+      const typed = values.every((v) => v === '' || readsAs(v, field.type));
+      if (!typed) {
+        warnings.push(`${where}: filter on "${f.field}" has a value that is not ${field.type === 'date' ? 'a date (YYYY-MM-DD)' : field.type === 'boolean' ? 'true or false' : 'a number'}, removed.`);
+        continue;
+      }
+    }
     const filter: Filter = { field: f.field, op, values };
     if (op === 'last') {
       const unit = TIME_GRAINS.includes(f.unit as TimeGrain) ? (f.unit as TimeGrain) : null;
@@ -386,6 +450,20 @@ export function parseFilters(raw: unknown, index: CatalogIndex | undefined, warn
     out.push(filter);
   }
   return out;
+}
+
+/** Whether a filter value can be read as a value of the field's type. Text takes anything. */
+function readsAs(v: string | number, type: FieldType): boolean {
+  switch (type) {
+    case 'date':
+      return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) && !Number.isNaN(Date.parse(`${v.slice(0, 10)}T00:00:00Z`));
+    case 'boolean':
+      return v === 'true' || v === 'false' || v === 1 || v === 0;
+    case 'number':
+      return typeof v === 'number' || (v.trim() !== '' && Number.isFinite(Number(v)));
+    case 'string':
+      return true;
+  }
 }
 
 export function parseBehavior(raw: unknown, index: CatalogIndex | undefined, warnings: string[], where: string): Behavior {

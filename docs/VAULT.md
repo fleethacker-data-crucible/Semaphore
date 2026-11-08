@@ -34,6 +34,7 @@ A source names one shared **variable** per role, never a secret and never an ite
 | `odbc`, `oledb` (and `synapse`, which runs as ODBC) | `password`; `user` (optional) | `PWD=` / `Password=` and `UID=` / `User ID=` in the connection string, in memory for one request. A `UID` already in the connection string wins. Synapse `SqlPassword` and `ActiveDirectoryPassword` need both. |
 | `athena`, `redshift-data` | `accessKeyId`, `secretAccessKey`; `sessionToken` (optional) | the AWS session that signs the request |
 | `foundry` | `token` | the bearer token |
+| `aws-rds-iam`: an `odbc` source with `"kind": "aws-rds"` and `"auth": "iam"` | `accessKeyId`, `secretAccessKey`; `sessionToken`, `user` (optional) | the AWS session that signs a 15-minute RDS IAM auth token, used as the password for one sign-in; `user` is the database user when `"user"` is not in the entry ([CONNECTORS.md](CONNECTORS.md#amazon-rds-and-aurora)) |
 
 Names follow Lazarette's rule for shares: letters, digits and `_`, not starting with a digit. Each role needs its own name. The block may hold only the roles of its provider; anything else (an unknown role, a value that is not a variable name, the retired `"item"`, `"fields"` or `"vaultItem"`) makes Semaphore skip the source and log why. `PWD=` in a connection string is still refused.
 
@@ -47,6 +48,8 @@ The `vaultItem` on a source in a **browser catalog** (`examples/fleet-maintenanc
 |---|---|---|
 | Each ODBC or OLE DB data source | `vault.password` and `vault.user` of that source in `sources.json` | password and user, in memory for one request |
 | Each Athena or Redshift source | `vault.accessKeyId`, `vault.secretAccessKey`, `vault.sessionToken` | the AWS session that signs the request |
+| Each RDS / Aurora source | password sign-in: `vault.password`, `vault.user`; IAM sign-in: the AWS roles above (and `vault.user`) | the password, or an IAM auth token signed in memory for one connection |
+| S3 browsing and import, "Find RDS databases" | `aws.vault` in `config\settings.json` (the AWS roles) | the AWS session that signs ListObjectsV2, GetObject and the RDS Describe calls ([CONNECTORS.md](CONNECTORS.md#amazon-s3-browse-and-import)) |
 | Each Foundry source | `vault.token` | the bearer token |
 | Fairlead client key (AI drafting) | **not a Lazarette share**: Windows Credential Manager target `Fairlead/Semaphore`, written by Fairlead (Fairlead > Clients); `Set-SemaphoreAiKey.bat` is a manual fallback, and `SEMAPHORE_AI_KEY` is for CI | sent only to Fairlead on 127.0.0.1:8776, after it answers as Fairlead |
 
@@ -54,11 +57,15 @@ The `vaultItem` on a source in a **browser catalog** (`examples/fleet-maintenanc
 
 ## How it works
 
-- For each `/api/query` or `/api/profile` on a source with a `vault` block, the main loop calls `Resolve-SemVaultSecrets` (the one seam). It sends `POST /peer/tools/v1/secrets` to `127.0.0.1:8765` (or `LAZARETTE_PORT`) with `X-Fleet-Peer: lazarette-tool/1`, the source's names and the purpose `Semaphore query on source <id>`, and an HMAC-SHA256 proof over a fresh nonce keyed by the pairing secret, which never crosses the socket. Lazarette's answer is sealed (AES-256-CBC + HMAC-SHA256 under a key from the pairing secret and the nonce); the client checks the seal before reading it. Lazarette logs every read under Semaphore's name and the purpose.
-- The values go to the worker runspace with that one request. They exist in memory for that request, are never logged, returned or written, and are scrubbed from driver, AWS and Lazarette error text (`Get-SemVaultSafeText`).
+- For each `/api/query` or `/api/profile` on a source with a `vault` block, the **worker runspace that serves the request** calls `Resolve-SemVaultSecrets` (the one seam) for the one source the request names; the main loop only hands the connection over, so a slow or locked Lazarette never holds heartbeats, static files or other flags' queries. It sends `POST /peer/tools/v1/secrets` to `127.0.0.1:8765` (or `LAZARETTE_PORT`) with `X-Fleet-Peer: lazarette-tool/1`, the source's names and the purpose `Semaphore query on source <id>`, and an HMAC-SHA256 proof over a fresh nonce keyed by the pairing secret, which never crosses the socket. Lazarette's answer is sealed (AES-256-CBC + HMAC-SHA256 under a key from the pairing secret and the nonce); the client checks the seal before reading it. Lazarette logs every read under Semaphore's name and the purpose.
+- The values exist in memory in that worker for that request only: when the request ends, `Clear-SemVaultRequest` overwrites them before the runspace goes back to the pool. They are never logged, returned or written, and are scrubbed from driver, AWS and Lazarette error text (`Get-SemVaultSafeText`).
 - The connection string is built in memory: ODBC `UID={..};PWD={..}` (`}` doubled), OLE DB `User ID="..";Password=".."` (`"` doubled). Values with control characters are refused.
-- `GET /api/vault` (and `vault status`) reports `paired`, `running`, `locked`, which source reads which share, and which names Lazarette has (`shared`) or not (`notShared`, with the state). It asks Lazarette once for the names and drops the values at once. It never returns a value.
+- `GET /api/vault` (and `vault status`) reports `paired`, `running`, `locked`, which source reads which share, and which names Lazarette has (`shared`) or not (`notShared`, with the state). The tool protocol has no state-only call, so each check is a real read: Semaphore asks once for the names, drops the values at once, and keeps the states for 60 s (`cachedAt` says when it last asked; pairing or unpairing forgets them). It never returns a value.
 - Without a `vault` block nothing changes: DSN or integrated authentication for databases, the environment for AWS and Foundry.
+
+## Read-only is the database's job
+
+Semaphore's SQL guard (`Test-SemSqlGuard`) is defence in depth, not the control: it allows one `SELECT`, refuses `;`, `--`, `/*` and `INTO`, and refuses the statement keywords `EXEC`, `EXECUTE`, `DROP`, `ALTER`, `CREATE`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `GRANT`, `REVOKE`, `DENY`, `BACKUP`, `RESTORE`, `DBCC` and `GO` wherever they stand outside a quoted string or a quoted name (T-SQL needs no `;` between statements, so `SELECT 1 EXEC sp_who` is two statements). A guard on text cannot know every dialect's way of writing. **On SQL Server, Azure SQL and Synapse the login Lazarette shares with Semaphore must be read-only** (`db_datareader` only, no `EXECUTE`), and the same for any other database: `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` on PostgreSQL and `Mode=Read` / `ReadOnly=1` on Access are set by Semaphore, `ApplicationIntent=ReadOnly` on Synapse only routes to a readable secondary. The guard stops mistakes; the login stops everything else.
 
 ## Errors
 
@@ -68,7 +75,7 @@ Each answer carries a sentence the analyst can act on; the flag shows it.
 |---|---|---|
 | Lazarette not running | 501 `vault-unavailable` | Lazarette is not running on this computer. Start Lazarette, unlock it, and try again. |
 | Lazarette locked | 423 `vault-locked` | Lazarette is locked. Unlock Lazarette in its window and try again. |
-| Not paired (no pairing file here, or Lazarette removed it) | 424 `vault-not-paired` | Pair Semaphore in Lazarette (Settings > Tools), then run `Semaphore-CLI.bat vault pair`. |
+| Not paired (no pairing file here, or Lazarette removed it) | 424 `vault-not-paired` | Pair a tool named Semaphore in Lazarette (Settings > Tools), then paste the code under Semaphore's Settings > Lazarette or run `Semaphore-CLI.bat vault pair`. (The status line in `GET /api/vault` says both; the query error names the CLI.) |
 | A different program used the pairing | 424 `vault-other-program` | Pair Semaphore again from the program that should hold it. |
 | A required name not shared, or empty | 424 `vault-not-shared` | Source 'maint' needs SMDATS_PASSWORD (it is not shared with Semaphore). Share the item under that name. |
 | Too many failed requests, clock skew | 424 `vault-refused` | Lazarette's own sentence. |
@@ -89,3 +96,7 @@ Not tested, for Anthony to check on the target machine:
 3. The program-path pin: Semaphore's server and `Semaphore-CLI.bat` both run as `powershell.exe`, so they share the pin. A pairing first used from another program is refused until paired again.
 4. A real AWS session shared from Lazarette against real Athena. Lazarette does not broker short-lived AWS sessions by itself: the item holds whatever session IT put there, and renewing it is a vault edit.
 5. A Nautilus twin run with a mock Lazarette (Semaphore #63 acceptance).
+
+## TalkForge token for spoken answers
+
+The assistant can read answers aloud through TalkForge (`talkforge serve`). Semaphore needs the token TalkForge was started with. Share it from Lazarette as `TALKFORGE_TOKEN` (Settings > Tools > Semaphore), or set `SEMAPHORE_VOICE_TOKEN` in the environment or `config\semaphore.env`. The server reads it only when it speaks or starts TalkForge, sends it only to the configured loopback address (`SEMAPHORE_VOICE_URL`, default `http://127.0.0.1:25009`), and never shows or logs it. When Semaphore starts TalkForge itself, the token goes into the child's environment only, never on its command line (docs/VOICE.md). Any random text of 16 or more characters works: TalkForge is started with it.

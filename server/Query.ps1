@@ -3,6 +3,7 @@
 # Semaphore data connectors: /api/query and /api/profile.
 #
 # Sources are declared in <home>\sources.json:
+# plus the built-in local database (id 'local', LocalDb.ps1), which needs no entry:
 #   [{ "id": "maint", "label": "Maintenance warehouse", "kind": "postgres",
 #      "provider": "odbc", "connection": "DSN=MaintWarehouse" }]
 # Providers: odbc (System.Data.Odbc) and oledb (System.Data.OleDb, e.g. Access through the ACE
@@ -32,19 +33,31 @@ function Test-SemConnectionString {
     return $null
 }
 
-function Get-SemSources {
-    # Valid entries of <home>\sources.json (invalid ones are skipped and logged). Never returned to the browser whole.
+function Get-SemLocalSource {
+    # The built-in local database (LocalDb.ps1): always a source, with no sources.json entry. The connection
+    # string names the file and opens it read-only; like every connection string it never reaches the page.
     param([string]$HomeDir)
-    $f = Join-Path $HomeDir 'sources.json'
-    if (-not [IO.File]::Exists($f)) { return @() }
-    try { $j = [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
-    catch { Write-SemLog 'WARN' 'sources.json is not valid JSON; no sources loaded'; return @() }
+    $db = [IO.Path]::Combine($HomeDir, 'local', 'warehouse.sqlite')
+    return [pscustomobject]@{ id = 'local'; label = 'Local database'; kind = 'local'; provider = 'local'; connection = ('Data Source=' + $db + ';Mode=ReadOnly'); raw = $null; home = $HomeDir }
+}
+
+function Get-SemSources {
+    # Valid entries of <home>\sources.json (invalid ones are skipped and logged), then the built-in local
+    # database (id 'local'). Never returned to the browser whole.
+    param([string]$HomeDir)
     $out = New-Object System.Collections.Generic.List[object]
-    $seen = @{}
+    $f = Join-Path $HomeDir 'sources.json'
+    $j = @()
+    if ([IO.File]::Exists($f)) {
+        try { $j = [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+        catch { Write-SemLog 'WARN' 'sources.json is not valid JSON; no sources loaded'; $j = @() }
+    }
+    $seen = @{ 'local' = $true }
     foreach ($s in @($j)) {
         if ($s -isnot [Management.Automation.PSCustomObject]) { continue }
         $id = [string]$s.id
         if ($id -cnotmatch '\A[A-Za-z0-9_-]{1,64}\z') { Write-SemLog 'WARN' 'sources.json: skipping a source with an invalid id'; continue }
+        if ($id -eq 'local') { Write-SemLog 'WARN' "sources.json: the id 'local' is the built-in local database; that entry is skipped"; continue }
         if ($seen.ContainsKey($id)) { Write-SemLog 'WARN' "sources.json: duplicate source id '$id' skipped"; continue }
         $provider = ([string]$s.provider).ToLowerInvariant()
         $raw = $provider
@@ -61,11 +74,32 @@ function Get-SemSources {
         $label = [string]$s.label; if (-not $label) { $label = $id }
         $kind = ([string]$s.kind).ToLowerInvariant(); if (-not $kind) { $kind = 'other' }
         if ($raw -eq 'synapse' -and $kind -eq 'other') { $kind = 'azure-synapse' }
+        $engine = ''
+        if ($kind -eq 'aws-rds') {
+            # Amazon RDS / Aurora (Aws.ps1): an ODBC source whose connection string Semaphore builds at connect time.
+            if ($provider -ne 'odbc') { Write-SemLog 'WARN' "sources.json: source '$id' skipped: an aws-rds source uses provider odbc"; continue }
+            try { $engine = (Get-SemRdsSettings $s).Engine } catch { Write-SemLog 'WARN' ("sources.json: source '$id' skipped: " + $_.Exception.Message); continue }
+        }
         $seen[$id] = $true
         # raw keeps the entry for providers with their own settings (athena); it is never sent to the browser.
-        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; provider = $provider; connection = $connection; raw = $s })
+        $out.Add([pscustomobject]@{ id = $id; label = $label; kind = $kind; engine = $engine; provider = $provider; connection = $connection; raw = $s })
     }
+    if ($HomeDir) { $out.Add((Get-SemLocalSource -HomeDir $HomeDir)) }
     return $out.ToArray()
+}
+
+function Test-SemSourceConnection {
+    # $null when the source's connection setting is acceptable, else why it is refused. aws-rds builds its own (Aws.ps1).
+    param($Source)
+    if ($Source.kind -eq 'aws-rds') { return $null }
+    return (Test-SemConnectionString -Connection $Source.connection)
+}
+
+function Get-SemSourceFamily {
+    # The engine family that decides session statements and profile SQL: an aws-rds source's engine family, else its kind.
+    param($Source)
+    if ($Source.kind -eq 'aws-rds') { $f = Get-SemRdsFamily ([string]$Source.engine); if ($f) { return $f } }
+    return [string]$Source.kind
 }
 
 function Find-SemSource {
@@ -77,6 +111,29 @@ function Find-SemSource {
 # ---------------------------------------------------------------------------
 # Guard, parameters, identifiers
 # ---------------------------------------------------------------------------
+# Statement keywords that never belong in a read. T-SQL (SQL Server, Synapse) needs no ';' between statements, so
+# "SELECT 1 EXEC sp_who" is two statements: these are refused wherever they stand outside a quoted string or a
+# quoted identifier. The database's read-only login is the real control (docs/VAULT.md); this is defence in depth.
+$script:SemSqlRefusedWordsRx = '(?i)\b(EXEC|EXECUTE|DROP|ALTER|CREATE|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|GRANT|REVOKE|DENY|BACKUP|RESTORE|DBCC|GO|INTO)\b'
+
+function Remove-SemSqlQuoted {
+    # The SQL with the inside of every 'string', "name", [name] and `name` blanked (doubled closers stay inside),
+    # so a keyword check sees only the statement itself.
+    param([string]$Sql)
+    $sb = New-Object Text.StringBuilder $Sql.Length
+    $close = [char]0
+    foreach ($ch in $Sql.ToCharArray()) {
+        if ($close -ne [char]0) {
+            if ($ch -eq $close) { $close = [char]0; [void]$sb.Append($ch) } else { [void]$sb.Append(' ') }
+            continue
+        }
+        if ($ch -eq "'" -or $ch -eq '"' -or $ch -eq '`') { $close = $ch }
+        elseif ($ch -eq '[') { $close = ']' }
+        [void]$sb.Append($ch)
+    }
+    return $sb.ToString()
+}
+
 function Test-SemSqlGuard {
     # $null when the SQL may run, else the reason it is refused.
     param([string]$Sql)
@@ -88,8 +145,15 @@ function Test-SemSqlGuard {
     if ($t.Contains(';')) { return 'The SQL may not contain ";".' }
     if ($t.Contains('--')) { return 'The SQL may not contain "--".' }
     if ($t.Contains('/*')) { return 'The SQL may not contain "/*".' }
-    # SELECT ... INTO creates a table in SQL Server and Access; the SQL desk takes typed SQL, so refuse it.
-    if ($t -match '(?i)\bINTO\b') { return 'The SQL may not contain INTO: Semaphore only reads.' }
+    # SELECT ... INTO creates a table in SQL Server and Access, and T-SQL runs "SELECT 1 DROP TABLE t" as two
+    # statements without a ';': refuse every statement keyword that stands outside quotes.
+    $bare = Remove-SemSqlQuoted $t
+    $m = [regex]::Match($bare, $script:SemSqlRefusedWordsRx)
+    if ($m.Success) {
+        $word = $m.Groups[1].Value.ToUpperInvariant()
+        if ($word -eq 'INTO') { return 'The SQL may not contain INTO: Semaphore only reads.' }
+        return ('The SQL may not contain ' + $word + ': Semaphore only reads, one SELECT at a time.')
+    }
     return $null
 }
 
@@ -439,6 +503,7 @@ function Get-SemEffectiveConnectionString {
     # The string handed to the driver: sources.json's connection (never a password), read-only flags, and the
     # user and password Lazarette shares for the source. Lives in memory for the call; never logged or returned.
     param([Parameter(Mandatory = $true)]$Source)
+    if ($Source.kind -eq 'aws-rds') { return (Get-SemRdsConnectionString -Source $Source) }
     $cs = [string]$Source.connection
     if ($Source.provider -eq 'odbc') {
         if ($Source.kind -eq 'access' -and $cs -notmatch '(?i)(^|;)\s*ReadOnly\s*=') { $cs = $cs.TrimEnd(';') + ';ReadOnly=1' }
@@ -457,6 +522,12 @@ function Get-SemEffectiveConnectionString {
 function New-SemConnection {
     # An open, read-only-where-possible connection. Throws 'provider-unavailable:' when the provider type is missing.
     param([Parameter(Mandatory = $true)]$Source, [int]$TimeoutSec = 30)
+    if ($Source.provider -eq 'local') {
+        # The local database (LocalDb.ps1), read-only: SQLITE_OPEN_READONLY, query_only, no ATTACH, reads-only authorizer.
+        if (-not (Get-Command New-SemLocalQueryConnection -ErrorAction SilentlyContinue)) { throw 'provider-unavailable: the local database (server\LocalDb.ps1) is not loaded.' }
+        try { return (New-SemLocalQueryConnection -Source $Source) }
+        catch { if ($_.Exception.Message -match '(?i)unable to load dll|winsqlite3') { throw 'provider-unavailable: the SQLite engine that ships with Windows (winsqlite3.dll) is not on this computer.' }; throw }
+    }
     $cs = Get-SemEffectiveConnectionString -Source $Source
     $conn = $null
     if ($Source.provider -eq 'odbc') {
@@ -470,11 +541,14 @@ function New-SemConnection {
         $conn = New-Object System.Data.OleDb.OleDbConnection $cs
     }
     $conn.Open()
-    if ($Source.kind -eq 'postgres') {
-        # Read-only session, and UTC so date_trunc on timestamptz matches the planner's UTC buckets.
-        foreach ($stmt in @('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', "SET TIME ZONE 'UTC'")) {
-            try { $c = $conn.CreateCommand(); $c.CommandText = $stmt; $c.CommandTimeout = 10; [void]$c.ExecuteNonQuery(); $c.Dispose() } catch { }
-        }
+    # Read-only session where the engine has one, and UTC so date_trunc on timestamptz matches the planner's UTC buckets
+    # (Get-SemRdsSessionStatements in Aws.ps1: PostgreSQL and MySQL / MariaDB, including RDS and Aurora).
+    $family = Get-SemSourceFamily $Source
+    $statements = @()
+    if ($family -eq 'postgres') { $statements = @('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY', "SET TIME ZONE 'UTC'") }
+    elseif ($Source.kind -eq 'aws-rds') { $statements = @(Get-SemRdsSessionStatements $family) }
+    foreach ($stmt in $statements) {
+        try { $c = $conn.CreateCommand(); $c.CommandText = $stmt; $c.CommandTimeout = 10; [void]$c.ExecuteNonQuery(); $c.Dispose() } catch { }
     }
     return $conn
 }
@@ -539,7 +613,7 @@ function Get-SemQueryPlan {
     if (-not $sourceId) { return @{ Error = @{ Status = 400; Code = 'bad-request'; Message = 'No source given.' } } }
     $src = Find-SemSource -HomeDir $HomeDir -Id $sourceId
     if ($null -eq $src) { return @{ Error = @{ Status = 404; Code = 'unknown-source'; Message = "Unknown source '$sourceId'." } } }
-    $bad = Test-SemConnectionString -Connection $src.connection
+    $bad = Test-SemSourceConnection $src
     if ($bad) { return @{ Error = @{ Status = 400; Code = 'credentials-in-connection'; Message = $bad } } }
     $sql = Get-SemJsonProp $Body 'sql'
     if ($sql -isnot [string]) { return @{ Error = @{ Status = 400; Code = 'sql-refused'; Message = 'No SQL.' } } }
@@ -673,7 +747,7 @@ function Get-SemProfileTable {
     } finally { $cmd.Dispose() }
     # Distinct counts for string, date and boolean columns; 30 s each, skipped on error.
     $alias = ' AS d'
-    if ($Source.kind -eq 'oracle') { $alias = ' d' }
+    if ((Get-SemSourceFamily $Source) -eq 'oracle') { $alias = ' d' }
     foreach ($col in $columns) {
         if ($col.type -eq 'number') { continue }
         $name = [string]$col.name
@@ -716,7 +790,7 @@ function Invoke-SemProfileRequest {
     $src = $null
     if ($sourceId) { $src = Find-SemSource -HomeDir $HomeDir -Id $sourceId }
     if ($null -eq $src) { Send-SemError 404 'unknown-source' "Unknown source '$sourceId'."; return }
-    $bad = Test-SemConnectionString -Connection $src.connection
+    $bad = Test-SemSourceConnection $src
     if ($bad) { Send-SemError 400 'credentials-in-connection' $bad; return }
     $vaultError = Get-SemVaultError
     if ($vaultError) { Send-SemError $vaultError.Status $vaultError.Code $vaultError.Message; return }
@@ -755,23 +829,34 @@ if (-not (Get-Command Invoke-SemQueryRequest -ErrorAction SilentlyContinue)) {
     . $Ctx.LakePath
     . $Ctx.VaultPath
     . $Ctx.ConnectorsPath
+    . $Ctx.LocalDbPath
+    . $Ctx.S3Path
 }
-Set-SemVaultRequest $Ctx.Vault
+Clear-SemVaultRequest
 $script:SemLogPath = $Ctx.LogPath
 $script:Sem.Version = $Ctx.Version
 $script:Sem.Port = $Ctx.Port
 $script:SemJsonMode = $Ctx.JsonMode
+$script:Sem.VoiceInput = $Ctx.VoiceInput
+if ($null -ne $Ctx.TalkForge) { $script:SemTalkForge = $Ctx.TalkForge }   # the one TalkForge child, shared with the main loop
 $script:Sem.Responded = $false
 try {
     $Client.SendTimeout = 30000
     $script:Sem.Stream = $Client.GetStream()
-    if ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
+    # Lazarette is asked here, in the worker, so a slow or locked vault never holds the main loop (Vault.ps1, the one seam).
+    if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { Set-SemVaultRequest (Get-SemVaultForRequest -Req $Req -HomeDir $Ctx.Home) }
+    if ($Req.Path.StartsWith('/api/s3/') -or $Req.Path.StartsWith('/api/rds/')) { Set-SemVaultRequest (Get-SemAwsVaultContext -Settings $Ctx.AwsSettings -Purpose $Req.Path); Invoke-SemAwsWorkerRequest -Req $Req -Settings $Ctx.AwsSettings }
+    elseif ($Req.Path -eq '/api/query') { Invoke-SemQueryRequest -Req $Req -HomeDir $Ctx.Home }
     elseif ($Req.Path.StartsWith('/api/ai/')) { $Client.SendTimeout = 200000; Invoke-SemAiRequest -Req $Req -Root $Ctx.Root }
+    elseif ($Req.Path -eq '/api/voice/speak') { $Client.SendTimeout = 90000; Invoke-SemVoiceSpeak -Req $Req -Root $Ctx.Root }
+    elseif ($Req.Path -eq '/api/voice/start') { Send-SemJson 200 (Start-SemTalkForge -Root $Ctx.Root) }
+    elseif ($Req.Path -eq '/api/voice/status') { Send-SemJson 200 (Get-SemTalkForgeState -Root $Ctx.Root) }
     else { Invoke-SemProfileRequest -Req $Req -HomeDir $Ctx.Home }
 } catch {
     Write-SemLog 'ERROR' ('{0}: {1}' -f $Req.Path, $_.Exception.Message)
     if (-not $script:Sem.Responded) { try { Send-SemError 500 'internal' 'Internal server error.' } catch { } }
 } finally {
+    Clear-SemVaultRequest   # the secrets of this request do not wait in the idle runspace for the next one
     $script:Sem.Stream = $null
     try { $Client.Close() } catch { }
 }
@@ -788,45 +873,107 @@ function Initialize-SemWorkers {
     $script:Sem.WorkerContext = @{
         CommonPath = (Join-Path $here 'Common.ps1'); HttpPath = (Join-Path $here 'Http.ps1')
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
-        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); Root = (Split-Path -Parent $here)
+        IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); LocalDbPath = (Join-Path $here 'LocalDb.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
-        Port = 0
+        Port = 0; AwsSettings = $script:Sem.AwsSettings; VoiceInput = $script:Sem.VoiceInput; TalkForge = $script:SemTalkForge
     }
 }
 
+$script:SemWorkerDefaultDeadlineSec = 300
+$script:SemWorkerDeadlineMarginSec = 60
+
+function Get-SemWorkerDeadlineSec {
+    # How long a worker may run before the main loop gives up on it: the query plan's time limit plus a margin
+    # (the connect, the vault read and writing the rows), else 300 s (a profile walks many columns; a model can be slow).
+    param($Req)
+    if ($null -ne $Req -and $Req.Path -eq '/api/query') {
+        return ((Get-SemBoundedInt (Get-SemJsonProp $Req.Json 'timeoutSec') 60 1 300) + $script:SemWorkerDeadlineMarginSec)
+    }
+    return $script:SemWorkerDefaultDeadlineSec
+}
+
 function Start-SemWorkerRequest {
+    # The main loop hands the connection to a worker and goes on; the worker resolves the request's Lazarette
+    # secrets itself (the worker script), so nothing slow runs here.
     param($Req)
     $ctx = $script:Sem.WorkerContext.Clone()
     $ctx.Port = $script:Sem.Port
-    # Lazarette is asked from this (main) runspace: resolve this request's secrets here and hand them over (Vault.ps1).
-    $ctx.Vault = $null
-    if ($Req.Path -eq '/api/query' -or $Req.Path -eq '/api/profile') { $ctx.Vault = Get-SemVaultForRequest -Req $Req -HomeDir $script:Sem.Home }
     $ps = [powershell]::Create()
     $ps.RunspacePool = $script:Sem.Pool
     [void]$ps.AddScript($script:SemWorkerScript).AddArgument($Req.Client).AddArgument($Req).AddArgument($ctx)
     $handle = $ps.BeginInvoke()
-    $script:Sem.Workers.Add(@{ PS = $ps; Handle = $handle; Path = $Req.Path; Clock = [Diagnostics.Stopwatch]::StartNew() })
+    $script:Sem.Workers.Add(@{ PS = $ps; Handle = $handle; Path = $Req.Path; Client = $Req.Client; Clock = [Diagnostics.Stopwatch]::StartNew(); DeadlineSec = (Get-SemWorkerDeadlineSec $Req); TimedOut = $false })
     $script:Sem.Deferred = $true
     $script:Sem.Responded = $true
 }
 
+function Stop-SemWorkerLate {
+    # A worker past its deadline: its client gets a 504 (when the socket is still open) and is closed, the
+    # pipeline is asked to stop without waiting for it, and the item stays in the list, marked, until the
+    # pipeline really ends (then Update-SemWorkers reaps it). Returns $true when the client was answered.
+    param([hashtable]$Item)
+    $Item.TimedOut = $true
+    $answered = $false
+    $client = $Item.Client
+    if ($null -ne $client) {
+        try {
+            if ($client.Connected) {
+                $msg = 'The request took longer than {0} s and was given up; the source may still be working on it.' -f $Item.DeadlineSec
+                Send-SemError 504 'timeout' $msg -Stream ($client.GetStream())
+                $answered = $true
+            }
+        } catch { }
+        try { $client.Close() } catch { }
+    }
+    try { [void]$Item.PS.BeginStop($null, $null) } catch { }
+    Write-SemLog 'WARN' ('Worker {0}: gave up after {1} s (deadline {2} s); the pipeline was asked to stop' -f $Item.Path, [int]$Item.Clock.Elapsed.TotalSeconds, $Item.DeadlineSec)
+    return $answered
+}
+
 function Update-SemWorkers {
+    # Reaps finished workers and gives up on those past their deadline (Stop-SemWorkerLate).
     $w = $script:Sem.Workers
     if ($null -eq $w) { return }
     foreach ($item in @($w.ToArray())) {
-        if (-not $item.Handle.IsCompleted) { continue }
-        try { [void]$item.PS.EndInvoke($item.Handle) } catch { Write-SemLog 'ERROR' ('Worker ' + $item.Path + ': ' + $_.Exception.Message) }
+        if (-not $item.Handle.IsCompleted) {
+            if (-not $item.TimedOut -and $null -ne $item.DeadlineSec -and $null -ne $item.Clock -and $item.Clock.Elapsed.TotalSeconds -gt $item.DeadlineSec) { [void](Stop-SemWorkerLate -Item $item) }
+            continue
+        }
+        if (-not $item.TimedOut) { try { [void]$item.PS.EndInvoke($item.Handle) } catch { Write-SemLog 'ERROR' ('Worker ' + $item.Path + ': ' + $_.Exception.Message) } }
         try { $item.PS.Dispose() } catch { }
         [void]$w.Remove($item)
     }
+    if ($null -ne $script:Sem.LocalJobs) { Update-SemLocalJobs }   # import jobs (LocalDb.ps1)
+    if ($script:Sem.PipelineScheduler -and (Get-Command Invoke-SemPipelineTick -ErrorAction SilentlyContinue)) { [void](Invoke-SemPipelineTick) }   # Pipeline.ps1
 }
 
 function Close-SemWorkers {
+    # Asks every pipeline to stop and waits a bounded time (never Stop(), which waits as long as a stuck driver
+    # call does), then disposes what stopped and leaves the rest to end with the process.
+    param([int]$WaitMs = 3000)
+    if ($null -ne $script:Sem.LocalJobs) { Stop-SemLocalJobs -WaitMs $WaitMs }   # import jobs (LocalDb.ps1): cancelled, staging dropped
     $w = $script:Sem.Workers
     if ($null -ne $w) {
-        foreach ($item in @($w.ToArray())) { try { $item.PS.Stop(); $item.PS.Dispose() } catch { } }
+        $stops = New-Object System.Collections.Generic.List[object]
+        foreach ($item in @($w.ToArray())) {
+            try { $client = $item.Client; if ($null -ne $client) { $client.Close() } } catch { }
+            try { $stops.Add(@{ Item = $item; Ar = $item.PS.BeginStop($null, $null) }) } catch { }
+        }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($s in $stops) {
+            $left = [Math]::Max(0, $WaitMs - [int]$clock.ElapsedMilliseconds)
+            $done = $false
+            try { $done = $s.Ar.AsyncWaitHandle.WaitOne($left) } catch { $done = $false }
+            if ($done) { try { $s.Item.PS.Dispose() } catch { } }
+            else { Write-SemLog 'WARN' ('Worker ' + $s.Item.Path + ' did not stop within ' + $WaitMs + ' ms; left to end with the process') }
+        }
         $w.Clear()
     }
-    if ($null -ne $script:Sem.Pool) { try { $script:Sem.Pool.Close(); $script:Sem.Pool.Dispose() } catch { } }
+    if ($null -ne $script:Sem.Pool) {
+        try {
+            $ar = $script:Sem.Pool.BeginClose($null, $null)
+            if ($ar.AsyncWaitHandle.WaitOne($WaitMs)) { $script:Sem.Pool.EndClose($ar); $script:Sem.Pool.Dispose() }
+        } catch { }
+    }
     $script:Sem.Pool = $null
 }

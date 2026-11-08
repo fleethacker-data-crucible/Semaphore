@@ -22,8 +22,11 @@ export const SHORTCUTS: Array<{ group: string; items: Shortcut[] }> = [
   {
     group: 'With a flag selected',
     items: [
-      { keys: ['←', '→', '↑', '↓'], what: 'Move the flag one grid step' },
+      { keys: ['←', '→', '↑', '↓'], what: 'Move the flag one grid step (an eighth of a cell in Free layout)' },
       { keys: ['Shift', '←', '→', '↑', '↓'], what: 'Make the flag narrower, wider, shorter or taller' },
+      { keys: [']'], what: 'Free layout: bring the flag to the front' },
+      { keys: ['['], what: 'Free layout: send the flag to the back' },
+      { keys: ['Alt'], what: 'Free layout: hold while dragging to line the flag up with the cells' },
       { keys: ['Delete'], what: 'Delete the flag (Undo brings it back)' },
     ],
   },

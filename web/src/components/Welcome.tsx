@@ -20,6 +20,8 @@ export function Emblem({ className, alt = 'Semaphore' }: { className?: string; a
 export interface WelcomeProps {
   /** Title of the page the analyst was last on; continuing opens it. */
   lastTitle: string;
+  /** This week's impact in a sentence, or null (lib core/impact.ts impactLine). */
+  impactLine?: string | null;
   canOpenSaved: boolean;
   onContinue: () => void;
   onNew: () => void;
@@ -43,7 +45,7 @@ export function Welcome(p: WelcomeProps) {
   const secondary = 'inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3.5 py-2 text-sm font-medium text-ink hover:border-accent';
   return (
     // Centred with auto margins, not justify-center: on a short window the top stays reachable by scrolling.
-    <main aria-labelledby="welcome-title" className="relative flex h-full flex-col overflow-auto bg-bg px-4 py-8 text-center">
+    <main aria-labelledby="welcome-title" className="theme-surface relative flex h-full flex-col overflow-auto bg-bg px-4 py-8 text-center">
       <button type="button" onClick={p.onSettings} className="absolute right-4 top-4 inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-sm text-ink-2 hover:border-accent">
         <Settings2 size={15} aria-hidden="true" /> Settings
       </button>
@@ -55,6 +57,7 @@ export function Welcome(p: WelcomeProps) {
       <p className="max-w-[56ch] text-sm text-ink-2">
         Describe a dashboard in plain English and Semaphore drafts it from your data, on this computer. Leadership asks the questions; your reviewed work answers them.
       </p>
+      {p.impactLine && <p className="text-sm text-ink-2">{p.impactLine}</p>}
       {first ? (
         <button
           type="button"

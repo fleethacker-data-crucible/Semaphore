@@ -16,6 +16,9 @@
 
 import { type CatalogIndex, type Field, metricTable } from '../catalog.ts';
 import { LIMITS } from '../hoist.ts';
+import { fitPivot, fitRichKind, isRichKind, KIND_WORDS as RICH_WORDS } from '../kinds.ts';
+import type { ModelSpec } from '../predict/types.ts';
+import { DATE_MODELS, MODEL_WORDS } from '../predict/words.ts';
 import { reachOf } from '../manyjoin.ts';
 import type { Behavior, Binding, Comparison, DimensionRef, Filter, FlagKind, Threshold, TimeGrain, Tone } from '../hoist.ts';
 import { suggestKind } from '../shape.ts';
@@ -82,6 +85,8 @@ export const GRAIN_WORDS: Array<[RegExp, TimeGrain]> = [
 ];
 
 export const KIND_WORDS: Array<[RegExp, FlagKind]> = [
+  // Read before the chart words, so "matrix of cost by region" is a pivot, not a heatmap.
+  [/\b(pivot|pivot table|crosstab|cross-tab|cross tab|matrix of)\b|\bby\s+[a-z][a-z' -]*?\s+across\s+[a-z]/, 'pivot'],
   [/\b(table|list|rows|grid|spreadsheet)\b/, 'table'],
   [/\b(pie|donut|doughnut|share of|mix)\b/, 'pie'],
   [/\barea\b(?!\s+(manager|office))/, 'area'],
@@ -236,7 +241,7 @@ function analyze(raw: string, index: CatalogIndex): Analysis {
   let kindText = text;
   for (const [s0, e0] of blocked) kindText = kindText.slice(0, s0) + ' '.repeat(e0 - s0) + kindText.slice(e0);
   let kindWord: FlagKind | null = null;
-  for (const [re, k] of KIND_WORDS) if (re.test(kindText)) {
+  for (const [re, k] of [KIND_WORDS[0]!, ...RICH_WORDS, ...KIND_WORDS.slice(1)]) if (re.test(kindText)) {
     kindWord = k;
     break;
   }
@@ -295,6 +300,19 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   const shaped = suggestKind({ metrics: a.metrics, dimensions: a.dims, filters, ...(a.share ? { share: true } : {}) }, index);
   const inferred: FlagKind = shaped.kind;
   let kind: FlagKind = a.kindWord ?? (currentKind === 'text' || options.auto ? inferred : currentKind);
+  // "Forecast cost for the next 6 months", "simulate the total": a predictive model flag.
+  let model: ModelSpec | undefined;
+  const modelWord = MODEL_WORDS.find(([re]) => re.test(a.text));
+  if (modelWord) {
+    kind = 'model';
+    model = { type: modelWord[1] };
+    const ahead = /\bnext (\d{1,3}) (?:days?|weeks?|months?|quarters?|years?)\b/.exec(a.text);
+    if (ahead) model.params = { horizon: Number(ahead[1]) };
+    if (DATE_MODELS.includes(model.type) && !a.dims.some((d) => d.grain) && a.dateField) {
+      a.dims.unshift({ field: a.dateField.key, grain: a.grain ?? 'month' });
+      notes.push(`A forecast reads ${a.dateField.label.toLowerCase()} by ${a.grain ?? 'month'}.`);
+    }
+  }
   if (kind === 'kpi' && a.dims.length > 0) {
     notes.push('A KPI shows one number, so this became a chart because the brief splits it by a field.');
     kind = inferred;
@@ -303,6 +321,11 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   if (kind === 'pie' && a.dims.length > 1) {
     notes.push('A pie shows one field; extra fields were left out.');
     a.dims.splice(1);
+  }
+  if (isRichKind(kind)) {
+    const fit = fitRichKind(kind, { metrics: a.metrics, dimensions: a.dims, filters }, index);
+    kind = fit.kind;
+    if (fit.note) notes.push(fit.note);
   }
 
   const binding: Binding = { metrics: a.metrics, dimensions: a.dims, filters };
@@ -321,6 +344,11 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
   } else if (kind === 'bar' || kind === 'table') {
     binding.sort = { by: a.metrics[0]!, dir: 'desc' };
   }
+  if (kind === 'pivot') {
+    const fit = fitPivot(binding);
+    kind = fit.kind;
+    if (fit.note) notes.push(fit.note);
+  }
 
   let confidence = 0.8;
   for (const word of a.unresolved) {
@@ -328,7 +356,7 @@ export function draftFlagLocally(brief: string, currentKind: FlagKind, index: Ca
     confidence -= 0.25;
   }
   if (a.notes.length) confidence -= 0.1;
-  return { kind, title: titleFor(a.metrics, a.dims, index), binding, behavior, confidence: Math.max(0.05, Math.round(confidence * 100) / 100), notes };
+  return { kind, title: titleFor(a.metrics, a.dims, index), binding, behavior, confidence: Math.max(0.05, Math.round(confidence * 100) / 100), notes, ...(model ? { model } : {}) };
 }
 
 export function draftHoistLocally(brief: string, index: CatalogIndex): HoistDraft {

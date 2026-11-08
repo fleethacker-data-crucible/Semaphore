@@ -4,6 +4,7 @@
 // the file asks for it before showing anything. The reader is web/src/report.tsx.
 
 import type { Catalog } from '../../../src/core/catalog.ts';
+import type { HoistDesign } from '../../../src/core/design.ts';
 import type { Hoist } from '../../../src/core/hoist.ts';
 import type { FrozenFlag } from '../../../src/core/reports.ts';
 
@@ -19,6 +20,8 @@ export interface ReportPayload {
   cols: number;
   theme: 'light' | 'dark';
   skin: string;
+  /** The page's design, so the file looks as the analyst made it. */
+  design?: HoistDesign;
   /** Labels and formats only: sources lose their vault item names. */
   catalog: Catalog;
   flags: FrozenFlag[];
@@ -64,6 +67,7 @@ export function reportPayload(hoist: Hoist, flags: FrozenFlag[], catalog: Catalo
     cols: hoist.grid.cols,
     theme,
     skin,
+    ...(hoist.design ? { design: hoist.design } : {}),
     catalog: { ...catalog, sources: catalog.sources.map(({ vaultItem: _v, ...s }) => s) },
     flags,
   };

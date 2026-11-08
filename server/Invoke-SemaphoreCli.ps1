@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
 $cliArgs = @($args | ForEach-Object { [string]$_ })
-foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
+foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
 $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $words = New-Object System.Collections.Generic.List[string]
@@ -28,8 +28,10 @@ $global = @{ json = $false; yes = $false; 'dry-run' = $false; out = $null; help 
 $options = @{}
 $rest = @(if ($i -lt $cliArgs.Count) { $cliArgs[$i..($cliArgs.Count - 1)] })
 
-function Write-SemCliOutput([object]$Document, [int]$Code, [string]$Text) {
+function Write-SemCliOutput([object]$Document, [int]$Code, [string]$Text, [string]$RawResult = '') {
+    # $RawResult: a stored document's own JSON text, spliced in as "result" unchanged (no depth cut, no respelling).
     $json = ConvertTo-Json -InputObject $Document -Depth 15 -Compress
+    if ($RawResult) { $json = $json.Substring(0, $json.Length - 1) + ',"result":' + $RawResult + '}' }
     if ($global.out) {
         [IO.File]::WriteAllText([IO.Path]::GetFullPath([string]$global.out), $json, $utf8)
         if (-not $global.json) { Write-Host ('Wrote ' + [IO.Path]::GetFullPath([string]$global.out)) }
@@ -74,6 +76,11 @@ if ($words.Count -eq 1 -and $words[0] -eq 'commands') {
 }
 
 $command = Find-SemCommand ($words -join ' ')
+if (-not $command -and $words.Count -ge 3 -and -not $options.ContainsKey('id')) {
+    # "pipeline run nightly": a last word that is not part of the command is its --id.
+    $c2 = Find-SemCommand (($words | Select-Object -First ($words.Count - 1)) -join ' ')
+    if ($c2 -and @($c2.inputs | Where-Object { $_.flag -eq 'id' }).Count -gt 0) { $command = $c2; $options['id'] = $cliArgs[$words.Count - 1] }
+}
 if (-not $command) { Exit-SemUsage "Unknown command '$($words -join ' ')'." }
 $settings = Read-SemSettings -Root $root
 $homeDir = Resolve-SemHome -Settings $settings -Create
@@ -81,7 +88,9 @@ $script:Sem.Root = $root
 $res = Invoke-SemCommand -Command $command -Options $options -Yes $global.yes -DryRun $global['dry-run'] -HomeDir $homeDir -Root $root
 if ($res.Usage) { Exit-SemUsage $res.Error }
 $doc = [ordered]@{ schema = 'semaphore.result/1'; command = $command.name; ok = $res.Ok }
-if ($res.Ok) { $doc.result = $res.Result } else { $doc.error = $res.Error }
-$text = if ($res.Ok) { if ($res.Text) { $res.Text } else { ConvertTo-Json -InputObject $res.Result -Depth 6 } } else { '' }
+$raw = ''
+if ($res.Ok -and $res.ContainsKey('Raw') -and $res.Raw) { $raw = [string]$res.Raw }   # "get": the stored text itself
+elseif ($res.Ok) { $doc.result = $res.Result } else { $doc.error = $res.Error }
+$text = if ($res.Ok) { if ($res.Text) { $res.Text } elseif ($raw) { $raw } else { ConvertTo-Json -InputObject $res.Result -Depth 6 } } else { '' }
 if (-not $res.Ok -and -not $global.json -and -not $global.out) { [Console]::Error.WriteLine('Semaphore: ' + $res.Error) }
-Write-SemCliOutput $doc $(if ($res.Ok) { 0 } else { 1 }) $text
+Write-SemCliOutput $doc $(if ($res.Ok) { 0 } else { 1 }) $text $raw

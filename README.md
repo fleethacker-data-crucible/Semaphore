@@ -57,9 +57,9 @@ To build it yourself:
 
 > **Current connections:** optional model requests go through the local [Fairlead](https://github.com/fleethacker-data-crucible/Fairlead) proxy. Database and Athena requests currently use Semaphore's own connectors and settings. Routing data sources through Fairlead is a direction in [TechStack](TechStack), not the implementation today.
 
-**AI drafting (optional).** Local rules draft every flag with no model. AI provider keys live in Lazarette and reach only Fairlead; Semaphore only ever holds a client token that Fairlead issues to it. To draft with a model, install a key for **Semaphore** in **Fairlead > Clients** (Fairlead stores it in Windows Credential Manager as `Fairlead/Semaphore`), or as a manual fallback create a client key there, then double-click **`Set-SemaphoreAiKey.bat`** and paste it (only `fl-…` tokens are accepted, never a provider key) (it stores the key under the same name); `SEMAPHORE_AI_KEY` overrides the stored key. Legacy DPAPI files remain readable for compatibility. The Fairlead key never reaches the page. Drafts then go through Fairlead's `local` route, so prompts stay on this computer; the **AI** button in the header shows the state and switches it off. If Fairlead is down or refuses the key, local rules draft instead and say why. See [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md).
+**AI drafting (optional).** Local rules draft every flag with no model. AI provider keys live in Lazarette and reach only Fairlead; Semaphore only ever holds a client token that Fairlead issues to it. To draft with a model, install a key for **Semaphore** in **Fairlead > Clients** (Fairlead stores it in Windows Credential Manager as `Fairlead/Semaphore`), or as a manual fallback create a client key there, then double-click **`Set-SemaphoreAiKey.bat`** and paste it (only `fl-…` tokens are accepted, never a provider key) (it stores the key under the same name); `SEMAPHORE_AI_KEY` overrides the stored key. Legacy DPAPI files remain readable for compatibility. The Fairlead key never reaches the page. Drafts then go through Fairlead's `local` route, so prompts stay on this computer; **Settings > AI drafting** shows the state and switches it off. If Fairlead is down or refuses the key, local rules draft instead and say why. See [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md).
 
-Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `-Port <n>`. Semaphore's block is loopback ports 8800–8802 (Fleet port registry), clear of Eight Bells, Scrimshaw and Fairlead (8774–8776); it asks Fairlead for AI on 127.0.0.1:8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Scheduled report editions and snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install an automatic background service or task.
+Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh` (refresh every playbook snapshot headless and stop; for an IT-approved morning run, see [docs/PLAYBOOK.md](docs/PLAYBOOK.md)), `--no-browser`, `--stay` (keep running after the tab closes), `--replace` (stop a running copy and start fresh), `--console`, `--check-only` (self-check, no server), `-Port <n>` (or `--port <n>`). Semaphore's block is loopback ports 8800–8802 (Fleet port registry), clear of Eight Bells, Scrimshaw and Fairlead (8774–8776); it asks Fairlead for AI on 127.0.0.1:8776. Set `SEMAPHORE_AUTO_STOP=0` to turn auto-stop off. Scheduled report editions and snapshot refreshes need an active instance or an explicitly scheduled `--refresh` run; the launcher does not install an automatic background service or task.
 
 ## Architecture at a glance
 
@@ -89,6 +89,7 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 | **Import from Qlik** | Paste a load script and chart expressions: tables, Qlik's field names, measures, mapping loads (as cleaning) and associations (as joins) come across for you to check. |
 | **SQL desk** | Write your own SELECT against a source on this computer, the lake included, under the same guard and cost guard. |
 | **Regular reports and briefings** | A page you open every Monday keeps coming while you are away, for leadership to read; "Brief me" says what a page shows in a few sentences, each linked to its flag. |
+| **Page design and exports** | Restyle a page or one flag: palettes, gradients, glow, gauges, funnels, target lines, zoom and motion. Export to PDF, Excel with native charts, PowerPoint, Word, HTML, CSV or JSON. See [docs/DESIGN.md](docs/DESIGN.md). |
 | **Flag kits** | Save a set of flags as a kit and fly it on another catalog: each metric and field is matched by key, then label, then synonym, and anything that does not match arrives as an empty draft with a reason ([docs/FLAG_KITS.md](docs/FLAG_KITS.md)). |
 | **Comparisons that follow a drill** | A flag set to compare keeps its comparison as you drill (2026 Q3 against 2025 Q3), and shared reports carry the earlier window too ([docs/DRILL_COMPARISONS.md](docs/DRILL_COMPARISONS.md)). |
 | **One-to-many joins** | Split or filter a measure on the "one" side by a field on the "many" side without double counting; overlapping groups are flagged and given no grand total ([docs/ONE_TO_MANY_JOINS.md](docs/ONE_TO_MANY_JOINS.md)). |
@@ -118,7 +119,7 @@ Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database d
 
 Semaphore reads the shared names from the running, unlocked Lazarette over loopback for each query; it never loads Lazarette's engine or holds the vault key. If Lazarette is stopped, locked, not paired or a name is not shared, the flag says so in a sentence. See [docs/VAULT.md](docs/VAULT.md).
 
-**More connectors.** `redshift-data` (Amazon Redshift Data API), `synapse` (Azure Synapse and Azure SQL through ODBC Driver 17/18 with Entra sign-in) and `foundry` (Palantir Foundry SQL). Examples, limits and what has and has not been validated against real services are in [docs/CONNECTORS.md](docs/CONNECTORS.md).
+**More connectors.** `redshift-data` (Amazon Redshift Data API), `synapse` (Azure Synapse and Azure SQL through ODBC Driver 17/18 with Entra sign-in), `foundry` (Palantir Foundry SQL), and Amazon RDS and Aurora (`"kind": "aws-rds"` with an `engine`: PostgreSQL, MySQL, MariaDB, SQL Server or Oracle through the ODBC driver already installed, TLS on, password or IAM sign-in). The Data panel can also browse allowlisted S3 buckets and import objects into the local database. Examples, limits and what has and has not been validated against real services are in [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 > **What has been tested for real.** ODBC and OLE DB run through the real Microsoft Access Text and ACE drivers in the Pester suite (binding, types, errors), but not against a Postgres, Oracle, SQL Server or Access `.accdb` server. Athena, Redshift and Foundry are tested against simulated services only. Real-service checks are listed for Anthony in [docs/CONNECTORS.md](docs/CONNECTORS.md) and [docs/VAULT.md](docs/VAULT.md).
 
@@ -153,11 +154,13 @@ Node 22.18 or later. `npm ci` installs the build tools (esbuild, Tailwind, React
 ```shell
 npm test             # node --test: core, data path and UI logic
 npm run typecheck    # strict tsc for the core and the UI
-npm run build        # web/dist
+npm run build        # web/dist, then the CSP build contract (no inline script or style)
+npm run size         # size report; fails when the initial JS is over web/size-budget.json
+npm run e2e          # Playwright against tests/e2e/mock-server.mjs (needs npm run build first)
 npm run dev          # rebuild on change
 ```
 
-Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShell 5.1.
+Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShell 5.1. The end-to-end suite uses Playwright's Chromium locally and the installed Edge in CI (`SEMAPHORE_E2E_BROWSER_CHANNEL=msedge`); CI runs on GitHub-hosted Windows runners (see the note at the top of `.github/workflows/ci.yml`).
 
 ## Documentation
 

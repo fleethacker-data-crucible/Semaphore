@@ -131,7 +131,9 @@ export function withBriefFlag(h: Hoist, id: string, brief: string): Hoist {
   const size = { w: 6, h: 4 };
   const flag: Flag = { id, kind: 'bar', title: '', brief, layout: { x: 0, y: 0, ...size }, binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
   const items = [...h.flags.map((f) => ({ id: f.id, layout: f.layout })), { id, layout: flag.layout }];
-  const placed = new Map(place(items, id, flag.layout, h.grid.cols).map((p) => [p.id, p.layout]));
+  // At the top left, pushing the others down: free hoists too, so the new flag is never hidden under one.
+  const mode = h.grid.mode === 'free' ? 'snap' : (h.grid.mode ?? 'snap');
+  const placed = new Map(place(items, id, flag.layout, h.grid.cols, mode).map((p) => [p.id, p.layout]));
   return { ...h, flags: [...h.flags, flag].map((f) => ({ ...f, layout: placed.get(f.id) ?? f.layout })) };
 }
 

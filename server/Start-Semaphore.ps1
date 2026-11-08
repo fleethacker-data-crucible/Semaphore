@@ -21,7 +21,8 @@
     -Ask         / --ask          open the leadership view (Ask-Semaphore.bat); settings "view" sets the default
     -Refresh     / --refresh      refresh every playbook snapshot in a headless Edge or Chrome, report, and
                                   stop (for an IT-approved morning run on an always-on machine; at most
-                                  settings refreshTimeoutMin minutes)
+                                  settings refreshTimeoutMin minutes). Exit 3 when another Semaphore was
+                                  already running and nothing was refreshed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -175,8 +176,13 @@ function Invoke-SemSelfCheck {
     $s = Read-SemSettings -Root $root
     $homeDir = Resolve-SemHome -Settings $s
     foreach ($src in @(Get-SemSources -HomeDir $homeDir)) {
-        $bad = Test-SemConnectionString -Connection $src.connection
+        $bad = Test-SemSourceConnection $src
         if ($bad) { $problems.Add("Source '$($src.id)': $bad") }
+        if ($src.kind -eq 'aws-rds') {
+            # The driver an RDS source would use on this computer (Aws.ps1); a missing one is a note, not a failure.
+            try { Write-Host ("Source '{0}' ({1}): ODBC driver ""{2}""" -f $src.id, $src.engine, (Find-SemRdsDriver -Rds (Get-SemRdsSettings $src.raw))) }
+            catch { Write-Host ("Note: source '{0}': {1}" -f $src.id, ([string]$_.Exception.Message -replace '^provider-unavailable:\s*', '')) -ForegroundColor Yellow }
+        }
     }
     if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($root, 'web', 'dist', 'index.html')))) { Write-Host 'Note: web\dist\index.html is missing (the UI is not built). Use the Semaphore-<version>.zip from the Releases page, not the source code; the server would show a "not built" page with these steps.' -ForegroundColor Yellow }
     Write-Host ("Semaphore {0}, home {1}, auto-stop {2}" -f $v, $homeDir, $(if (Test-SemAutoStopEnabled -Root $root) { 'on' } else { 'off' }))
@@ -208,6 +214,10 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'Lake.ps1')
 . (Join-Path $here 'Vault.ps1')
 . (Join-Path $here 'Connectors.ps1')
+. (Join-Path $here 'LocalDb.ps1')
+. (Join-Path $here 'S3.ps1')
+. (Join-Path $here 'LocalScript.ps1')
+. (Join-Path $here 'Pipeline.ps1')
 . (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 
@@ -238,6 +248,13 @@ if ($vaultSources.Count -gt 0 -and -not $CheckOnly) {
 
 # ---- One instance -----------------------------------------------------------
 function Exit-SemReuse([int]$ReusePort, [string]$Why) {
+    if ($Refresh) {
+        # A refresh run must not hand its work to a copy someone is using (it refreshes stale snapshots itself),
+        # and must not report success for a refresh that did not run: exit 3, which the CLI reports.
+        Write-SemLog 'WARN' ("Refresh: another Semaphore is already running on port {0} ({1}); nothing was refreshed" -f $ReusePort, $Why)
+        Write-Host "Refresh: another Semaphore is already running on http://127.0.0.1:$ReusePort/ ($Why); nothing was refreshed." -ForegroundColor Yellow
+        exit 3
+    }
     Write-SemLog 'INFO' ("Reusing the running Semaphore on port {0}: {1}" -f $ReusePort, $Why)
     if ($NoBrowser) { Write-Host "Semaphore is already running on http://127.0.0.1:$ReusePort/ ($Why)." -ForegroundColor Yellow }
     elseif (-not (Request-SemOpenBrowser -Port $ReusePort)) { Write-SemLog 'WARN' "The running copy on port $ReusePort did not accept the open request" }
@@ -257,7 +274,10 @@ if ($running.Count -gt 0) {
             # No copy answers: one is still starting (no runtime file yet), or it hangs.
             $starting = @($running | Where-Object { -not $_.File } | Where-Object {
                 $p = Get-Process -Id $_.Pid -ErrorAction SilentlyContinue
-                $p -and $p.StartTime -and ((Get-Date) - $p.StartTime).TotalSeconds -lt 90 })
+                $young = $false
+                # StartTime is denied for another account's process: such a copy is not "ours still starting".
+                if ($p) { try { $young = ($p.StartTime -and ((Get-Date) - $p.StartTime).TotalSeconds -lt 90) } catch { $young = $false } }
+                $young })
             if ($starting.Count -gt 0) { Write-SemLog 'INFO' "Another launch is still starting ($where); leaving it"; exit 0 }
             Write-SemLog 'WARN' "A running copy does not answer ($where): stopping it"
             foreach ($r in $running) { [void](Stop-SemInstance -Instance $r) }
@@ -316,6 +336,16 @@ if ($Refresh) { $script:Sem.View = 'refresh'; $script:Sem.Deadline = (Get-Date).
 $script:Sem.Reviewer = [string]$settings.playbookReviewer
 $script:Sem.Skin = [string]$settings.skin
 $script:Sem.Social = Get-SemSocialSettings -Settings $settings
+# Local database (LocalDb.ps1): network shares it may read, the upload cap, and the database itself.
+$script:Sem.LocalShares = @($settings.localShares)
+$script:Sem.LocalMaxBytes = [long]$settings.localImportMaxGB * 1GB
+try { [void](Initialize-SemLocalDb -HomeDir $homeDir -Cleanup) } catch { Write-SemLog 'WARN' ('The local database is not available on this computer: ' + $_.Exception.Message) }
+$script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
+# Pipelines (Pipeline.ps1): the scheduler ticks in the server loop; a run missed while Semaphore was down runs once
+# now when its schedule has catch-up. A --refresh run never starts pipelines.
+if (-not $Refresh) { $script:Sem.PipelineScheduler = $true }
+# Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
+$script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {
@@ -345,5 +375,6 @@ try {
     Start-SemHttpServer -Listener $listener -Settings $settings -AutoStop $autoStop -OnReady $onReady -OnOpenBrowser $onOpen
 } finally {
     if ($Refresh) { Stop-SemHeadless }
+    [void](Stop-SemTalkForgeChild)   # only a TalkForge this Semaphore started
 }
 exit 0

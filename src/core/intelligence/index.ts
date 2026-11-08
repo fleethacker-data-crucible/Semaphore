@@ -22,7 +22,7 @@ import { LocalRulesProvider } from './local-rules.ts';
 export * from './contract.ts';
 export { EXAMPLE_LIMITS, type ExampleOptions, selectExamples } from './examples.ts';
 export { LocalRulesProvider } from './local-rules.ts';
-export { ContractProvider, DatabricksProvider, OpenAICompatibleProvider } from './remote.ts';
+// The remote providers are imported from ./remote.ts directly, so the page can load them on first use (web/src/lib/ai.ts).
 
 /**
  * Reviewed examples for a draft request: the analyst's switch is on and these are the playbook's
@@ -87,15 +87,19 @@ export async function draftHoist(provider: IntelligenceProvider, brief: string, 
 
 /** Apply a flag draft. The brief and layout stay the analyst's; status becomes "drafted". */
 export function applyFlagDraft(flag: Flag, draft: FlagDraft): Flag {
+  // A custom widget stays one: drafting fills in its data, never its kind, and a click in it keeps
+  // doing what the analyst chose (a widget calls select() itself).
+  const custom = flag.kind === 'custom';
   return {
     ...flag,
-    kind: draft.kind,
+    kind: custom ? 'custom' : draft.kind,
     title: flag.title || draft.title,
     binding: draft.binding,
-    behavior: draft.behavior,
+    behavior: custom ? { ...draft.behavior, onClick: flag.behavior.onClick } : draft.behavior,
     status: draft.binding ? 'drafted' : 'empty',
     confidence: draft.confidence,
     notes: draft.notes,
+    ...(draft.kind === 'model' && draft.model ? { model: draft.model } : {}),
   };
 }
 
@@ -116,6 +120,7 @@ export function applyHoistDraft(hoist: Hoist, draft: HoistDraft, newId: () => st
       status: d.binding ? 'drafted' : 'empty',
       confidence: d.confidence,
       notes: d.notes,
+      ...(d.kind === 'model' && d.model ? { model: d.model } : {}),
     });
   }
   const filters = [...hoist.filters];

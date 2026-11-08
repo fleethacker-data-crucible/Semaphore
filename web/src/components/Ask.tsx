@@ -41,7 +41,7 @@ export function AskBox({ index, onAsk, inputRef }: { index: CatalogIndex; onAsk:
         e.preventDefault();
         submit();
       }}
-      className="flex min-w-0 max-w-[420px] flex-1 items-center gap-2 rounded-lg border border-line bg-panel px-2.5 focus-within:border-accent"
+      className="flex min-w-0 max-w-[420px] flex-1 items-center gap-2 focus-frame rounded-lg border border-line bg-panel px-2.5"
     >
       <MessageSquareText size={15} className="shrink-0 text-ink-3" />
       <input
@@ -68,7 +68,7 @@ export function AskAnswer(props: { flag: Flag; hoist: Hoist; ctx: DataContext; i
           <p className="text-[11px] text-ink-3">You asked</p>
           <p className="text-sm font-medium">{flag.brief}</p>
         </div>
-        <button type="button" onClick={props.onClose} aria-label="Close answer" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+        <button type="button" onClick={props.onClose} aria-label="Close answer" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
           <X size={15} />
         </button>
       </div>
@@ -83,7 +83,7 @@ export function AskAnswer(props: { flag: Flag; hoist: Hoist; ctx: DataContext; i
             </p>
           )}
           <div className="h-56 rounded-lg border border-line p-2">
-            {load.state === 'error' ? <p className="text-xs text-bad">{load.error}</p> : result ? <FlagView flag={flag} result={result} index={index} selections={props.selections} onSelect={props.onSelectValue} themeKey={props.themeKey} /> : <p className="text-xs text-ink-3">Working it out…</p>}
+            {load.state === 'error' ? <p className="text-xs text-bad">{load.error}</p> : result ? <FlagView flag={flag} result={result} index={index} selections={props.selections} onSelect={props.onSelectValue} themeKey={props.themeKey} {...(hoist.design ? { design: hoist.design } : {})} /> : <p className="text-xs text-ink-3">Working it out…</p>}
           </div>
           {insights.length > 0 && (
             <ul className="space-y-0.5 text-xs text-ink">

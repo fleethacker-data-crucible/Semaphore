@@ -4,12 +4,12 @@
 
 import { isAway } from '../../../src/core/away.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
-import type { Hoist } from '../../../src/core/hoist.ts';
+import type { Selections } from '../../../src/core/crossfilter.ts';
+import type { Flag, Hoist } from '../../../src/core/hoist.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { type Edition, editionDue, editionId, type FrozenFlag, type ReportSchedule } from '../../../src/core/reports.ts';
 import { type Briefing, briefingFacts } from '../../../src/core/briefing.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
-import { writeBriefingWithAi } from '../../../src/core/intelligence/tasks.ts';
 import { loadItem } from './api.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from './data.ts';
 import type { PlaybookState } from './playbook.ts';
@@ -22,7 +22,7 @@ export const EDITIONS_KEPT = 12;
 /** Rows kept per flag for offline filtering in a shared report; a flag with more is shown as it stands. */
 export const RAW_ROWS_MAX = 20_000;
 
-export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean; keepDrill?: boolean } = {}): Promise<FrozenFlag[]> {
+export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: CatalogIndex, options: { keepRaw?: boolean; keepDrill?: boolean; selectionsFor?: (flag: Flag) => Selections } = {}): Promise<FrozenFlag[]> {
   const out: FrozenFlag[] = [];
   const drillBudget = { left: DRILL_NODES_PER_REPORT };
   for (const flag of hoist.flags) {
@@ -33,7 +33,7 @@ export async function freezeHoist(hoist: Hoist, ctx: DataContext, index: Catalog
       continue;
     }
     try {
-      const r: FlagResult = await computeFlag(hoist, flag, {}, ctx);
+      const r: FlagResult = await computeFlag(hoist, flag, options.selectionsFor?.(flag) ?? {}, ctx);
       const insights = flag.kind === 'filter' ? [] : findInsights({ flag, rows: r.display.rows, ...(r.previous ? { previous: r.previous } : {}), totals: r.display.totals, today: ctx.today }, index);
       // Editions are read as they stand; a shared report keeps the pre-split rows to filter offline,
       // and for a comparing flag the earlier window's pre-split rows too, so the comparison can be
@@ -85,7 +85,7 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
     }
     const flags = await freezeHoist(hoist, ctx, index);
     const briefing = await briefFrozen(flags, hoist.title || schedule.title, index, provider);
-    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, flags, briefing };
+    const edition: Edition = { version: 1, id: editionId(schedule.hoistId, date), kind: 'edition', hoistId: schedule.hoistId, title: hoist.title || schedule.title, owner: schedule.owner, date, takenAt: now.toISOString(), by, cols: hoist.grid.cols, ...(hoist.design ? { design: hoist.design } : {}), flags, briefing };
     try {
       await playbook.saveReportDoc(edition);
       await playbook.saveReportDoc({ ...schedule, lastEdition: date });
@@ -101,10 +101,12 @@ export async function produceDueEditions(playbook: PlaybookState, ctx: DataConte
 }
 
 /** A briefing for frozen answers: written by the AI when it is on and holds up, else Semaphore's own sentences. */
-export function briefFrozen(flags: readonly FrozenFlag[], title: string, index: CatalogIndex, provider: IntelligenceProvider): Promise<Briefing> {
+export async function briefFrozen(flags: readonly FrozenFlag[], title: string, index: CatalogIndex, provider: IntelligenceProvider): Promise<Briefing> {
   const facts = briefingFacts(
     flags.map((f) => ({ flag: f.flag, insights: f.insights, ...(f.result ? { totals: (f.result as FlagResult).display.totals } : {}) })),
     index,
   );
+  // tasks.ts loads on first use rather than with the page (web/size-budget.json).
+  const { writeBriefingWithAi } = await import('../../../src/core/intelligence/tasks.ts');
   return writeBriefingWithAi(provider, title, facts);
 }

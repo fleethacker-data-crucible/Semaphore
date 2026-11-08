@@ -38,11 +38,15 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
   "grid": { "cols": 12 },
   "filters": [{ "field": "jobs.opened", "op": "last", "values": [12], "unit": "month" }],
   "flags": [ … ],
+  "design": { "look": "bridge", "card": "glass", "radius": 14, "backdrop": "tide", "font": "system", "charts": { "palette": "signal", "fill": "gradient", "glow": true, "motion": "lively" } },
+  "experiment": false,
   "updated": "2026-10-25T16:00:00.000Z"
 }
 ```
 
 `filters` apply to every flag on the same table, unless the flag ignores that field. Filters on other tables are reported on the flag rather than silently dropped.
+
+`design` (optional) is how the page looks ([DESIGN.md](DESIGN.md)); it never changes what a flag means. `look` names the preset it came from (`standard`, `bridge`, `broadsheet`, `beacon`, `chartroom`); `card` is `raised` | `outline` | `flat` | `glass`; `radius` is the card corner in pixels (0–24); `backdrop` is `plain` | `tide` | `dawn` | `grid`; `font` is `system` | `serif` | `mono` | `condensed`; `charts` holds the defaults every flag's chart starts from (the `ChartLook` fields of the flag `style` below). Every value is checked against its list or range when read (`parseDesign` in `src/core/design.ts`), and colours must be plain `#rrggbb`. `experiment: true` marks a page the playbook and team style never learn from.
 
 ## Flag (block)
 
@@ -69,7 +73,8 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
   },
   "status": "ready",
   "confidence": 0.8,
-  "notes": []
+  "notes": [],
+  "style": { "palette": "ember", "barLayout": "stacked", "target": { "value": 50, "label": "Goal" }, "hideTitle": false }
 }
 ```
 
@@ -80,15 +85,19 @@ Every source, field and metric is defined once. Flags refer to them by key, so "
 | `layout` | Grid cells on a 12-column grid. Flags never overlap and float up to fill gaps. |
 | `binding` | `null` until drafted. Metric keys, dimension fields (dates may have a `grain`), filters, optional sort and limit. |
 | `dimension key` | A field key, or `field@grain` for dates (`jobs.opened@month`). Used in sorts and selections. |
-| `filters[].op` | `in`, `eq`, `gte`, `lte`, `between` (two values), `last` (a whole count plus `unit`; includes the current period) |
+| `filters[].op` | `in`, `eq`, `gte`, `lte`, `between` (two values), `last` (a whole count plus `unit`; includes the current period). `eq` with an empty value (`""`) means blank: it matches NULL and, on a text field, the empty string too (`(col IS NULL OR col = '')` in SQL). |
+| `filters[].values` | Typed by the field: a date is `YYYY-MM-DD` (longer text is read as the day its first ten characters name), a yes-or-no field takes `true`/`false`, a number reads as a number. A value that does not read as the field's type removes the filter with a warning. |
+| `binding.limit` | A "top N". It always has an order: a limit with no `sort` ranks by the first metric, highest first, with a warning. |
+| dates in data | A date or date-time cell means the calendar day it is written as, whatever zone the text carries or the browser runs in (`2026-03-01T22:00:00` is 1 March). Filters, period buckets (`grain`), selections and comparison shifts all read it that way, as a database's `date_trunc` does in the column's own clock. |
 | `binding.compare` | Optional. `previous-period` (the window just before) or `previous-year` (the same window a year earlier). Needs a `last` filter on the flag or the page; the earlier window is like for like (on 26 October, "last 3 months" compares 1 Aug–26 Oct with 1 May–26 Jul). Time values are moved forward so March lines up with March. |
-| `binding.share` | Optional. Show each value as a share of the total across all rows, taken before any top-N cut. |
+| `binding.share` | Optional. Show each value as a share of the total across all rows, taken before any top-N cut (a share flag's top N is never cut at the source, so the total is the true one; the earlier window of a comparison is a share of its own total). |
 | `behavior.onClick` | `filter-page` (select that value everywhere), `drill`, or `none` |
 | `behavior.ignore` | Fields whose page selections this flag skips |
 | `behavior.thresholds` | Colour rules; the first match wins. Tones: `good`, `warn`, `bad` |
 | `status` | `empty` → `drafted` (an AI suggestion, not yet accepted) → `ready`; `error` when the binding is unusable |
 | `confidence` | 0–1 from the provider. Low values show a "verify" badge. |
 | `notes` | Plain-language explanations: what could not be matched, what re-queries the source, and why |
+| `style` | Optional. How this one flag is drawn, over the page's `design` ([DESIGN.md](DESIGN.md)); never touches the binding. Chart fields shared with `design.charts`: `palette` (`skin`, `signal`, `ember`, `meadow`, `dusk`, `mono`, `custom` with `colors`), `fill`, `corners`, `glow`, `curve`, `lineWidth`, `markers`, `labels`, `legend`, `gridLines`, `focus`, `motion` (`none`, `calm`, `lively`), `striped`, `tableBars`, `titleAlign`. Flag-only: `barLayout` (`auto`, `stacked`, `grouped`, `percent`), `orientation`, `pieForm` (`donut`, `pie`, `rose`, `funnel`, `treemap`), `kpiForm` (`number`, `gauge`) with `gaugeMax`, `kpiSize`, `zeroBase` (lines only; bars always start at zero), `target` `{ value, label }`, `average`, `zoom`, `accent` (a `#rrggbb` strip), `hideTitle`. Checked by `parseFlagStyle` in `src/core/design.ts`; an unknown value is dropped. |
 
 ## Validation
 

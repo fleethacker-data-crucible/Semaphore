@@ -4,6 +4,7 @@
 // The flag itself is never changed: the drilled version is derived from it and a list of steps.
 
 import type { CatalogIndex } from './catalog.ts';
+import { isRichKind } from './kinds.ts';
 import type { Cell } from './crossfilter.ts';
 import type { DimensionRef, Filter, Flag, TimeGrain } from './hoist.ts';
 import { periodStart } from './sql.ts';
@@ -103,7 +104,7 @@ export function drillView(flag: Flag, steps: readonly DrillStep[], index: Catalo
   // A comparison carries down a drill: the earlier window is narrowed by the same steps, moved back
   // with it (drill-compare.ts). The rows behind a value are a list, not a series, so it ends there.
   if (detail) delete binding.compare;
-  return { flag: { ...flag, kind: kind === 'kpi' || kind === 'pie' ? 'bar' : kind, binding }, detail };
+  return { flag: { ...flag, kind: kind === 'kpi' || kind === 'pie' || isRichKind(kind) ? 'bar' : kind, binding }, detail };
 }
 
 /** "Destroyer › 2026 Q3" for the breadcrumb. */

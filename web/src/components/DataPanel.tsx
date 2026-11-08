@@ -2,7 +2,7 @@
 // this page, never uploaded), profile a server source into a proposed catalog, and rename
 // measures and fields or teach them more words. Every change is checked before it is used.
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Database, FileSpreadsheet, Network, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import type { Catalog, Field, Metric } from '../../../src/core/catalog.ts';
 import type { IntelligenceProvider } from '../../../src/core/intelligence/contract.ts';
@@ -12,6 +12,13 @@ import { CleanTab, RelationshipsTab } from './CleanPanel.tsx';
 import { useModal } from '../lib/modal.ts';
 import { recordSkill, takeDataTab } from '../lib/skills.ts';
 import { EmptyState, emptyActionClass } from './EmptyState.tsx';
+import { LocalDbSection } from './LocalDbSection.tsx';
+import { LOCAL_SOURCE_ID } from '../lib/localdb.ts';
+
+// Amazon S3 browser and RDS help (AwsData.tsx), loaded when the Sources tab first shows with a server.
+const AwsData = lazy(() => import('./AwsData.tsx').then((m) => ({ default: m.AwsData })));
+// Data-prep pipelines on the local database (PipelinesView.tsx), loaded when first opened.
+const PipelinesView = lazy(() => import('./PipelinesView.tsx').then((m) => ({ default: m.PipelinesView })));
 
 export interface DataPanelProps {
   catalog: Catalog;
@@ -49,7 +56,7 @@ export function DataPanel(p: DataPanelProps) {
           <button type="button" onClick={p.onLineage} className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs hover:border-accent" title="Which flags read which measures and fields, back to the tables">
             <Network size={13} /> Lineage
           </button>
-          <button type="button" onClick={p.onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <button type="button" onClick={p.onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>
         </header>
@@ -82,13 +89,17 @@ export function DataPanel(p: DataPanelProps) {
 function Sources(p: DataPanelProps) {
   const [tables, setTables] = useState<Record<string, string[] | string>>({});
   const [pick, setPick] = useState<Record<string, string>>({});
+  const [pipelines, setPipelines] = useState(false);
   const inCatalog = new Set(p.catalog.sources.map((s) => s.id));
+  // The built-in local database has its own section (LocalDbSection); the rest come from sources.json.
+  const hasLocal = p.server?.sources.some((s) => s.id === LOCAL_SOURCE_ID) ?? false;
+  const remoteSources = (p.server?.sources ?? []).filter((s) => s.id !== LOCAL_SOURCE_ID);
   const addFiles = (files: FileList) => {
     p.onAddCsv(files);
     recordSkill('csv');
   };
   useEffect(() => {
-    for (const s of p.server?.sources ?? []) {
+    for (const s of remoteSources) {
       if (tables[s.id]) continue;
       profileTables(s.id).then(
         (r) => setTables((t) => ({ ...t, [s.id]: r.tables.map((x) => x.name) })),
@@ -115,7 +126,7 @@ function Sources(p: DataPanelProps) {
                     {s.kind} · {s.dialect} · {tableCount} table{tableCount === 1 ? '' : 's'} · <span className={where === 'not connected' ? 'text-warn' : ''}>{where}</span>
                   </p>
                 </div>
-                <button type="button" onClick={() => p.onRemoveSource(s.id)} aria-label={`Remove ${s.label}`} title="Remove this source and its measures and fields" className="rounded p-1 text-ink-3 hover:text-bad">
+                <button type="button" onClick={() => p.onRemoveSource(s.id)} aria-label={`Remove ${s.label}`} title="Remove this source and its measures and fields" className="grid size-8 place-items-center rounded-md text-ink-3 hover:text-bad">
                   <Trash2 size={14} />
                 </button>
               </li>
@@ -162,7 +173,7 @@ function Sources(p: DataPanelProps) {
           </button>
         )}
         {p.server ? (
-          (p.server.sources.length ? p.server.sources : []).map((s) => {
+          remoteSources.map((s) => {
             const t = tables[s.id];
             return (
               <div key={s.id} className="space-y-1.5 rounded-lg border border-line px-3 py-2">
@@ -199,9 +210,27 @@ function Sources(p: DataPanelProps) {
         ) : (
           <p className="text-xs text-ink-3">Databases (ODBC and OLE DB) are reached through the Semaphore server. Start Semaphore with Launch-Semaphore.bat and list them in sources.json.</p>
         )}
-        {p.server && p.server.sources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
+        {p.server && remoteSources.length === 0 && <p className="text-xs text-ink-3">No databases are set up yet. Add them to sources.json in {p.server.home}.</p>}
+        {hasLocal && <LocalDbSection busy={p.busy} onProfile={p.onProfile} />}
+        {hasLocal && (
+          <button type="button" onClick={() => setPipelines(true)} className="w-full rounded-lg border border-line px-3 py-2 text-left text-sm hover:border-accent">
+            <span className="font-medium">Pipelines</span>
+            <span className="block text-[11px] text-ink-3">Rebuild tidy tables in the local database step by step: import files, run saved scripts, pull from live sources, refresh what reads them. On demand or on a schedule.</span>
+          </button>
+        )}
+        {pipelines && p.server && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading pipelines…</p>}>
+            <PipelinesView sources={p.server.sources} onClose={() => setPipelines(false)} onProfile={p.onProfile} />
+          </Suspense>
+        )}
         {p.busy && <p className="text-xs text-accent">{p.busy}</p>}
       </section>
+
+      {p.server && (
+        <Suspense fallback={<p className="text-xs text-ink-3">Loading Amazon S3 and RDS…</p>}>
+          <AwsData home={p.server.home} />
+        </Suspense>
+      )}
 
       {p.notes.length > 0 && (
         <section className="space-y-1">
@@ -231,7 +260,7 @@ function Measures({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Cat
       {catalog.metrics.map((m) => (
         <li key={m.key} className="space-y-1 rounded-lg border border-line p-2">
           <div className="flex items-center gap-2">
-            <input value={m.label} onChange={(e) => set(m.key, { label: e.target.value.slice(0, 80) || m.label })} aria-label="Measure name" className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-sm font-medium hover:border-line focus:border-accent focus:outline-none" />
+            <LabelInput value={m.label} label="Measure name" onCommit={(label) => set(m.key, { label })} />
             <span className="rounded bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-3">{m.agg}</span>
             <select value={m.format ?? 'number'} onChange={(e) => set(m.key, { format: e.target.value as Metric['format'] })} aria-label="Format" className="rounded border border-line bg-panel px-1 text-[11px]">
               <option value="number">number</option>
@@ -253,7 +282,7 @@ function Fields({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Catal
       {catalog.fields.map((f) => (
         <li key={f.key} className="space-y-1 rounded-lg border border-line p-2">
           <div className="flex items-center gap-2">
-            <input value={f.label} onChange={(e) => set(f.key, { label: e.target.value.slice(0, 80) || f.label })} aria-label="Field name" className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-sm font-medium hover:border-line focus:border-accent focus:outline-none" />
+            <LabelInput value={f.label} label="Field name" onCommit={(label) => set(f.key, { label })} />
             <span className="rounded bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-3">{f.type}</span>
             {f.cardinality !== undefined && <span className="text-[10px] text-ink-3">{f.cardinality.toLocaleString('en-US')} values</span>}
           </div>
@@ -267,16 +296,60 @@ function Fields({ catalog, onCatalog }: { catalog: Catalog; onCatalog: (c: Catal
   );
 }
 
+/**
+ * A measure's or field's name: edited freely (it may be emptied while retyping) and kept in the
+ * catalog on every keystroke that leaves a name; on blur an empty box goes back to the last name.
+ */
+function LabelInput({ value, label, onCommit }: { value: string; label: string; onCommit: (label: string) => void }) {
+  const [text, setText] = useState(value);
+  const focused = useRef(false);
+  // The catalog changed under the box (another panel, the folder's copy): show the new name unless typing here.
+  useEffect(() => {
+    if (!focused.current) setText(value);
+  }, [value]);
+  return (
+    <input
+      value={text}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={(e) => {
+        const next = e.target.value.slice(0, 80);
+        setText(next);
+        if (next.trim()) onCommit(next);
+      }}
+      onBlur={() => {
+        focused.current = false;
+        if (!text.trim()) setText(value);
+      }}
+      aria-label={label}
+      className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-sm font-medium hover:border-line focus:border-accent focus:outline-none"
+    />
+  );
+}
+
 function SynonymInput({ value, onChange }: { value: string[]; onChange: (s: string[]) => void }) {
-  const [text, setText] = useState(value.join(', '));
-  useEffect(() => setText(value.join(', ')), [value]);
+  const joined = value.join(', ');
+  const [text, setText] = useState(joined);
+  const focused = useRef(false);
+  // Only a real change to the words resets the box, and never while the analyst is typing in it:
+  // `value` is a fresh array on every render of the parent.
+  useEffect(() => {
+    if (!focused.current) setText(joined);
+  }, [joined]);
   return (
     <label className="flex items-center gap-2 px-1 text-[11px] text-ink-3">
       Also called
       <input
         value={text}
+        onFocus={() => {
+          focused.current = true;
+        }}
         onChange={(e) => setText(e.target.value)}
-        onBlur={() => onChange(words(text))}
+        onBlur={() => {
+          focused.current = false;
+          onChange(words(text));
+        }}
         placeholder="other words for it, comma separated"
         className="min-w-0 flex-1 rounded border border-line bg-panel px-1.5 py-0.5 text-ink focus:border-accent focus:outline-none"
       />

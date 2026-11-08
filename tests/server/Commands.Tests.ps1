@@ -22,6 +22,8 @@ BeforeAll {
             foreach ($m in [regex]::Matches($text, '\$p -eq ''(/api/[A-Za-z0-9/_-]+)''')) { $out.Add($m.Groups[1].Value) }
             foreach ($m in [regex]::Matches($text, '\$p -eq ''(/api/[A-Za-z0-9/_-]+)'' -or \$p -eq ''(/api/[A-Za-z0-9/_-]+)''')) { $out.Add($m.Groups[2].Value) }
             foreach ($m in [regex]::Matches($text, '\$p -match ''\^/api/\(([A-Za-z|]+)\)')) { foreach ($k in $m.Groups[1].Value.Split('|')) { $out.Add("/api/$k"); $out.Add("/api/$k/{id}") } }
+            # '^/api/<name>/([^/]+)(?:/([^/]+))?$': one id, or two.
+            foreach ($m in [regex]::Matches($text, '\$p -match ''\^(/api/[a-z-]+)/\(\[\^/\]\+\)\(\?:/\(\[\^/\]\+\)\)\?\$''')) { $out.Add($m.Groups[1].Value + '/{id}'); $out.Add($m.Groups[1].Value + '/{id}/{id}') }
         }
         return @($out | Sort-Object -Unique)
     }
@@ -157,6 +159,29 @@ Describe 'Commands run on a Semaphore folder' {
             (ConvertTo-Json -InputObject $r.Result -Depth 5) | Should -Not -BeLike '*never-print*'
         } finally { Remove-Item Env:\SEMAPHORE_AI_KEY -ErrorAction SilentlyContinue }
     }
+    It 'keeps the stored text of a document for the CLI to print unchanged (get carries Raw)' {
+        $deep = '{"version":1,"title":"Deep","a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":{"j":{"k":{"l":{"m":{"n":{"o":{"p":{"q":"bottom"}}}}}}}}}}}}}}}},"unicode":"caf' + [char]0xE9 + ' ' + [char]0x2192 + ' ok","n":1.50}'
+        $file = Join-Path $TestDrive 'deep.json'
+        [IO.File]::WriteAllText($file, $deep, (New-Object Text.UTF8Encoding $false))
+        (Run 'hoist put' @{ id = 'deep'; file = $file } $true $false $script:H).Ok | Should -BeTrue
+        $r = Run 'hoist get' @{ id = 'deep' } $false $false $script:H
+        $r.Ok | Should -BeTrue
+        $r.Raw | Should -Be $deep
+        $r.Result.title | Should -Be 'Deep'
+        (Run 'hoist list' @{} $false $false $script:H).ContainsKey('Raw') | Should -BeFalse
+    }
+    It 'reports a refresh run that found another Semaphore running (exit 3) as nothing refreshed' {
+        Mock Get-SemInstances { return @() }
+        Mock Start-Process { return [pscustomobject]@{ ExitCode = 3 } }
+        $r = Run 'refresh run' @{} $false $false $script:H
+        $r.Ok | Should -BeFalse
+        $r.Result.exitCode | Should -Be 3
+        $r.Error | Should -BeLike '*already running*nothing was refreshed*'
+        Mock Start-Process { return [pscustomobject]@{ ExitCode = 0 } }
+        (Run 'refresh run' @{} $false $false $script:H).Ok | Should -BeTrue
+        Mock Start-Process { return [pscustomobject]@{ ExitCode = 1 } }
+        (Run 'refresh run' @{} $false $false $script:H).Error | Should -BeLike '*exited with code 1*'
+    }
     It 'asks for --yes before stopping, and dry-run only describes' {
         (Run 'session stop' @{} $false $false $script:H).Usage | Should -BeTrue
         (Run 'session stop' @{} $false $true $script:H).Result.dryRun | Should -BeTrue
@@ -195,6 +220,23 @@ Describe 'The CLI script' {
         (Invoke-SemCli @('nonsense')).Code | Should -Be 2
         (Invoke-SemCli @('hoist', 'get')).Code | Should -Be 2
         (Invoke-SemCli @('hoist', 'delete', '--id', 'x')).Code | Should -Be 2
+    }
+    It 'prints and writes a document byte for byte as stored: deep nesting, unicode and number spelling survive' {
+        $deep = '{"version":1,"title":"Deep","a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":{"j":{"k":{"l":{"m":{"n":{"o":{"p":{"q":"bottom"}}}}}}}}}}}}}}}},"unicode":"caf' + [char]0xE9 + ' ' + [char]0x2192 + ' ok","n":1.50}'
+        $file = Join-Path $TestDrive 'deep-cli.json'
+        [IO.File]::WriteAllText($file, $deep, (New-Object Text.UTF8Encoding $false))
+        (Invoke-SemCli @('hoist', 'put', '--id', 'deep', '--file', $file, '--yes')).Code | Should -Be 0
+        $r = Invoke-SemCli @('hoist', 'get', '--id', 'deep', '--json')
+        $r.Code | Should -Be 0
+        # The console's code page decides how non-ASCII text reaches stdout, so stdout is compared without it; the file below is compared byte for byte.
+        $ascii = { param($s) $s -replace '[^\x00-\x7F]', '?' }
+        (& $ascii $r.Text) | Should -Be (& $ascii ('{"schema":"semaphore.result/1","command":"semaphore hoist get","ok":true,"result":' + $deep + '}'))
+        ($r.Text | ConvertFrom-Json).result.a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q | Should -Be 'bottom'
+        $plain = Invoke-SemCli @('hoist', 'get', '--id', 'deep')
+        (& $ascii $plain.Text.Trim()) | Should -Be (& $ascii $deep)
+        $out = Join-Path $TestDrive 'deep-out.json'
+        (Invoke-SemCli @('hoist', 'get', '--id', 'deep', '--out', $out)).Code | Should -Be 0
+        [IO.File]::ReadAllText($out, [Text.Encoding]::UTF8).Contains('"result":' + $deep + '}') | Should -BeTrue
     }
     It 'writes --out as UTF-8 without a BOM' {
         $out = Join-Path $TestDrive 'out.json'

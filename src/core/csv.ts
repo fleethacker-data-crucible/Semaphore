@@ -24,6 +24,14 @@ export function checkCsvSize(bytes: number): void {
   if (bytes > CSV_LIMITS.bytes) throw new CsvError(`The file is larger than ${CSV_LIMITS.bytes / 1024 / 1024} MB.`);
 }
 
+/** The busy line while a file is read: which one, how far through the batch, and how big when that matters. */
+export function readingLabel(name: string, at: number, total: number, bytes: number): string {
+  const size = bytes >= 1024 * 1024 ? `, ${Math.round(bytes / 1024 / 1024)} MB` : '';
+  const place = total > 1 ? `${at} of ${total}` : '';
+  const detail = `${place}${place ? size : size.slice(2)}`;
+  return `Reading ${name}${detail ? ` (${detail})` : ''}…`;
+}
+
 /** Data rows read to decide each column's type. The same rows are checked for leading zeros. */
 const SAMPLE_ROWS = 5000;
 const QUOTE = 34;
@@ -346,14 +354,22 @@ function convert(raw: string, type: FieldType): Cell | undefined {
   }
 }
 
-/** Column names must pass isIdentifier(): letters, digits, underscore and space. */
+/** Names that would write to a plain object's prototype chain instead of to a row or a table. */
+const RESERVED = /^(__proto__|constructor|prototype)$/i;
+
+/**
+ * Column names must pass isIdentifier(): letters, digits, underscore and space. A name that is an
+ * object's own machinery (`__proto__`) gets a prefix, so a row keyed by column names stays a row.
+ */
 function cleanName(h: string): string {
   let s = h.trim().replace(/[^A-Za-z0-9_ ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (/^[0-9]/.test(s)) s = `c ${s}`;
+  if (RESERVED.test(s)) s = `c ${s}`;
   return s;
 }
 
 export function tableName(fileName: string): string {
   const base = fileName.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
-  return cleanName(base).replace(/ /g, '_') || 'data';
+  const name = cleanName(base).replace(/ /g, '_') || 'data';
+  return RESERVED.test(name) ? `c_${name}` : name;
 }

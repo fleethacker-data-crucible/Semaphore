@@ -214,6 +214,32 @@ Describe 'Lake engine' {
         }
     }
 
+    Context 'Usage file under concurrent writers' {
+        It 'adds every worker''s bytes exactly once (a named mutex serialises read-add-write)' {
+            $usageHome = Join-Path $TestDrive ('usage-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $usageHome | Out-Null
+            $now = [datetime]'2026-11-07T10:00:00'
+            $lakeFile = Join-Path $server 'Lake.ps1'
+            $pool = [runspacefactory]::CreateRunspacePool(1, 4); $pool.Open()
+            $jobs = @()
+            try {
+                foreach ($w in 1..4) {
+                    $ps = [powershell]::Create(); $ps.RunspacePool = $pool
+                    [void]$ps.AddScript({
+                        param($Server, $UsageHome, $Now)
+                        foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1') { . (Join-Path $Server $f) }
+                        for ($i = 0; $i -lt 25; $i++) { [void](Add-SemLakeUsage -HomeDir $UsageHome -Bytes 1000 -Now $Now) }
+                        return 'done'
+                    }).AddArgument($server).AddArgument($usageHome).AddArgument($now)
+                    $jobs += @{ PS = $ps; Handle = $ps.BeginInvoke() }
+                }
+                foreach ($j in $jobs) { $j.Handle.AsyncWaitHandle.WaitOne(60000) | Should -BeTrue; $j.PS.EndInvoke($j.Handle) | Should -Be 'done'; $j.PS.Dispose() }
+            } finally { $pool.Close(); $pool.Dispose() }
+            Get-SemLakeUsedBytes -HomeDir $usageHome -Now $now | Should -Be 100000
+            Test-Path -LiteralPath $lakeFile | Should -BeTrue
+        }
+    }
+
     Context 'Profiling' {
         It 'reads tables and columns from Glue, with no scan' {
             $fake = Start-FakeAws

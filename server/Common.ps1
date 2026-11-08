@@ -60,8 +60,18 @@ function Get-SemDefaultSettings {
         home = ''; port = 0; browser = 'auto'; appWindow = $true
         heartbeatTimeoutSec = 90; leavingGraceSec = 5; firstHeartbeatSec = 120; queryWorkers = 4
         view = 'builder'; playbookReviewer = ''; refreshTimeoutMin = 30; skin = ''
+        # The Start-Fairlead.ps1 (or Fairlead executable) path the Fairlead key may be sent to; '' accepts the path the
+        # process that holds Fairlead's port runs, whatever it is (docs/INTELLIGENCE_PROVIDERS.md, "Port authority").
+        fairleadPath = ''
         # Social and motivational features (docs/PLAYBOOK.md); each can be switched off per deployment.
         signalBook = $true; impact = $true; teamLog = $true; showAskers = $true; bz = $true
+        # Local database (docs/LOCAL-DATABASE.md): the hosts whose \\host\share paths it may open (opening one sends the
+        # user's Windows sign-in to that host), and the largest file the page may upload, in GB.
+        localShares = @(); localImportMaxGB = 20
+        # Amazon S3 browsing and import (S3.ps1) and the AWS session for it (aws.vault, aws.fips); checked where used.
+        s3 = $null; aws = $null
+        # TalkForge for spoken answers and voice input (Get-SemTalkForgeSettings): autoStart, folder, input.
+        voice = $null
     }
 }
 
@@ -90,6 +100,8 @@ function Merge-SemSettingsFile {
     # Skin name (docs/SKINS.md): a built-in one (fleet, classic) or one defined in config\skin.css.
     if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
+    if ($names -contains 'fairleadPath' -and $null -ne $j.fairleadPath) { $Settings.fairleadPath = ([string]$j.fairleadPath).Trim() }
+    foreach ($k in @('s3', 'aws', 'voice')) { if ($names -contains $k -and $j.$k -is [Management.Automation.PSCustomObject]) { $Settings[$k] = $j.$k } }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0
@@ -97,6 +109,13 @@ function Merge-SemSettingsFile {
         }
     }
     if ($Settings.queryWorkers -gt 16) { $Settings.queryWorkers = 16 }
+    if ($names -contains 'localShares' -and $null -ne $j.localShares) {
+        $Settings.localShares = @(@($j.localShares) | ForEach-Object { ([string]$_).Trim().TrimStart('\') } | Where-Object { $_ -cmatch '\A[A-Za-z0-9][A-Za-z0-9._-]{0,252}\z' })
+    }
+    if ($names -contains 'localImportMaxGB' -and $null -ne $j.localImportMaxGB) {
+        $n = 0
+        if ([int]::TryParse([string]$j.localImportMaxGB, [ref]$n) -and $n -ge 1 -and $n -le 4096) { $Settings.localImportMaxGB = $n }
+    }
     return $true
 }
 
@@ -106,6 +125,60 @@ function Read-SemSettings {
     [void](Merge-SemSettingsFile -Settings $s -Path ([IO.Path]::Combine($Root, 'config', 'settings.json')))
     [void](Merge-SemSettingsFile -Settings $s -Path ([IO.Path]::Combine($Root, 'config', 'settings.local.json')))
     return $s
+}
+
+# ---------------------------------------------------------------------------
+# TalkForge (spoken answers and voice input), as in Lazarette (lib/core/Config.ps1, PR 141/142):
+# settings "voice": { "autoStart": true, "folder": "", "input": true }.
+#   autoStart  start TalkForge when speech is needed and it is not running (Intelligence.ps1)
+#   folder     the TalkForge folder; SEMAPHORE_VOICE_FOLDER (environment or config\semaphore.env) wins;
+#              empty finds a TalkForge folder next to the Semaphore folder or in %USERPROFILE%\Projects
+#   input      the deployment switch for voice input: false blocks the microphone for the page
+#              (Permissions-Policy microphone=()), the /stt/ files and GET /api/voice/dictation/status
+# ---------------------------------------------------------------------------
+function Test-SemTalkForgeFolderText {
+    # '' when a configured TalkForge folder is a full local path, else the reason.
+    param([string]$Path)
+    if ($Path -notmatch '\A[A-Za-z]:\\' -or $Path -match '[\r\n"<>|?*]' -or $Path -match '(\A|\\)\.\.(\\|\z)') { return 'The TalkForge folder must be a full path such as C:\Users\you\Projects\TalkForge.' }
+    return ''
+}
+
+function Find-SemTalkForge {
+    # The TalkForge folder: the configured one (no fallback when it is set), else a TalkForge folder next
+    # to the Semaphore folder or in %USERPROFILE%\Projects. A folder counts when it has tools\talkforge.mjs.
+    param([string]$Configured = '', [string]$SemaphoreRoot = (Get-SemRoot))
+    $candidates = @()
+    if ($Configured) {
+        if (Test-SemTalkForgeFolderText $Configured) { return '' }
+        $candidates = @($Configured.TrimEnd('\'))
+    } else {
+        if ($SemaphoreRoot) { $candidates += (Join-Path (Split-Path -Parent $SemaphoreRoot) 'TalkForge') }
+        if ($env:USERPROFILE) { $candidates += (Join-Path $env:USERPROFILE 'Projects\TalkForge') }
+    }
+    foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath (Join-Path $c 'tools\talkforge.mjs') -PathType Leaf)) { return $c } }
+    return ''
+}
+
+function Get-SemTalkForgeSettings {
+    # AutoStart, Input, FolderSetting (as configured), FolderSource (environment | settings | ''), Folder (found, or '').
+    param([string]$Root = (Get-SemRoot), $Settings = $null)
+    if (-not $Root) { $Root = Get-SemRoot }
+    if ($null -eq $Settings) { try { $Settings = Read-SemSettings -Root $Root } catch { $Settings = Get-SemDefaultSettings } }
+    $autoStart = $true; $voiceInput = $true; $folder = ''
+    $v = $Settings.voice
+    if ($v -is [Management.Automation.PSCustomObject]) {
+        $p = $v.PSObject.Properties
+        if ($null -ne $p['autoStart'] -and $p['autoStart'].Value -is [bool]) { $autoStart = [bool]$p['autoStart'].Value }
+        if ($null -ne $p['input'] -and $p['input'].Value -is [bool]) { $voiceInput = [bool]$p['input'].Value }
+        if ($null -ne $p['folder'] -and $null -ne $p['folder'].Value) { $folder = ([string]$p['folder'].Value).Trim() }
+    }
+    $source = ''
+    $fromEnv = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_FOLDER' -Root $Root
+    if ($fromEnv) { $folder = ([string]$fromEnv).Trim(); $source = 'environment' }
+    elseif ($folder) { $source = 'settings' }
+    $problem = ''
+    if ($folder) { $problem = Test-SemTalkForgeFolderText $folder }
+    return @{ AutoStart = $autoStart; Input = $voiceInput; FolderSetting = $folder; FolderSource = $source; FolderProblem = $problem; Folder = (Find-SemTalkForge -Configured $folder -SemaphoreRoot $Root) }
 }
 
 # ---------------------------------------------------------------------------

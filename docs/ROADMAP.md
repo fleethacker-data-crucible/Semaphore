@@ -2,7 +2,7 @@
 
 ## v0.1: foundations
 
-Framework-free core with tests: catalog, hoist and flag model, validation, lego grid, thin-client query planner, SQL for four dialects, local cross-filtering, and the intelligence layer (local rules, contract endpoint, OpenAI-compatible gateway, fallback).
+Framework-free core with tests: catalog, hoist and flag model, validation, lego grid, thin-client query planner, SQL for five dialects (postgres, oracle, access, tsql, ansi; synapse and spark came later), local cross-filtering, and the intelligence layer (local rules, contract endpoint, OpenAI-compatible gateway, fallback).
 
 ## v0.2: local server, sources and the canvas
 
@@ -18,7 +18,7 @@ Done:
 
 From the original v0.2 list, now built:
 
-- **Done:** secrets from the Lazarette vault through the same in-process contract Halyard uses ([VAULT.md](VAULT.md)): database passwords and AWS sessions. Tested against a fake Lazarette that follows its documented contract; a real vault is for Anthony to check.
+- **Done:** secrets from Lazarette by name over its loopback tool route, never by loading its engine ([VAULT.md](VAULT.md)): database passwords, users, AWS sessions and Foundry tokens. Tested against a fake Lazarette that follows its documented contract; a real vault is for Anthony to check.
 - **Done, tested against simulated services only:** Redshift (Data API), Azure Synapse/SQL (ODBC with Entra sign-in) and Palantir Foundry (SQL queries API) connectors ([CONNECTORS.md](CONNECTORS.md)). Athena (the S3 data lake) is done too: see "Where the data lives" below.
 - ~~Remote intelligence providers from the UI~~: done, through Fairlead and the server-side relay (`/api/ai`, [INTELLIGENCE_PROVIDERS.md](INTELLIGENCE_PROVIDERS.md)).
 - ~~Restyle to the unified UI~~: done, Fleet UI v0.2 as the default skin, with skins for last-minute changes ([SKINS.md](SKINS.md)).

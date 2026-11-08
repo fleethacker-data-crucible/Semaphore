@@ -31,12 +31,17 @@ export interface RenderOptions {
    * for ODBC and OLE DB, which bind positionally whatever the database.
    */
   placeholders?: 'native' | 'question';
+  /**
+   * Write the SQL in another dialect than the source's: for showing it in the analyst's own SQL
+   * language (Settings > SQL). What runs is always rendered for the source.
+   */
+  dialect?: Dialect;
 }
 
 export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = new Date(), options: RenderOptions = {}): RenderedSql {
   const source = index.source(plan.source);
   if (!source) throw new SqlError(`Unknown source "${plan.source}".`);
-  const dialect = source.dialect;
+  const dialect = options.dialect ?? source.dialect;
   if (!isSqlDialect(dialect)) throw new SqlError('This source uses an unsupported SQL dialect. Configure a supported SQL profile before generating a query.');
   const params: SqlParam[] = [];
   const bind = (p: SqlParam): string => {
@@ -168,7 +173,7 @@ export function renderSql(plan: QueryPlan, index: CatalogIndex, today: Date = ne
   // A flag with fields and no metrics (a filter list) asks for the distinct values.
   else if (groupBy.length) sql = sql.replace(/^SELECT /, 'SELECT DISTINCT ');
   sql += orderBy;
-  if (dialect === 'postgres' || dialect === 'ansi' || dialect === 'spark') sql += ` LIMIT ${limit}`;
+  if (dialect === 'postgres' || dialect === 'ansi' || dialect === 'spark' || dialect === 'mysql' || dialect === 'sqlite') sql += ` LIMIT ${limit}`;
   else if (dialect === 'oracle') sql += ` FETCH FIRST ${limit} ROWS ONLY`;
   return { dialect, sql, params };
 }
@@ -189,6 +194,9 @@ export function filterSql(f: Filter, col: string, type: FieldType, bind: (p: Sql
     type === 'date' ? `${col} < ${bind({ value: nextDay(String(v)), type: 'date' })}` : `${col} <= ${p(v)}`;
   switch (f.op) {
     case 'eq':
+      // An empty value means "blank": the in-page engine reads '' and null alike, so SQL does too
+      // (a drill into the blank bar, drill.ts). Only text can hold an empty string.
+      if (f.values[0] === '') return type === 'string' ? `(${col} IS NULL OR ${col} = ${p('')})` : `${col} IS NULL`;
       if (type === 'date') return `${col} >= ${p(f.values[0]!)} AND ${upTo(f.values[0]!)}`;
       return `${col} = ${p(f.values[0]!)}`;
     case 'in':
@@ -270,7 +278,7 @@ export function periodStart(today: Date, unit: TimeGrain, back: number): string 
 
 export function quote(name: string, dialect: Dialect): string {
   if (!isIdentifier(name) || name.includes('.')) throw new SqlError(`Unsafe identifier "${name}".`);
-  if (dialect === 'spark') return `\`${name}\``;
+  if (dialect === 'spark' || dialect === 'mysql') return `\`${name}\``;
   return dialect === 'access' || dialect === 'tsql' || dialect === 'synapse' ? `[${name}]` : `"${name}"`;
 }
 
@@ -295,6 +303,37 @@ export function truncate(col: string, grain: TimeGrain, dialect: Dialect): strin
   if (dialect === 'synapse') {
     // Synapse pools have no DATETRUNC. DATEADD/DATEDIFF counts whole periods from a fixed origin; 1900-01-01 was a Monday.
     return grain === 'week' ? `DATEADD(week, DATEDIFF(day, '19000101', ${col}) / 7, '19000101')` : `DATEADD(${grain}, DATEDIFF(${grain}, 0, ${col}), 0)`;
+  }
+  if (dialect === 'mysql') {
+    // MySQL 5.7+ and MariaDB 10.3+. WEEKDAY() is 0 on Monday; MAKEDATE(y, 1) is 1 January.
+    switch (grain) {
+      case 'day':
+        return `DATE(${col})`;
+      case 'week':
+        return `DATE(DATE_SUB(${col}, INTERVAL WEEKDAY(${col}) DAY))`;
+      case 'month':
+        return `DATE(DATE_FORMAT(${col}, '%Y-%m-01'))`;
+      case 'quarter':
+        return `DATE(MAKEDATE(YEAR(${col}), 1) + INTERVAL (QUARTER(${col}) - 1) QUARTER)`;
+      case 'year':
+        return `MAKEDATE(YEAR(${col}), 1)`;
+    }
+  }
+  if (dialect === 'sqlite') {
+    // Dates are ISO text in Semaphore's local database; date() with modifiers truncates them.
+    // strftime('%w') is 0 on Sunday, so (w + 6) % 7 days back is the Monday.
+    switch (grain) {
+      case 'day':
+        return `date(${col})`;
+      case 'week':
+        return `date(${col}, '-' || ((CAST(strftime('%w', ${col}) AS INTEGER) + 6) % 7) || ' days')`;
+      case 'month':
+        return `date(${col}, 'start of month')`;
+      case 'quarter':
+        return `date(${col}, 'start of month', '-' || ((CAST(strftime('%m', ${col}) AS INTEGER) - 1) % 3) || ' months')`;
+      case 'year':
+        return `date(${col}, 'start of year')`;
+    }
   }
   if (dialect === 'access') {
     switch (grain) {

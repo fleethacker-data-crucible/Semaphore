@@ -11,7 +11,7 @@ import type { CatalogIndex } from './catalog.ts';
 import { applySelections, type CrossfilterResult, lineUp, type ResultRow, type Selections } from './crossfilter.ts';
 import { type Binding, dimensionKey, type Filter, type Flag, type Hoist } from './hoist.ts';
 import { comparisonPlan, comparisonShift, planFlag, type QueryPlan } from './planner.ts';
-import { entryFlag, entryHoist, type PlaybookEntry } from './playbook.ts';
+import { entryFlag, entryHoist, isFilterShape, type PlaybookEntry } from './playbook.ts';
 
 export interface Snapshot {
   version: 1;
@@ -27,6 +27,8 @@ export interface Snapshot {
   previous?: { plan: QueryPlan; rows: ResultRow[] };
   truncated: boolean;
   updated: string;
+  /** Set by a pipeline's Publish step (server/Pipeline.ps1) when the tables it reads were rebuilt: refresh it. */
+  invalidatedAt?: string;
 }
 
 /** Rows a snapshot may hold; enough for any reasonable pre-split, small enough for a shared folder. */
@@ -63,6 +65,7 @@ export function snapshotPlan(entry: PlaybookEntry, index: CatalogIndex): QueryPl
 export function isStale(s: Snapshot | undefined, entry: PlaybookEntry, now: Date = new Date()): boolean {
   if (!s) return true;
   if (s.updated < entry.acceptedAt) return true; // the entry changed after the snapshot was taken
+  if (s.invalidatedAt && s.invalidatedAt > s.asOf) return true; // a pipeline rebuilt the tables it reads
   return now.getTime() - Date.parse(s.asOf) > SNAPSHOT_MAX_AGE_HOURS * 3_600_000;
 }
 
@@ -165,8 +168,28 @@ export function answerFromSnapshots(
   return out;
 }
 
+/** A plan as answerFromSnapshots reads it: every list it indexes into is an array, every filter has a field and an op. */
+function isPlanShape(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const p = v as Record<string, unknown>;
+  const lists = ['dimensions', 'aggregates', 'metrics', 'filters', 'own', 'slices', 'live'] as const;
+  return (
+    typeof p.source === 'string' &&
+    typeof p.table === 'string' &&
+    lists.every((k) => Array.isArray(p[k])) &&
+    (p.dimensions as unknown[]).every((d) => typeof d === 'object' && d !== null && typeof (d as { key?: unknown }).key === 'string' && typeof (d as { alias?: unknown }).alias === 'string') &&
+    (p.metrics as unknown[]).every((m) => typeof m === 'object' && m !== null && typeof (m as { key?: unknown }).key === 'string') &&
+    (p.filters as unknown[]).every(isFilterShape) &&
+    typeof p.rowCap === 'number'
+  );
+}
+
+/** Validate a snapshot read from the shared folder; a malformed one is skipped by the caller. */
 export function isSnapshot(raw: unknown): raw is Snapshot {
   if (typeof raw !== 'object' || raw === null) return false;
   const s = raw as Record<string, unknown>;
-  return s.version === 1 && typeof s.id === 'string' && typeof s.asOf === 'string' && typeof s.plan === 'object' && s.plan !== null && Array.isArray(s.rows);
+  if (s.version !== 1 || typeof s.id !== 'string' || typeof s.asOf !== 'string' || !isPlanShape(s.plan) || !Array.isArray(s.rows)) return false;
+  if (s.previous === undefined) return true;
+  const prev = s.previous as Record<string, unknown> | null;
+  return typeof prev === 'object' && prev !== null && isPlanShape(prev.plan) && Array.isArray(prev.rows);
 }

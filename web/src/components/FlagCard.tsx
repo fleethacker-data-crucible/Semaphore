@@ -5,7 +5,8 @@
 // it holds focus. It redraws only when its own numbers can change (lib/relevance.ts): `hoist` is
 // the planning slice of the page, and `selections` only those this flag can use.
 
-import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Component, type ReactNode, memo, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { CHART_KINDS } from '../../../src/core/kinds.ts';
 import { AlertTriangle, ArrowUpLeft, Check, FlipHorizontal2, Flag as FlagIcon, GripHorizontal, Lightbulb, Loader2, RefreshCcw, Sparkles, Table2 } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
@@ -19,8 +20,10 @@ import { toggleFlipped, useFlipped } from '../lib/flag-keys.ts';
 import { markStep } from '../lib/onboarding.ts';
 import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.ts';
 import { recordSkill } from '../lib/skills.ts';
-import { FlagView } from './FlagView.tsx';
-import { sqlLanguage } from '../lib/sql-language.ts';
+import { type HoistDesign, resolveStyle } from '../../../src/core/design.ts';
+import { FlagView, ModelView } from './FlagView.tsx';
+import { dialectName, shownSql, sqlLanguage } from '../lib/sql-language.ts';
+import { useSqlPref } from '../lib/sql-pref.ts';
 
 export interface FlagCardProps {
   /** The page as planning sees it (lib/relevance.ts planSlice): the same object while that is unchanged. */
@@ -32,6 +35,8 @@ export interface FlagCardProps {
   selections: Selections;
   selected: boolean;
   themeKey: string;
+  /** The page's design; kept apart from `hoist`, which only changes when planning does. */
+  design?: HoistDesign;
   onSelectFlag: (id: string) => void;
   onSelectValue: (key: string, value: Cell, additive: boolean) => void;
   onAccept: (id: string) => void;
@@ -40,7 +45,7 @@ export interface FlagCardProps {
 
 type Load = { state: 'idle' } | { state: 'loading'; last?: FlagResult } | { state: 'ready'; result: FlagResult } | { state: 'error'; error: string; approve?: () => void };
 
-const CHART_KINDS = new Set(['bar', 'line', 'area', 'pie']);
+const CHART_KIND_SET = new Set<string>(CHART_KINDS);
 
 function formatBytes(n: number): string {
   if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
@@ -95,7 +100,7 @@ export function useFlagResult(hoist: Hoist, flag: Flag, selections: Selections, 
   return load;
 }
 
-function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
+function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, themeKey, design, onSelectFlag, onSelectValue, onAccept, onDragStart }: FlagCardProps) {
   const flipped = useFlipped(own.id);
   const [asTable, setAsTable] = useState(false);
   // Drilling narrows this flag only, for as long as the page is open; the flag itself is unchanged.
@@ -116,6 +121,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     () => (result && flag.kind !== 'filter' ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: ctx.today }, index) : []),
     [result, flag, index, ctx.today],
   );
+  const sqlPref = useSqlPref();
   const described = useMemo(() => (flag.kind === 'text' ? '' : describeFlag(flag, hoist, index).join(' ')), [flag, hoist, index]);
   const descId = useId();
   const lowConfidence = flag.status === 'drafted' && (flag.confidence ?? 1) < 0.6;
@@ -141,13 +147,16 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     return undefined;
   }, [own.binding, own.status, own.kind, own.id, hoist.id]);
 
-  const chartLike = CHART_KINDS.has(flag.kind) && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
+  const chartLike = (CHART_KIND_SET.has(flag.kind) || flag.kind === 'custom') && !!flag.binding && (flag.binding.metrics.length ?? 0) > 0;
   const shownFlag = asTable && chartLike ? { ...flag, kind: 'table' as const } : flag;
   const reviewedLabel = reviewedAt ? `Reviewed · ${shortDate(new Date(reviewedAt))}` : 'Reviewed';
+
+  const look = resolveStyle(design, flag.style);
 
   return (
     <article
       data-flag-card={own.id}
+      style={{ '--flag-i': Math.min(12, flag.layout.y + Math.floor(flag.layout.x / 3)), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) } as CSSProperties}
       aria-label={flag.title || 'Untitled flag'}
       aria-current={selected ? 'true' : undefined}
       aria-describedby={described ? descId : undefined}
@@ -164,7 +173,16 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
           {described}
         </p>
       )}
-      <header className="flex cursor-pointer items-center gap-1 px-2 pt-2" onClick={(e) => (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined)}>
+      <header
+        className="flag-titlebar flex cursor-grab touch-none items-center gap-1 px-2 pt-2 active:cursor-grabbing"
+        title="Drag to move this flag; click the title to edit it"
+        // The whole title bar moves the flag, not only the grip; its buttons and links keep their own clicks.
+        onPointerDown={(e) => {
+          if (e.button !== 0 || (e.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return;
+          onDragStart(e, flag.id, 'move');
+        }}
+        onClick={(e) => (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined)}
+      >
         <button
           type="button"
           aria-label="Move flag"
@@ -175,7 +193,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
         >
           <GripHorizontal size={14} />
         </button>
-        <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink" title={`${flag.title} (click to edit)`}>
+        <h3 className={look.hideTitle ? 'sr-only' : `min-w-0 flex-1 truncate text-[13px] font-semibold text-ink ${look.titleAlign === 'center' ? 'text-center' : ''}`} title={`${flag.title} (click to edit)`}>
           {flag.title || <span className="font-normal text-ink-3">Untitled flag</span>}
         </h3>
         {load.state === 'loading' && <Loader2 size={13} className="animate-spin text-ink-3" aria-label="Loading" />}
@@ -256,9 +274,12 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
       </header>
       <div key={flipped ? 'back' : 'front'} className={`relative min-h-0 flex-1 px-3 pb-2 pt-1 ${flipped ? 'flip-enter' : ''}`}>
         {flipped ? (
-          <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} />
+          <Back flag={flag} described={described} result={result} insights={insights.map((i) => i.text)} index={index} today={ctx.today} />
         ) : flag.kind === 'text' ? (
           <p className="scroll-thin h-full overflow-auto whitespace-pre-wrap text-sm text-ink-2">{flag.text || flag.brief || 'Write a note in the inspector.'}</p>
+        ) : flag.kind === 'model' && !flag.binding && flag.model?.inputs?.length ? (
+          // A model on hand-entered inputs (Monte Carlo, sensitivity) needs no rows.
+          <ModelView flag={flag} result={undefined} index={index} themeKey={themeKey} today={ctx.today} {...(design ? { design } : {})} />
         ) : !flag.binding ? (
           <div className="h-full" onClick={() => onSelectFlag(flag.id)}>
             <Empty flag={flag} />
@@ -295,7 +316,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
             )}
             <div className="min-h-0 flex-1">
               <FlagBoundary resetKey={`${shownFlag.kind}:${JSON.stringify(flag.binding)}`}>
-                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} {...(described ? { describedBy: descId } : {})} />
+                <FlagView flag={shownFlag} result={result} index={index} selections={selections} onSelect={onPick} themeKey={themeKey} today={ctx.today} {...(design ? { design } : {})} {...(described ? { describedBy: descId } : {})} />
               </FlagBoundary>
             </div>
             {insights[0] && flag.layout.h >= 4 && <p className="truncate text-[11px] text-ink-2" title={insights.map((i) => i.text).join('\n')}>{insights[0].text}</p>}
@@ -305,6 +326,7 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
       {flipped && result?.sql && (
         <footer aria-label="SQL language" className="shrink-0 border-t border-line bg-panel-2 px-3 py-1.5 text-[11px] text-ink">
           <span className="font-semibold">SQL language: </span>{sqlLanguage(result.sql).name}
+          {sqlPref !== 'source' && sqlPref !== result.sql.dialect && <span className="block text-ink-2">Shown below in {dialectName(sqlPref)}, your SQL language; it runs as {sqlLanguage(result.sql).name}.</span>}
           {result.origin === 'page' && <span className="block text-ink-2">Reference SQL; results calculated in this browser.</span>}
         </footer>
       )}
@@ -332,7 +354,9 @@ function Empty({ flag }: { flag: Flag }) {
   );
 }
 
-function Back({ flag, described, result, insights }: { flag: Flag; described: string; result: FlagResult | undefined; insights: string[] }) {
+function Back({ flag, described, result, insights, index, today }: { flag: Flag; described: string; result: FlagResult | undefined; insights: string[]; index: CatalogIndex; today: Date }) {
+  const pref = useSqlPref();
+  const view = result?.sql ? shownSql(result.sql, result.plan, index, today, pref) : null;
   return (
     <div className="scroll-thin h-full space-y-2 overflow-auto text-xs">
       <section>
@@ -364,9 +388,10 @@ function Back({ flag, described, result, insights }: { flag: Flag; described: st
           <h4 className="mb-0.5 font-semibold text-ink-2">
             SQL
           </h4>
-          <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px] text-ink">{prettySql(result.sql.sql)}</pre>
-          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).syntax}</p>
-          <p className="mt-1 text-ink-2">{sqlLanguage(result.sql).parameters}</p>
+          {view?.translated && <p className="mb-1 text-ink-2">In {dialectName(view.shown.dialect)}, your SQL language (Settings &gt; SQL). It runs as {sqlLanguage(result.sql).name}.</p>}
+          <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px] text-ink">{prettySql((view?.shown ?? result.sql).sql)}</pre>
+          <p className="mt-1 text-ink-2">{sqlLanguage(view?.shown ?? result.sql).syntax}</p>
+          <p className="mt-1 text-ink-2">{sqlLanguage(view?.shown ?? result.sql).parameters}</p>
           {result.sql.params.length > 0 && (
             <p className="mt-1 font-mono text-[11px] text-ink-3">
               Parameters: {result.sql.params.map((p, i) => `${i + 1}=${JSON.stringify(p.value)} (${p.type})`).join(', ')}

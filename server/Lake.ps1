@@ -26,16 +26,15 @@
 # =============================================================================
 
 $script:SemLakeMaxListObjects = 50000
+
+# Presigning, endpoints, RDS and the S3 response seam (one file shared with S3.ps1).
+. (Join-Path $PSScriptRoot 'Aws.ps1')
 $script:SemLakeEmptySha = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 # ---------------------------------------------------------------------------
 # AWS Signature Version 4 (BCL only)
 # ---------------------------------------------------------------------------
-function Get-SemSha256Hex {
-    param([byte[]]$Bytes)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { return (-join ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') })) } finally { $sha.Dispose() }
-}
+# Get-SemSha256Hex comes from Routes.ps1 (one definition; Lake.ps1 is always loaded with it).
 function Get-SemHmac {
     param([byte[]]$Key, [string]$Data)
     $h = New-Object Security.Cryptography.HMACSHA256 (, $Key)
@@ -252,19 +251,35 @@ function Get-SemLakeUsagePath {
     $user = ([string]$env:USERNAME).ToLowerInvariant() -replace '[^a-z0-9_-]', '_'
     return [IO.Path]::Combine($HomeDir, 'lake', 'usage', ($Now.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) + '-' + $user + '.json'))
 }
+function Invoke-SemLakeUsageLocked {
+    # Runs $Action holding a named mutex: the usage file is read and written by several worker runspaces (and a
+    # second Semaphore process), so the read-add-write is one step. An abandoned mutex (a holder died) is taken over.
+    param([scriptblock]$Action)
+    $m = New-Object Threading.Mutex($false, 'Local\Semaphore-lake-usage')
+    try {
+        try { [void]$m.WaitOne(10000) } catch [Threading.AbandonedMutexException] { }
+        try { return (& $Action) } finally { try { $m.ReleaseMutex() } catch { } }
+    } finally { $m.Dispose() }
+}
+function Read-SemLakeUsageFile {
+    param([string]$File)
+    if (-not [IO.File]::Exists($File)) { return [long]0 }
+    try { return [long]((([IO.File]::ReadAllText($File)) | ConvertFrom-Json).bytes) } catch { return [long]0 }
+}
 function Get-SemLakeUsedBytes {
     param([string]$HomeDir, [datetime]$Now = (Get-Date))
     $f = Get-SemLakeUsagePath -HomeDir $HomeDir -Now $Now
-    if (-not [IO.File]::Exists($f)) { return [long]0 }
-    try { return [long]((([IO.File]::ReadAllText($f)) | ConvertFrom-Json).bytes) } catch { return [long]0 }
+    return (Invoke-SemLakeUsageLocked { Read-SemLakeUsageFile -File $f })
 }
 function Add-SemLakeUsage {
     param([string]$HomeDir, [long]$Bytes, [datetime]$Now = (Get-Date))
     $f = Get-SemLakeUsagePath -HomeDir $HomeDir -Now $Now
     $dir = [IO.Path]::GetDirectoryName($f); if (-not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }
-    $total = (Get-SemLakeUsedBytes -HomeDir $HomeDir -Now $Now) + $Bytes
-    [IO.File]::WriteAllText($f, ('{"version":1,"bytes":' + $total + '}'), (New-Object Text.UTF8Encoding $false))
-    return $total
+    return (Invoke-SemLakeUsageLocked {
+        $total = (Read-SemLakeUsageFile -File $f) + $Bytes
+        [IO.File]::WriteAllText($f, ('{"version":1,"bytes":' + $total + '}'), (New-Object Text.UTF8Encoding $false))
+        $total
+    })
 }
 
 # ---------------------------------------------------------------------------

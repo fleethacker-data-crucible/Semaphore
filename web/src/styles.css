@@ -1,5 +1,8 @@
 @import 'tailwindcss';
-@import '../vendor/fleet/fleet.css';
+/* Fleet's stylesheet sits in the base layer, so a utility such as outline-none beats its global
+   :focus-visible ring. Unlayered, it beat every utility and drew a square outline inside rounded frames. */
+@import '../vendor/fleet/fleet.css' layer(base);
+@import '../vendor/binnacle/binnacle.css';
 
 /* Skins (docs/SKINS.md). Every colour Semaphore draws comes from the tokens below (--bg, --ink,
    --accent ...). A skin is one set of values for them; <html data-skin> picks the skin and
@@ -89,7 +92,8 @@
   --line: #e2dccf;
   --ink: #0d2233;
   --ink-2: #4a5866;
-  --ink-3: #7d8894;
+  /* 4.8:1 on the #f4f1ea page and 5.6:1 on white: AA for the 11 px hints that use it (tests/skin-contrast.test.ts). */
+  --ink-3: #606b77;
   --brass: #a8834a;
   --brass-soft: #f3ead9;
   --accent: #1f6f8b;
@@ -228,10 +232,26 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+/* In the base layer for the same reason: an element that draws its own focus (outline-none inside a
+   .focus-frame) must be able to switch this off. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  :root[data-contrast='high'] :focus-visible { outline-width: 3px; }
 }
+
+/* A rounded box around a borderless field (the assistant's message box, the Ask boxes, a picker's
+   find box): the box shows focus, never the field, so no square ring sits inside the rounded frame. */
+.focus-frame:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
+:root[data-contrast='high'] .focus-frame:has(:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* A full-width row at the top of a dialog: an inset ring, since the dialog clips anything outside it. */
+.focus-row:focus-within { box-shadow: inset 0 -2px 0 var(--accent); }
+:root[data-contrast='high'] .focus-row:has(:focus-visible) { outline: 3px solid var(--focus); outline-offset: -3px; }
 
 /* The brief editor draws highlights in a layer behind a transparent textarea, so the text the
    analyst types is the text they see, with what Semaphore understood marked underneath. */
@@ -311,8 +331,30 @@ body {
 }
 
 /* Flag cards. Handles show on hover, while the card holds focus, and on the selected card. */
-.flag-card { container-type: inline-size; }
-.flag-handle { opacity: 0; }
+.flag-card { container-type: inline-size; border-radius: var(--design-radius, 0.75rem); font-family: var(--design-font, inherit); }
+
+/* Design (src/core/design.ts): the page's look, set by attributes that only take fixed values. */
+[data-design-backdrop='tide'] { background: linear-gradient(165deg, color-mix(in srgb, var(--accent) 16%, var(--bg)), var(--bg) 55%); }
+[data-design-backdrop='dawn'] { background: linear-gradient(165deg, color-mix(in srgb, var(--brass) 18%, var(--bg)), var(--bg) 55%); }
+[data-design-backdrop='grid'] { background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 28px 28px; }
+[data-design-card='outline'] .flag-card:not([aria-current='true']) { box-shadow: none; }
+[data-design-card='outline'] .flag-card { background: color-mix(in srgb, var(--panel) 70%, transparent); border-color: var(--fl-control-border); }
+[data-design-card='flat'] .flag-card:not([aria-current='true']) { box-shadow: none; border-color: transparent; }
+[data-design-card='raised'] .flag-card { transition: box-shadow 150ms ease-out, transform 150ms ease-out; }
+[data-design-card='raised'] .flag-card:not([aria-current='true']) { box-shadow: 0 6px 18px rgb(0 0 0 / 0.14); border-color: transparent; }
+[data-design-card='raised'] .flag-card:hover { transform: translateY(-2px); }
+[data-design-card='glass'] .flag-card { background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(10px); }
+[data-design-motion='lively'] .flag-card { animation: flag-rise 200ms ease-out both; animation-delay: calc(var(--flag-i, 0) * 40ms); }
+@keyframes flag-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-design-motion='lively'] .flag-card { animation: none; }
+  [data-design-card='raised'] .flag-card:hover { transform: none; }
+}
+/* Faint on every card so it can be found, full on hover, focus or selection. */
+.flag-handle { opacity: 0.35; }
 .flag-card:hover .flag-handle,
 .flag-card:focus-within .flag-handle,
 .flag-card[aria-current='true'] .flag-handle { opacity: 1; }
@@ -357,6 +399,58 @@ body {
   .flip-enter, .flag-run, .hint-row { animation: none; }
   * { transition: none !important; animation-duration: 0s !important; }
 }
+/* The same, when the person turned motion off in Settings (lib/motion.ts). */
+:root[data-reduce-motion='true'] .flip-enter, :root[data-reduce-motion='true'] .flag-run, :root[data-reduce-motion='true'] .hint-row { animation: none; }
+:root[data-reduce-motion='true'] * { transition: none !important; animation-duration: 0s !important; }
+:root[data-reduce-motion='true'] [data-design-motion='lively'] .flag-card { animation: none; }
+
+/* Personal themes (lib/theme.ts writes the variables; these are the parts CSS owns), as in Lazarette. */
+/* Calm motion: shorter, no bounce. Off is handled by data-reduce-motion. */
+:root[data-motion='calm'] *, :root[data-motion='calm'] *::before, :root[data-motion='calm'] *::after {
+  animation-duration: 90ms !important;
+  transition-duration: 90ms !important;
+  transition-timing-function: ease-out !important;
+}
+/* Background patterns: one fixed layer behind the app, drawn from the line colour so they follow the theme. */
+:root[data-pattern]:not([data-pattern='none']) body, :root[data-pattern]:not([data-pattern='none']) .theme-surface { background-color: var(--bg); background-attachment: fixed; }
+:root[data-pattern='grid'] body, :root[data-pattern='grid'] .theme-surface {
+  background-image: linear-gradient(color-mix(in oklab, var(--line) 55%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in oklab, var(--line) 55%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+:root[data-pattern='dots'] body, :root[data-pattern='dots'] .theme-surface {
+  background-image: radial-gradient(color-mix(in oklab, var(--fl-border-strong) 70%, transparent) 1px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+:root[data-pattern='waves'] body, :root[data-pattern='waves'] .theme-surface {
+  background-image: repeating-radial-gradient(circle at 50% 120%, transparent 0 38px, color-mix(in oklab, var(--line) 45%, transparent) 38px 39px);
+}
+:root[data-pattern='rope'] body, :root[data-pattern='rope'] .theme-surface {
+  background-image: repeating-linear-gradient(45deg, transparent 0 14px, color-mix(in oklab, var(--line) 40%, transparent) 14px 15px);
+}
+:root[data-pattern='stars'] body, :root[data-pattern='stars'] .theme-surface {
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, color-mix(in oklab, var(--ink) 40%, transparent) 50%, transparent 51%),
+    radial-gradient(1px 1px at 70% 60%, color-mix(in oklab, var(--ink) 30%, transparent) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 40% 80%, color-mix(in oklab, var(--accent) 60%, transparent) 50%, transparent 51%),
+    radial-gradient(1px 1px at 85% 15%, color-mix(in oklab, var(--ink) 35%, transparent) 50%, transparent 51%);
+  background-size: 260px 260px, 340px 340px, 420px 420px, 300px 300px;
+}
+/* Glow: a soft accent halo behind primary buttons and the brand mark. */
+:root[data-glow='true'] .bg-accent { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent), 0 8px 28px -8px color-mix(in oklab, var(--accent) 70%, transparent); }
+:root[data-glow='true'] .header-mark, :root[data-glow='true'] .brand-emblem { filter: drop-shadow(0 0 14px color-mix(in oklab, var(--accent) 55%, transparent)); }
+/* Density also tightens the base type a little, since --spacing already scales the layout. */
+:root[data-density='compact'] body { font-size: 13px; }
+:root[data-density='spacious'] body { font-size: 15px; line-height: 1.5; }
+/* High contrast: visible focus and borders everywhere, hints in full ink. */
+:root[data-contrast='high'] { --ink-3: var(--ink-2); }
+
+/* A switch (Settings): a checkbox underneath, so it reads as one; drawn as a pill with a knob. */
+.switch { appearance: none; -webkit-appearance: none; width: 36px; height: 20px; margin: 0; border-radius: 999px; border: 1px solid var(--fl-control-border); background: var(--panel-2); position: relative; cursor: pointer; flex-shrink: 0; transition: background 150ms ease-out, border-color 150ms ease-out; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: transform 150ms ease-out, background 150ms ease-out; }
+.switch:checked { background: var(--accent); border-color: var(--accent); }
+.switch:checked::after { background: var(--panel); transform: translateX(16px); }
+.switch:disabled { cursor: default; opacity: 0.5; }
+.switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* Brand (UNIFIED-UI 5 and 8): the full emblem with its wordmark, the Night watch or Chart room
    version of it, and the display serif for the welcome headline. */
@@ -386,3 +480,20 @@ body {
 /* A compact chip with a full 32 px hit area (UNIFIED-UI 7) that does not change its look. */
 .hit-32 { position: relative; }
 .hit-32::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 32px; min-width: 32px; transform: translateY(-50%); }
+
+/* The cells, drawn behind the flags while one is being dragged (Canvas.tsx sets the pitch). Each
+   cell's left and top edges, so a flag's corner lines up with a line when it sits on a cell. */
+.canvas-cells {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--ink-3) 28%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--ink-3) 28%, transparent) 1px, transparent 1px);
+  background-size: var(--cell-w) var(--cell-h);
+  border-radius: 6px;
+}
+.canvas-cells[data-layout-mode='free'] {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--ink-3) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--ink-3) 22%, transparent) 1px, transparent 1px),
+    radial-gradient(circle, color-mix(in oklab, var(--ink-3) 30%, transparent) 1px, transparent 1.5px);
+  background-size: var(--cell-w) var(--cell-h), var(--cell-w) var(--cell-h), calc(var(--cell-w) / 8) calc(var(--cell-h) / 8);
+}

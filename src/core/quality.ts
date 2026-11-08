@@ -87,7 +87,7 @@ const SHORT: Record<string, string> = {
 /** Two labels that mean the same thing get the same key: case, spaces, punctuation and compass abbreviations. */
 export function labelKey(v: string): string {
   const tokens = v.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  return tokens.map((t) => SHORT[t] ?? t).join('');
+  return tokens.map((t) => (Object.hasOwn(SHORT, t) ? SHORT[t]! : t)).join('');
 }
 
 const tidy = (s: string) => s.trim().replace(/\s{2,}/g, ' ');

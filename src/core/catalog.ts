@@ -7,8 +7,10 @@ import type { Relationship } from './joins.ts';
 /**
  * ansi covers engines with date_trunc and LIMIT: Athena, Redshift, DuckDB, Trino. tsql is Azure SQL / SQL Server 2022+.
  * synapse is T-SQL without DATETRUNC (Azure Synapse pools). spark is Spark SQL with backtick names (Palantir Foundry, Databricks).
+ * mysql is MySQL / MariaDB (Amazon RDS and Aurora MySQL): only the union member is declared here; its SQL rendering
+ * comes with the mysql and sqlite dialects on the lead's branch (src/core/sql.ts, sql-translate.ts).
  */
-export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'synapse', 'spark', 'ansi'] as const;
+export const SQL_DIALECTS = ['postgres', 'oracle', 'access', 'tsql', 'synapse', 'spark', 'mysql', 'sqlite', 'ansi'] as const;
 export type Dialect = typeof SQL_DIALECTS[number];
 
 export function isSqlDialect(value: unknown): value is Dialect {
@@ -25,12 +27,43 @@ export type SourceKind =
   | 'azure-sql'
   | 'azure-synapse'
   | 'foundry'
+  /** Semaphore's built-in local database (server/LocalDb.ps1): SQLite, the engine that ships with Windows. */
+  | 'local'
+  | 'aws-rds'
   | 'other';
+
+/** The engines an Amazon RDS / Aurora source (kind 'aws-rds') can name in sources.json. */
+export const RDS_ENGINES = ['postgres', 'aurora-postgresql', 'mysql', 'mariadb', 'aurora-mysql', 'sqlserver', 'oracle'] as const;
+export type RdsEngine = typeof RDS_ENGINES[number];
+
+const RDS_DIALECTS: Record<RdsEngine, Dialect> = {
+  postgres: 'postgres',
+  'aurora-postgresql': 'postgres',
+  mysql: 'mysql',
+  mariadb: 'mysql',
+  'aurora-mysql': 'mysql',
+  sqlserver: 'tsql',
+  oracle: 'oracle',
+};
 
 /** The SQL profile a source kind uses; unknown kinds fall back to the ansi profile. */
 export function dialectForKind(kind: SourceKind): Dialect {
-  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark' };
+  const map: Partial<Record<SourceKind, Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', foundry: 'spark', local: 'sqlite' };
   return map[kind] ?? 'ansi';
+}
+
+/**
+ * The SQL profile a source uses. Like dialectForKind, but an 'aws-rds' source needs its engine to choose
+ * (postgres, mysql, tsql or oracle), and an Athena source is always the ansi profile. An aws-rds source
+ * with no or an unknown engine falls back to ansi.
+ */
+export function dialectForSource(source: { kind: string; engine?: string | undefined; provider?: string | undefined }): Dialect {
+  if (source.provider === 'athena') return 'ansi';
+  if (source.kind === 'aws-rds') {
+    const engine = (source.engine ?? '').toLowerCase();
+    return (RDS_DIALECTS as Record<string, Dialect>)[engine] ?? 'ansi';
+  }
+  return dialectForKind(source.kind as SourceKind);
 }
 
 export interface Source {
@@ -38,6 +71,8 @@ export interface Source {
   label: string;
   kind: SourceKind;
   dialect: Dialect;
+  /** For kind 'aws-rds': the database engine, which decides the dialect (dialectForSource). */
+  engine?: RdsEngine;
   /** Name of the Lazarette vault item that holds the connection secret. Never the secret itself. */
   vaultItem?: string;
 }
@@ -122,12 +157,12 @@ export function checkCatalog(catalog: Catalog): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   const sourceIds = new Set(catalog.sources.map((s) => s.id));
-  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', 'aws-redshift': 'ansi', foundry: 'spark' };
+  const expected: Partial<Record<Source['kind'], Dialect>> = { postgres: 'postgres', oracle: 'oracle', access: 'access', 'azure-sql': 'tsql', 'azure-synapse': 'synapse', 'aws-redshift': 'ansi', foundry: 'spark', local: 'sqlite' };
   for (const s of catalog.sources) {
     if (!isSqlDialect(s.dialect)) problems.push(`Source "${s.id}" uses an unsupported SQL dialect; supported profiles: ${SQL_DIALECTS.join(', ')}.`);
     if (seen.has(`source:${s.id}`)) problems.push(`Duplicate source id "${s.id}".`);
     seen.add(`source:${s.id}`);
-    const want = expected[s.kind];
+    const want = s.kind === 'aws-rds' ? (s.engine ? dialectForSource(s) : undefined) : expected[s.kind];
     if (want && s.dialect !== want) problems.push(`Source "${s.id}" is ${s.kind} but uses the ${s.dialect} dialect; use ${want}.`);
   }
   const fieldKeys = new Set<string>();

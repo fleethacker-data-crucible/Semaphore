@@ -3,12 +3,18 @@
 // API the UI uses, with the same gate, the same launch-code exchange and the same presence rules.
 // It never runs a query against a real database and never calls Fairlead.
 //
-//   node tests/e2e/mock-server.mjs [--port 0] [--home <dir>] [--web <dir>] [--stay] [--view ask]
+//   node tests/e2e/mock-server.mjs [--port 0] [--home <dir>] [--web <dir>] [--stay] [--view ask] [--vault <state>]
 //
 //   --port      0 (default) picks a free loopback port
 //   --home      the Semaphore folder (hoists, catalogs, playbook, snapshots, questions, team);
 //               default: a new temp folder, removed when the mock stops unless --keep-home
 //   --stay      keep running when the last tab is gone (as Launch-Semaphore.bat --stay)
+//   --vault     what a paired Lazarette looks like: "unlocked" (default), "locked" (423 vault-locked
+//               state in /api/vault) or "down" (Lazarette not running). Pairing itself is in memory.
+//
+// The page's Content-Security-Policy and the other security headers are READ FROM server/Http.ps1
+// ($script:SemCsp, $script:SemPermissionsPolicy, Get-SemSecurityHeaders): the mock refuses to start
+// when it cannot find them, so it can never drift to a looser policy than the real server sends.
 //
 // Like Start-Semaphore.ps1 --no-browser it prints
 //   Semaphore <version> is running at http://127.0.0.1:<port>/. ...
@@ -19,7 +25,33 @@
 //
 // Test-only hooks (not part of Semaphore's API; same Host/Origin gate, no token):
 //   POST /__mock/launch  -> { code, link }      mint a launch code, as a second launcher run would
-//   GET  /__mock/state   -> { home, port, autoStop, tabs: [...], clientLog: [...], saves: n }
+//   GET  /__mock/state   -> { home, port, autoStop, tabs: [...], clientLog: [...], saves: n, vault }
+//   POST /__mock/reset   -> { ok: true }        back to a fresh start: every stored document and the
+//                                               .trash folders gone, unpaired, the client-log rate
+//                                               limiter, client log and save counter cleared, the
+//                                               vault state back to the --vault default. Presence is
+//                                               kept (the calling page's tab is still open).
+//   The local database (server/LocalDb.ps1) is a small in-memory table store here: uploads and path imports of CSV
+//   text are counted and listed, profiled through /api/profile { source: 'local' }, renamed and dropped; a \\host
+//   path is refused as the real server refuses a share that is not in localShares. Reset empties it.
+//   SQL scripts, exports and pipelines (server/LocalScript.ps1, server/Pipeline.ps1): a script plan runs for real on
+//   node:sqlite (tests/helpers/plan-runner.mjs) over a copy of the in-memory local tables, which are written back after
+//   a successful run; an export streams the table as CSV (or a small stand-in file for the other formats); saved
+//   scripts and pipelines are kept in memory, and a pipeline run finishes on the second status poll.
+//   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
+//   POST /__mock/voice { talkforge, input, sttMissing, sttText }
+//                                               TalkForge as the next answers see it: "missing" (the
+//                                               default: not running and no folder to start it from),
+//                                               "offline" (not running; a start takes about 1.2 s),
+//                                               "ready"; input false acts out voice.input off (the
+//                                               microphone header too); sttMissing: no Whisper files;
+//                                               sttText: what the stand-in Whisper hears. Reset restores
+//                                               the defaults. GET /__mock/state reports "spoken" texts.
+//
+// Amazon S3 and RDS (server/S3.ps1, server/Aws.ps1) answer from a fixed fake bucket: s3://maint-exports/semaphore/
+// holds work_orders.csv, hulls.csv.gz, broken.csv and a partitioned folder parts/ (year=2025, year=2026); any other
+// bucket or a key outside the prefix is refused as the server refuses it. An import finishes on the second status
+// poll; a key containing "broken" fails. /api/rds/discover lists one Aurora PostgreSQL cluster and one SQL Server instance.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -27,6 +59,8 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { runPlan } from '../helpers/plan-runner.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..', '..');
@@ -54,6 +88,12 @@ const keepHome = has('keep-home') || opt('home', '') !== '';
 const homeDir = path.resolve(opt('home', '') || mkdtempSync(path.join(tmpdir(), 'semaphore-mock-')));
 const stay = has('stay') || process.env.SEMAPHORE_AUTO_STOP === '0';
 const view = opt('view', '');
+const VAULT_STATES = ['unlocked', 'locked', 'down'];
+const vaultDefault = opt('vault', 'unlocked');
+if (!VAULT_STATES.includes(vaultDefault)) {
+  console.error(`mock: --vault must be one of ${VAULT_STATES.join(', ')}, not "${vaultDefault}".`);
+  process.exit(2);
+}
 const version = (() => {
   try {
     return readFileSync(path.join(repo, 'VERSION'), 'utf8').trim();
@@ -62,16 +102,78 @@ const version = (() => {
   }
 })();
 
-// The page's CSP is read from server/Http.ps1 so the mock never drifts from the real server.
-const CSP = (() => {
+// The CSP and the fixed security headers are read from server/Http.ps1 (Get-SemSecurityHeaders), so
+// the mock never drifts from the real server. No fallback: a miss stops the mock with a message.
+const { CSP, STT_CSP, STT_WORKER, FIXED_HEADERS, SANDBOX } = (() => {
+  const file = path.join(repo, 'server', 'Http.ps1');
+  let text;
   try {
-    const m = /\$script:SemCsp\s*=\s*"([^"]+)"/.exec(readFileSync(path.join(repo, 'server', 'Http.ps1'), 'utf8'));
-    if (m) return m[1];
-  } catch {
-    /* fall through */
+    text = readFileSync(file, 'utf8');
+  } catch (e) {
+    console.error(`mock: cannot read ${file}: ${e.message}`);
+    process.exit(2);
   }
-  return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  const fail = (what) => {
+    console.error(`mock: ${what} in server/Http.ps1; the mock's headers come from there, so update this reader to match.`);
+    process.exit(2);
+  };
+  const csp = /^\$script:SemCsp\s*=\s*"([^"\r\n]+)"\s*$/m.exec(text)?.[1];
+  if (!csp || !/^default-src 'self'; script-src 'self';/.test(csp)) fail('could not find $script:SemCsp = "default-src ..."');
+  const permissions = /^\$script:SemPermissionsPolicy\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  if (!permissions) fail("could not find $script:SemPermissionsPolicy = '...'");
+  if (!permissions.includes('microphone=()')) fail("$script:SemPermissionsPolicy has no microphone=() for Get-SemPermissionsPolicy to turn into microphone=(self)");
+  // The voice input worker's own policy (Send-SemStatic sends it for assets/stt.<hash>.js while voice input is on).
+  const sttCsp = /^\$script:SemSttCsp\s*=\s*"([^"\r\n]+)"\s*$/m.exec(text)?.[1];
+  if (!sttCsp || sttCsp !== csp.replace("script-src 'self';", "script-src 'self' 'wasm-unsafe-eval';")) fail('could not find $script:SemSttCsp = the page CSP with only \'wasm-unsafe-eval\' added');
+  const sttWorker = /^\$script:SemSttWorkerPath\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  if (!sttWorker) fail("could not find $script:SemSttWorkerPath = '...'");
+  // The literal 'Name: value' lines of Get-SemSecurityHeaders, in the order the server sends them.
+  const fnStart = text.indexOf('function Get-SemSecurityHeaders');
+  const fnEnd = fnStart < 0 ? -1 : text.indexOf('\nfunction ', fnStart + 1);
+  const fn = fnStart < 0 ? '' : text.slice(fnStart, fnEnd < 0 ? undefined : fnEnd);
+  const fixed = [...fn.matchAll(/^\s*'([A-Za-z-]+): ([^'\r\n]+)',?\s*$/gm)].map((m) => [m[1], m[2]]);
+  if (!fixed.some(([n]) => n === 'X-Content-Type-Options') || !fixed.some(([n]) => n === 'Cross-Origin-Opener-Policy')) fail('could not read the header list of Get-SemSecurityHeaders');
+  // The custom widget frame's headers (/sandbox/): its own CSP, and framing and loading allowed from its opaque origin.
+  const sandboxCsp = /^\$script:SemSandboxCsp\s*=\s*"([^"\r\n]+)"\s*$/m.exec(text)?.[1];
+  const frameOptions = /^\$script:SemSandboxFrameOptions\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  const resourcePolicy = /^\$script:SemSandboxResourcePolicy\s*=\s*'([^'\r\n]+)'\s*$/m.exec(text)?.[1];
+  if (!sandboxCsp || !/default-src 'none'/.test(sandboxCsp) || !frameOptions || !resourcePolicy) fail('could not find $script:SemSandboxCsp, $script:SemSandboxFrameOptions and $script:SemSandboxResourcePolicy');
+  return { CSP: csp, STT_CSP: sttCsp, STT_WORKER: new RegExp(sttWorker.replace(/^\\A/, '^').replace(/\\z$/, '$')), FIXED_HEADERS: [...fixed, ['Permissions-Policy', permissions]], SANDBOX: { csp: sandboxCsp, frameOptions, resourcePolicy } };
 })();
+
+// TalkForge as the mock acts it out (Intelligence.ps1 Get-SemTalkForgeState / Start-SemTalkForge, and
+// the /stt/ files of Http.ps1). See POST /__mock/voice above.
+const VOICE_DEFAULT = { talkforge: 'missing', input: true, sttMissing: false, sttText: 'How do I export to Excel?' };
+let voiceMock = { ...VOICE_DEFAULT, readyAt: 0 };
+const spoken = [];
+function talkforgeNow() {
+  if (voiceMock.talkforge === 'starting' && Date.now() >= voiceMock.readyAt) voiceMock.talkforge = 'ready';
+  return voiceMock.talkforge;
+}
+/** Get-SemPermissionsPolicy: the microphone for this page only while voice input is on. */
+const permissionsPolicy = () => (voiceMock.input ? FIXED_HEADERS.find(([n]) => n === 'Permissions-Policy')[1].replace('microphone=()', 'microphone=(self)') : FIXED_HEADERS.find(([n]) => n === 'Permissions-Policy')[1]);
+/** A short WAV tone, standing in for TalkForge's speech. */
+function mockWav(seconds) {
+  const rate = 16000;
+  const n = Math.round(rate * seconds);
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 6000), i * 2);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write('WAVE', 8);
+  h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
 
 const MAX_BODY = 8388608; // 8 MB, Http.ps1 $script:SemMaxBody
 const DOC_MAX = 2097152; // 2 MB, Routes.ps1 $script:SemDocMaxBytes
@@ -79,13 +181,26 @@ const LAUNCH_TTL_MS = 600_000;
 const CLIENT_LOG_MAX = 4096;
 const CLIENT_LOG_PER_MIN = 20;
 const KINDS = ['hoists', 'catalogs', 'playbook', 'snapshots', 'questions', 'team'];
+const WIDGET_CODE_MAX = 65536; // Routes.ps1 $script:SemWidgetCodeMax
+const WIDGET_CSS_MAX = 16384;
+const WIDGET_MAX_COUNT = 500;
 const NOUN = { hoists: 'hoist', catalogs: 'catalog', playbook: 'playbook entry', snapshots: 'snapshot', questions: 'question', team: 'team note' };
 const HASHED_ASSET = /[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$/; // contract 4
 
 const token = randomBytes(32).toString('base64url');
 const launchCodes = new Map(); // code -> expiry (ms)
 let vaultPaired = false;
-const vaultStatus = () => ({ tool: 'Semaphore', paired: vaultPaired, running: true, locked: vaultPaired ? false : null, problem: vaultPaired ? null : 'Semaphore is not paired with Lazarette.', sources: [], shared: [], notShared: [] });
+let vaultState = vaultDefault;
+// Get-SemVaultStatus (server/Vault.ps1): paired from the pairing file; running, locked and problem
+// from one request to Lazarette. The sentences are the server's.
+const NOT_PAIRED = 'Semaphore is not paired with Lazarette. In Lazarette open Settings > Tools, pair a tool named Semaphore, then paste the code in Semaphore under Settings > Lazarette (or run Semaphore-CLI.bat vault pair).';
+function vaultStatus() {
+  const out = { tool: 'Semaphore', paired: vaultPaired, running: vaultState !== 'down', locked: null, problem: vaultPaired ? null : NOT_PAIRED, sources: [], shared: [], notShared: [] };
+  if (!out.running) out.problem = 'Lazarette is not running on this computer. Start it and unlock it.' + (vaultPaired ? '' : ' ' + NOT_PAIRED);
+  else if (vaultPaired) out.locked = vaultState === 'locked';
+  if (vaultPaired && out.locked) out.problem = 'Lazarette is locked. Unlock Lazarette in its window and try again.';
+  return out;
+}
 const presence = {
   autoStop: !stay,
   timeoutMs: msEnv('SEMAPHORE_MOCK_HEARTBEAT_TIMEOUT_MS', 90_000),
@@ -101,7 +216,7 @@ let saves = 0;
 let port = 0;
 let stopping = false;
 
-for (const k of KINDS) mkdirSync(path.join(homeDir, k), { recursive: true });
+for (const k of [...KINDS, 'widgets']) mkdirSync(path.join(homeDir, k), { recursive: true });
 const logFile = path.join(homeDir, 'semaphore-mock.log');
 function log(level, text) {
   const line = `${new Date().toISOString()} [${level}] ${text}`;
@@ -116,24 +231,26 @@ function log(level, text) {
 // ---------------------------------------------------------------------------------------------
 // Responses (Get-SemSecurityHeaders, Send-SemBytes)
 // ---------------------------------------------------------------------------------------------
-function securityHeaders(cache) {
-  return {
-    'Content-Security-Policy': CSP,
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-    'X-Frame-Options': 'DENY',
-    'Cross-Origin-Resource-Policy': 'same-origin',
-    'Cache-Control': cache,
-  };
+function securityHeaders(cache, sandbox = false, csp = CSP) {
+  // Get-SemPermissionsPolicy: the microphone for this page only while voice input is on (never the widget frame).
+  const h = { 'Content-Security-Policy': csp, ...Object.fromEntries(FIXED_HEADERS), 'Permissions-Policy': sandbox ? FIXED_HEADERS.find(([n]) => n === 'Permissions-Policy')[1] : permissionsPolicy(), 'Cache-Control': cache };
+  if (sandbox) Object.assign(h, { 'Content-Security-Policy': SANDBOX.csp, 'X-Frame-Options': SANDBOX.frameOptions, 'Cross-Origin-Resource-Policy': SANDBOX.resourcePolicy });
+  return h;
 }
-function send(res, status, type, body, { cache = 'no-store', headers = {}, head = false } = {}) {
+function send(res, status, type, body, { cache = 'no-store', headers = {}, head = false, sandbox = false, csp = CSP } = {}) {
   const bytes = body === undefined || body === null ? Buffer.alloc(0) : Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
-  const h = { ...(type ? { 'Content-Type': type } : {}), 'Content-Length': String(bytes.length), Connection: 'close', ...securityHeaders(cache), ...headers };
+  const h = { ...(type ? { 'Content-Type': type } : {}), 'Content-Length': String(bytes.length), Connection: 'close', ...securityHeaders(cache, sandbox, csp), ...headers };
   res.writeHead(status, h);
   res.end(head ? undefined : bytes);
 }
-const sendJson = (res, status, obj, headers = {}) => send(res, status, 'application/json; charset=utf-8', JSON.stringify(obj), { headers });
-const sendJsonText = (res, status, text, headers = {}) => send(res, status, 'application/json; charset=utf-8', text, { headers });
+// JSON answers have their own writer with the content type fixed here, never HTML: stored documents and
+// request values echoed back in them cannot be read as markup (nosniff is in the fixed headers too).
+function sendJsonText(res, status, text, headers = {}) {
+  const bytes = Buffer.from(String(text), 'utf8');
+  res.writeHead(status, { ...securityHeaders('no-store'), ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(bytes.length), Connection: 'close' });
+  res.end(bytes);
+}
+const sendJson = (res, status, obj, headers = {}) => sendJsonText(res, status, JSON.stringify(obj), headers);
 const sendError = (res, status, code, message, extra = {}) => sendJson(res, status, { error: message, code, ...extra });
 
 // ---------------------------------------------------------------------------------------------
@@ -247,14 +364,32 @@ function resolveStatic(urlPath) {
 function serveStatic(req, res, urlPath) {
   const head = req.method === 'HEAD';
   const r = resolveStatic(urlPath);
-  if (r.kind === 'refused' || r.kind === 'missing') return sendError(res, 404, 'not-found', 'Not found.');
+  // /sandbox/ holds the custom widget frame: its own headers, and no app-route fallback.
+  const sandbox = urlPath.startsWith('/sandbox/');
+  if (r.kind === 'refused' || r.kind === 'missing' || (sandbox && r.kind !== 'file')) return sendError(res, 404, 'not-found', 'Not found.');
   if (r.kind === 'notbuilt') {
     return send(res, 200, 'text/html; charset=utf-8', `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Semaphore</title></head><body><h1>Semaphore ${version}</h1><p>This copy of Semaphore has no browser interface: web\\dist\\index.html is missing. The browser interface has not been built.</p></body></html>`, { head });
   }
   const isHtml = r.file.toLowerCase().endsWith('.html');
   const rel = path.relative(webRoot, r.file).split(path.sep).join('/');
-  const cache = isHtml ? 'no-store' : rel.startsWith('assets/') && HASHED_ASSET.test(rel) ? 'public, max-age=31536000, immutable' : 'no-cache';
-  send(res, 200, MIME[path.extname(r.file).toLowerCase()] ?? 'application/octet-stream', readFileSync(r.file), { cache, head });
+  const cache = isHtml ? 'no-store' : (rel.startsWith('assets/') || rel.startsWith('sandbox/')) && HASHED_ASSET.test(rel) ? 'public, max-age=31536000, immutable' : 'no-cache';
+  const csp = voiceMock.input && STT_WORKER.test('/' + rel) ? STT_CSP : CSP;
+  send(res, 200, MIME[path.extname(r.file).toLowerCase()] ?? 'application/octet-stream', readFileSync(r.file), { cache, head, sandbox, csp });
+}
+
+// /stt/ (Send-SemSttFile): the real server reads fixed files from TalkForge's assets folder. The mock
+// serves one stand-in, transformers.min.js: a module with the same env and pipeline() shape whose
+// recognizer "hears" voiceMock.sttText for any audio. Anything else under /stt/ is not found.
+function serveStt(req, res, urlPath) {
+  const head = req.method === 'HEAD';
+  if (!voiceMock.input) return sendError(res, 404, 'not-found', 'Not found.');
+  if (urlPath !== '/stt/transformers.min.js') return sendError(res, 404, 'not-found', 'Not found.');
+  if (voiceMock.sttMissing) return sendError(res, 404, 'stt-missing', "Voice input needs TalkForge's speech-to-text files. In the TalkForge folder run: populate-assets.ps1 -Only 'stt/*'");
+  const heard = JSON.stringify(' ' + voiceMock.sttText + ' ');
+  const js = `export const env = { allowRemoteModels: true, allowLocalModels: false, localModelPath: '', useBrowserCache: true, backends: { onnx: { wasm: { wasmPaths: '', numThreads: 4 } } } };
+export async function pipeline() { return async (audio) => ({ text: audio && audio.length ? ${heard} : '' }); }
+`;
+  send(res, 200, 'text/javascript; charset=utf-8', js, { cache: 'no-cache', head });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -396,11 +531,86 @@ function docRoute(req, res, kind, id, query, body) {
   }
 }
 
+// Page snapshots (Invoke-SemSnapRoute, server/Routes.ps1): <home>/snapshots/<hoistId>/<snapId>.json (what
+// it is) and <snapId>.hoist.json (the page, verbatim). One automatic snapshot per 10 minutes, the last 30
+// automatic ones kept with every named one (200 at most).
+const SNAP_ID = /^\d{17}-[0-9a-f]{6}$/;
+const snapText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max).trim() : '');
+function snapList(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && SNAP_ID.test(e.name.replace(/\.json$/, '')) && e.name.endsWith('.json'))
+    .map((e) => e.name)
+    .sort()
+    .reverse()
+    .flatMap((name) => {
+      try {
+        return [JSON.parse(readFileSync(path.join(dir, name), 'utf8'))];
+      } catch {
+        return [];
+      }
+    });
+}
+function pageSnapRoute(req, res, hoistId, snapId, json, body) {
+  if (!validId(hoistId)) return sendError(res, 400, 'bad-id', 'Invalid hoist id: use 1 to 64 letters, digits, _ or -.');
+  if (snapId !== null && !SNAP_ID.test(snapId)) return sendError(res, 400, 'bad-id', 'Invalid snapshot id.');
+  const dir = path.join(homeDir, 'snapshots', hoistId);
+  if (snapId !== null) {
+    const meta = path.join(dir, `${snapId}.json`);
+    const page = path.join(dir, `${snapId}.hoist.json`);
+    if (req.method === 'GET') {
+      if (!existsSync(meta) || !existsSync(page)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      return sendJsonText(res, 200, `{"snapshot":${stripBom(readFileSync(meta, 'utf8')).trim()},"hoist":${stripBom(readFileSync(page, 'utf8')).trim()}}`);
+    }
+    if (req.method === 'DELETE') {
+      if (!existsSync(meta)) return sendError(res, 404, 'not-found', 'No such snapshot.');
+      removeDoc(dir, `${snapId}.hoist`);
+      removeDoc(dir, snapId);
+      log('INFO', `Moved snapshot ${snapId} of hoist ${hoistId} to .trash`);
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (req.method === 'GET') return sendJson(res, 200, snapList(dir));
+  if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+  if (body.length > 3145728) return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+  if (!['named', 'auto', 'restore'].includes(json.kind)) return sendError(res, 400, 'invalid', 'kind must be "named", "auto" or "restore".');
+  const name = snapText(json.name, 80);
+  if (json.kind === 'named' && !name) return sendError(res, 400, 'invalid', 'A named snapshot needs a name.');
+  if (typeof json.hoist !== 'string') return sendError(res, 400, 'invalid', 'hoist must be the page as JSON text.');
+  const bytes = Buffer.from(json.hoist, 'utf8');
+  const problem = checkDocBody(bytes);
+  if (problem === 'too-large') return sendError(res, 413, 'too-large', 'A snapshot may be at most 2 MB.');
+  if (problem) return sendError(res, 400, 'invalid', problem);
+  const hoist = JSON.parse(json.hoist);
+  if (hoist.id !== hoistId) return sendError(res, 400, 'invalid', 'The page in the snapshot is another hoist.');
+  const all = snapList(dir);
+  const autos = all.filter((s) => s.kind !== 'named');
+  const now = new Date();
+  const lastAuto = autos.find((s) => s.kind === 'auto');
+  if (json.kind === 'auto' && lastAuto && now.getTime() - Date.parse(lastAuto.created) < 600_000) return sendJson(res, 200, { ok: true, skipped: 'recent' });
+  if (json.kind === 'named' && all.filter((s) => s.kind === 'named').length >= 200) return sendError(res, 409, 'too-many', 'A page keeps at most 200 named snapshots. Delete one first.');
+  const iso = now.toISOString();
+  const id = `${iso.replace(/[-:T.Z]/g, '')}-${randomBytes(3).toString('hex')}`;
+  const catalogVersion = typeof json.catalogVersion === 'string' && /^[0-9a-f]{8,64}$/.test(json.catalogVersion) ? json.catalogVersion : '';
+  const meta = { version: 1, id, hoistId, kind: json.kind, name, note: snapText(json.note, 500), reason: snapText(json.reason, 120), author: info().user, created: iso, catalogVersion, title: snapText(hoist.title, 120), flags: Array.isArray(hoist.flags) ? hoist.flags.length : 0, bytes: bytes.length };
+  mkdirSync(dir, { recursive: true });
+  saveDoc(dir, `${id}.hoist`, bytes);
+  saveDoc(dir, id, Buffer.from(JSON.stringify(meta)));
+  if (json.kind !== 'named') for (const old of autos.slice(29)) for (const f of [`${old.id}.json`, `${old.id}.hoist.json`]) rmSync(path.join(dir, f), { force: true });
+  log('INFO', `Snapshot ${id} (${json.kind}) of hoist ${hoistId}, ${bytes.length} bytes`);
+  return sendJson(res, 200, { ok: true, snapshot: meta });
+}
+
 // ---------------------------------------------------------------------------------------------
 // API (Invoke-SemRequest, Invoke-SemRoute)
 // ---------------------------------------------------------------------------------------------
 function info() {
-  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '' };
+  // Get-SemInfo (server/Routes.ps1): `social` carries the deployment's feature switches from
+  // config/settings.json (signalBook, impact, teamLog, showAskers, bz); all on here.
+  // The built-in local database is always a source (Get-SemSources).
+  return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [{ id: 'local', label: 'Local database', kind: 'local', provider: 'local', placeholders: 'question', vault: false }], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '', social: { signalBook: true, impact: true, teamLog: true, showAskers: true, bz: true } };
 }
 function aiStatus() {
   return {
@@ -431,8 +641,429 @@ function clientLogRoute(req, res, json, body) {
   send(res, 204, '', null);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Team widget library (Invoke-SemWidgetRoute): <home>/widgets/<id>.json
+// ---------------------------------------------------------------------------------------------
+const widgetText = (v, max) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim()].slice(0, max).join('').trim() : '');
+const widgetId = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48).replace(/-+$/g, '') || 'widget';
+function widgetRoute(req, res, id, json) {
+  const dir = docDir('widgets');
+  if (id === null) {
+    if (req.method === 'GET') {
+      const out = [];
+      for (const name of docFiles(dir).slice(0, WIDGET_MAX_COUNT)) {
+        const doc = readJsonObject(path.join(dir, name));
+        if (!doc) continue;
+        const wid = name.slice(0, -5);
+        out.push({ id: wid, name: widgetText(doc.j.name, 80) || wid, description: widgetText(doc.j.description, 500), by: widgetText(doc.j.by, 64), updated: typeof doc.j.updated === 'string' ? doc.j.updated : '' });
+      }
+      out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return sendJson(res, 200, out);
+    }
+    if (req.method !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    const name = widgetText(json.name, 80);
+    if (!name) return sendError(res, 400, 'invalid', 'Give the widget a name (letters, digits, spaces; at most 80 characters).');
+    if (typeof json.code !== 'string' || json.code.trim() === '') return sendError(res, 400, 'invalid', 'The widget has no code.');
+    if (Buffer.byteLength(json.code, 'utf8') > WIDGET_CODE_MAX) return sendError(res, 413, 'too-large', "A widget's code may be at most 64 KB.");
+    const css = json.css ?? '';
+    if (typeof css !== 'string') return sendError(res, 400, 'invalid', 'The CSS must be text.');
+    if (Buffer.byteLength(css, 'utf8') > WIDGET_CSS_MAX) return sendError(res, 413, 'too-large', "A widget's CSS may be at most 16 KB.");
+    let wid = json.id;
+    if (wid !== undefined && wid !== null && (typeof wid !== 'string' || !validId(wid))) return sendError(res, 400, 'bad-id', 'Invalid widget id: use 1 to 64 letters, digits, _ or -.');
+    if (typeof wid === 'string') {
+      if (!existsSync(path.join(dir, `${wid}.json`))) return sendError(res, 404, 'not-found', `No library widget '${wid}'.`);
+    } else {
+      if (docFiles(dir).length >= WIDGET_MAX_COUNT) return sendError(res, 409, 'full', `The team library holds ${WIDGET_MAX_COUNT} widgets at most. Remove some first.`);
+      const stem = widgetId(name);
+      wid = stem;
+      for (let n = 2; existsSync(path.join(dir, `${wid}.json`)); n++) wid = `${stem}-${n}`;
+    }
+    const doc = { version: 1, id: wid, name, description: widgetText(json.description, 500), code: json.code, css, by: widgetText(info().user, 64), updated: new Date().toISOString() };
+    saveDoc(dir, wid, Buffer.from(JSON.stringify(doc), 'utf8'));
+    log('INFO', `Saved library widget ${wid}`);
+    return sendJson(res, 200, { ok: true, widget: doc });
+  }
+  if (!validId(id)) return sendError(res, 400, 'bad-id', 'Invalid widget id: use 1 to 64 letters, digits, _ or -.');
+  const file = path.join(dir, `${id}.json`);
+  if (req.method === 'GET') return existsSync(file) ? sendJsonText(res, 200, stripBom(readFileSync(file, 'utf8'))) : sendError(res, 404, 'not-found', `No library widget '${id}'.`);
+  if (req.method === 'DELETE') {
+    if (!removeDoc(dir, id)) return sendError(res, 404, 'not-found', `No library widget '${id}'.`);
+    log('INFO', `Moved library widget ${id} to .trash`);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendError(res, 405, 'method', 'Method not allowed.');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Local database (server/LocalDb.ps1), in memory: name -> { columns: [{ name, type }], rows: string[][], source }
+// ---------------------------------------------------------------------------------------------
+const localTables = new Map();
+const localJobs = new Map();
+const LOCAL_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const LOCAL_EXT = /\.(csv|tsv|txt|tab|xlsx|xlsm|sqlite|sqlite3|db|parquet|pq|arrow|feather|ipc)(\.gz)?$/i;
+
+function localSafeName(file) {
+  let s = String(file).replace(/\.gz$/i, '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  // Trim the underscores by hand: a regular expression anchored at the end backtracks on long runs of '_'.
+  let a = 0;
+  let b = s.length;
+  while (a < b && s[a] === '_') a++;
+  while (b > a && s[b - 1] === '_') b--;
+  s = s.slice(a, b) || 'table';
+  if (/^[0-9]/.test(s)) s = `t_${s}`;
+  let name = s;
+  for (let i = 2; [...localTables.keys()].some((k) => k.toLowerCase() === name.toLowerCase()); i++) name = `${s}_${i}`;
+  return name;
+}
+function localImportText(file, text, source) {
+  const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length === 0) return { state: 'failed', error: 'The file is empty: there is no header row.' };
+  const delim = [',', ';', '\t', '|'].sort((a, b) => lines[0].split(b).length - lines[0].split(a).length)[0];
+  const head = lines[0].split(delim).map((h) => h.trim().replace(/[^A-Za-z0-9_ ]+/g, '_') || 'column');
+  const rows = lines.slice(1).map((l) => l.split(delim));
+  const columns = head.map((name, i) => ({ name, type: rows.every((r) => r[i] === undefined || r[i] === '' || /^-?\d+(\.\d+)?$/.test(r[i])) ? 'REAL' : /^\d{4}-\d\d-\d\d$/.test(rows[0]?.[i] ?? '') ? 'DATE' : 'TEXT' }));
+  const table = localSafeName(file);
+  localTables.set(table, { columns, rows, source, importedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), bytes: text.length });
+  return { state: 'done', table, rows: rows.length, columns: columns.length };
+}
+function localJob(file, result) {
+  const job = randomBytes(16).toString('hex');
+  localJobs.set(job, { job, file, phase: 'done', bytes: 0, totalBytes: 0, tables: [], ms: 1, warnings: [], error: null, table: null, rows: 0, columns: 0, ...result });
+  return job;
+}
+function localProfile(res, table) {
+  if (!table) return sendJson(res, 200, { tables: [...localTables.keys()].sort().map((name) => ({ name, schema: null })) });
+  const t = localTables.get(table);
+  if (!t) return sendError(res, 422, 'query-failed', `The source rejected the query: no such table: ${table}`);
+  const kind = (type) => (type === 'REAL' ? 'number' : type === 'DATE' ? 'date' : 'string');
+  return sendJson(res, 200, {
+    table,
+    rows: t.rows.length,
+    columns: t.columns.map((c, i) => ({ name: c.name, type: kind(c.type), distinct: kind(c.type) === 'number' ? null : new Set(t.rows.map((r) => r[i])).size, samples: [...new Set(t.rows.map((r) => r[i]).filter(Boolean))].slice(0, 5) })),
+  });
+}
+function localRoute(req, res, p, json, body) {
+  const m = req.method;
+  if (p === '/api/local/tables') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const tables = [...localTables.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, t]) => ({ name, type: 'table', rows: t.rows.length, columns: t.columns, bytes: t.bytes, source: t.source, path: null, format: 'csv', importedAt: t.importedAt, etag: null, fileBytes: t.bytes }));
+    return sendJson(res, 200, { tables, databaseBytes: 8192 + tables.reduce((n, t) => n + t.bytes, 0), engine: 'SQLite (mock)', columnar: false });
+  }
+  if (p === '/api/local/import') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    let name = '';
+    try {
+      name = decodeURIComponent(String(req.headers['x-file-name'] ?? ''));
+    } catch {
+      name = '';
+    }
+    if (!name) return sendError(res, 400, 'bad-name', 'The upload needs an X-File-Name header with the file name.');
+    if (!LOCAL_EXT.test(name)) return sendError(res, 415, 'unsupported', 'Semaphore imports .csv, .tsv, .txt, .xlsx, .sqlite, .db, .parquet, .arrow and .feather files (also gzipped).');
+    const job = localJob(name, localImportText(name, body.toString('utf8'), `${name} (uploaded)`));
+    return sendJson(res, 202, { job, file: name, bytes: body.length });
+  }
+  if (p === '/api/local/import-path') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const raw = typeof json?.path === 'string' ? json.path.trim() : '';
+    if (!raw) return sendError(res, 400, 'bad-path', 'Give the path of a file.');
+    const unc = /^\\\\([^\\]+)\\/.exec(raw);
+    if (unc) return sendError(res, 403, 'path-refused', `Semaphore does not open files on \\\\${unc[1]}: opening a network path sends your Windows sign-in (NTLM) to that computer. Ask whoever looks after Semaphore to add "${unc[1]}" to localShares in config\\settings.local.json, or copy the file to this computer.`);
+    if (!existsSync(raw) || !statSync(raw).isFile()) return sendError(res, 403, 'path-refused', `No such file: ${raw}`);
+    const file = path.basename(raw);
+    const job = localJob(file, localImportText(file, readFileSync(raw, 'utf8'), raw));
+    return sendJson(res, 202, { job, file, path: raw });
+  }
+  if (p === '/api/local/sheets') return m === 'POST' ? sendJson(res, 200, { format: 'csv', sheets: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/local/import-cancel') return m === 'POST' ? sendJson(res, 200, { ok: true, cancelled: false }) : sendError(res, 405, 'method', 'Method not allowed.');
+  const st = /^\/api\/local\/import-status\/([^/]+)$/.exec(p);
+  if (st) {
+    const j = localJobs.get(st[1]);
+    return j ? sendJson(res, 200, j) : sendError(res, 404, 'not-found', 'No such import.');
+  }
+  const tm = /^\/api\/local\/tables\/([^/]+)(\/rename)?$/.exec(p);
+  if (tm) {
+    const name = tm[1];
+    if (!LOCAL_NAME.test(name)) return sendError(res, 400, 'bad-table', 'Not a table name.');
+    if (!localTables.has(name)) return sendError(res, 404, 'not-found', `No table '${name}'.`);
+    if (tm[2]) {
+      if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+      const to = typeof json?.name === 'string' ? json.name : '';
+      if (!LOCAL_NAME.test(to)) return sendError(res, 400, 'bad-table', 'A table name has 1 to 64 letters, digits or _, and starts with a letter or _.');
+      if (to.toLowerCase() !== name.toLowerCase() && localTables.has(to)) return sendError(res, 400, 'local-db', `A table named "${to}" is already in the local database.`);
+      const t = localTables.get(name);
+      localTables.delete(name);
+      localTables.set(to, t);
+      return sendJson(res, 200, { ok: true, name: to });
+    }
+    if (m !== 'DELETE') return sendError(res, 405, 'method', 'Method not allowed.');
+    localTables.delete(name);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
+// ---- Amazon S3 and RDS (S3.ps1, Aws.ps1) ------------------------------------------------------
+// ---------------------------------------------------------------------------------------------
+// SQL scripts, exports and pipelines
+// ---------------------------------------------------------------------------------------------
+const mockScripts = new Map();
+const mockPipelines = new Map();
+const mockRuns = new Map(); // pipeline id -> [run], newest first
+const SCRIPT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+function localToDb() {
+  const db = new DatabaseSync(':memory:');
+  for (const [name, t] of localTables) {
+    const q = (n) => `"${String(n).replace(/"/g, '""')}"`;
+    db.exec(`CREATE TABLE ${q(name)} (${t.columns.map((c) => `${q(c.name)} ${c.type}`).join(', ')})`);
+    const ins = db.prepare(`INSERT INTO ${q(name)} VALUES (${t.columns.map(() => '?').join(',')})`);
+    for (const r of t.rows) ins.run(...t.columns.map((c, i) => (r[i] === undefined || r[i] === '' ? null : c.type === 'REAL' || c.type === 'INTEGER' ? Number(r[i]) : String(r[i]))));
+  }
+  return db;
+}
+function dbToLocal(db, source) {
+  const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((r) => r.name);
+  const before = new Map(localTables);
+  localTables.clear();
+  for (const name of names) {
+    const cols = db.prepare(`SELECT name, type FROM pragma_table_info(?)`).all(name).map((c) => ({ name: c.name, type: /INT|REAL|NUM|DEC|DOUB|FLOAT/i.test(c.type) ? 'REAL' : /DATE/i.test(c.type) ? 'DATE' : 'TEXT' }));
+    const rows = db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all().map((r) => cols.map((c) => (r[c.name] === null ? '' : String(r[c.name]))));
+    const old = before.get(name);
+    localTables.set(name, { columns: cols, rows, source: old?.source ?? source, importedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), bytes: JSON.stringify(rows).length });
+  }
+}
+function runScriptPlan(plan, params, label) {
+  const db = localToDb();
+  const t0 = Date.now();
+  const r = runPlan(db, plan, params ?? {});
+  const written = [];
+  for (const res of r.results) {
+    const m = /^\s*(?:CREATE\s+(?:TEMP\s+)?TABLE|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?([A-Za-z_][A-Za-z0-9_]*)/i.exec(res.sql ?? '');
+    if (m && !written.includes(m[1])) written.push(m[1]);
+  }
+  if (r.ok) dbToLocal(db, label);
+  db.close();
+  return { ok: r.ok, results: r.results.map((x) => ({ ...x, line: x.line ?? 0, ms: x.ms ?? 0 })), ...(r.error ? { error: r.error } : {}), ms: Date.now() - t0, tables: r.ok ? written.filter((n) => localTables.has(n)) : [], dropped: [], resultsDropped: 0 };
+}
+function scriptRoute(req, res, p, json) {
+  const m = req.method;
+  if (p === '/api/local/sources') return m === 'GET' ? sendJson(res, 200, { files: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/local/scripts') return m === 'GET' ? sendJson(res, 200, [...mockScripts.entries()].map(([id, s]) => ({ id, name: s.name, dialect: s.dialect, updated: s.updated, runnable: !!s.plan }))) : sendError(res, 405, 'method', 'Method not allowed.');
+  const sm = /^\/api\/local\/scripts\/([^/]+)$/.exec(p);
+  if (sm) {
+    const id = sm[1];
+    if (!SCRIPT_ID.test(id)) return sendError(res, 400, 'bad-id', 'A script id has lower-case letters, digits, _ and - (1 to 64).');
+    if (m === 'GET') return mockScripts.has(id) ? sendJson(res, 200, mockScripts.get(id)) : sendError(res, 404, 'not-found', `No script '${id}'.`);
+    if (m === 'PUT') {
+      if (!json || json.version !== 1 || typeof json.name !== 'string') return sendError(res, 400, 'bad-script', 'The script must have "version": 1 and a name.');
+      mockScripts.set(id, { ...json, updated: new Date().toISOString() });
+      return sendJson(res, 200, { ok: true, id });
+    }
+    if (m === 'DELETE') return mockScripts.delete(id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No script '${id}'.`);
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (p === '/api/local/script-run') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    let plan = json?.plan;
+    if (typeof json?.id === 'string') plan = mockScripts.get(json.id)?.plan;
+    if (!plan || plan.version !== 1 || !Array.isArray(plan.nodes)) return sendError(res, 400, 'bad-plan', 'The plan must have "version": 1.');
+    return sendJson(res, 200, runScriptPlan(plan, json?.params, 'SQL desk'));
+  }
+  if (p === '/api/local/export') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const t = localTables.get(String(json?.table ?? ''));
+    if (!t) return sendError(res, 404, 'export-failed', `No table named "${json?.table}" in the local database.`);
+    const fmt = String(json?.format ?? '');
+    const ext = { csv: '.csv', parquet: '.parquet', sqlite: '.sqlite', xlsx: '.xlsx', arrow: '.arrow' }[fmt];
+    if (!ext) return sendError(res, 400, 'bad-format', 'Export as csv, parquet, arrow, sqlite or xlsx.');
+    const cell = (v) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const csv = '\ufeff' + [t.columns.map((c) => cell(c.name)).join(','), ...t.rows.map((r) => r.map((v) => cell(String(v ?? ''))).join(','))].join('\r\n') + '\r\n';
+    const body = fmt === 'csv' ? csv : Buffer.from(`mock ${fmt} export of ${json.table}`);
+    return send(res, 200, fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/octet-stream', body, { headers: { 'Content-Disposition': `attachment; filename="${json.table}${ext}"`, 'X-Semaphore-Rows': String(t.rows.length) } });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+function pipelineRoute(req, res, p, json) {
+  const m = req.method;
+  if (p === '/api/pipelines') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    return sendJson(res, 200, [...mockPipelines.entries()].map(([id, pl]) => { const last = mockRuns.get(id)?.[0]; return { id, name: pl.name, steps: pl.steps.length, schedule: pl.schedule ?? null, lastRun: last ? { run: last.run, state: last.state, started: last.started, finished: last.finished, ms: last.ms, error: last.error, trigger: last.trigger } : null, running: last?.state === 'running' }; }));
+  }
+  const pm = /^\/api\/pipelines\/([^/]+)(?:\/(run|runs)(?:\/([^/]+))?)?$/.exec(p);
+  if (!pm) return sendError(res, 404, 'not-found', 'Unknown API route.');
+  const [, id, what, runId] = pm;
+  if (!SCRIPT_ID.test(id)) return sendError(res, 400, 'bad-id', 'A pipeline id has lower-case letters, digits, _ and - (1 to 64).');
+  if (!what) {
+    if (m === 'GET') {
+      const pl = mockPipelines.get(id);
+      if (!pl) return sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+      const last = mockRuns.get(id)?.find((r) => r.state !== 'running');
+      const steps = Object.fromEntries((last?.steps ?? []).map((s) => [s.id, { state: s.state, rows: s.rows, ms: s.ms, error: s.error, at: last.finished }]));
+      return sendJson(res, 200, { pipeline: pl, state: { lastRun: last ?? null, steps, running: mockRuns.get(id)?.[0]?.state === 'running' } });
+    }
+    if (m === 'PUT') {
+      if (!json || json.version !== 1 || !Array.isArray(json.steps) || json.steps.length === 0) return sendError(res, 400, 'bad-pipeline', 'A pipeline has at least one step.');
+      mockPipelines.set(id, json);
+      return sendJson(res, 200, { ok: true, id });
+    }
+    if (m === 'DELETE') return mockPipelines.delete(id) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+    return sendError(res, 405, 'method', 'Method not allowed.');
+  }
+  if (what === 'run') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const pl = mockPipelines.get(id);
+    if (!pl) return sendError(res, 404, 'not-found', `No pipeline '${id}'.`);
+    const run = `${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 8)}-${new Date().toISOString().replace(/[-:T]/g, '').slice(8, 14)}-${randomBytes(3).toString('hex')}`;
+    const start = Date.now();
+    const record = { version: 1, run, pipeline: id, name: pl.name, trigger: 'manual', from: json?.from ?? '', force: !!json?.force, started: new Date().toISOString(), finished: null, state: 'running', error: null, ms: 0, outputs: [], polls: 0, steps: pl.steps.map((s) => ({ id: s.id, kind: s.kind, name: s.name ?? '', state: 'pending', rows: null, ms: null, warnings: [], error: null, tables: [] })) };
+    // The steps run now; the record shows "running" until the second poll, as a real run would for a moment.
+    for (let i = 0; i < pl.steps.length; i++) {
+      const s = pl.steps[i];
+      const log = record.steps[i];
+      const t0 = Date.now();
+      if (s.kind === 'script') {
+        const sc = mockScripts.get(s.script);
+        const r = sc?.plan ? runScriptPlan(sc.plan, sc.params, `pipeline ${id}`) : { ok: false, error: { message: `There is no saved script '${s.script}'.` }, results: [], tables: [] };
+        log.state = r.ok ? 'done' : 'failed';
+        log.rows = r.results.reduce((n, x) => n + (x.kind === 'changes' ? x.changes : 0), 0);
+        log.tables = r.tables;
+        log.error = r.ok ? null : r.error.message;
+        for (const t of r.tables) if (!record.outputs.includes(t)) record.outputs.push(t);
+      } else if (s.kind === 'publish') {
+        log.state = 'done';
+        log.rows = 0;
+        log.warnings = ['No saved snapshot reads these tables.'];
+      } else {
+        log.state = localTables.has(s.table) && !s.force && !json?.force ? 'skipped' : 'failed';
+        log.error = log.state === 'failed' ? 'The mock server imports only through the Data panel.' : null;
+        log.tables = [s.table];
+      }
+      log.ms = Date.now() - t0;
+      if (log.state === 'failed') {
+        record.error = `Step ${i + 1} (${s.name || s.id}) failed: ${log.error}`;
+        for (let k = i + 1; k < record.steps.length; k++) record.steps[k].state = 'not run';
+        break;
+      }
+    }
+    record.final = record.error ? 'failed' : 'done';
+    record.ms = Date.now() - start;
+    mockRuns.set(id, [record, ...(mockRuns.get(id) ?? [])].slice(0, 30));
+    return sendJson(res, 202, { run, pipeline: id });
+  }
+  if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+  const shown = (r) => {
+    const { polls, final, ...rest } = r;
+    return rest;
+  };
+  if (runId) {
+    const r = mockRuns.get(id)?.find((x) => x.run === runId);
+    if (!r) return sendError(res, 404, 'not-found', 'No such run.');
+    if (r.state === 'running' && ++r.polls >= 2) {
+      r.state = r.final;
+      r.finished = new Date().toISOString();
+    }
+    return sendJson(res, 200, shown(r));
+  }
+  return sendJson(res, 200, (mockRuns.get(id) ?? []).map(shown));
+}
+
+const S3_BUCKETS = [{ bucket: 'maint-exports', region: 'us-gov-west-1', prefix: 'semaphore/', label: 'Maintenance exports' }];
+const S3_OBJECTS = [
+  { key: 'semaphore/work_orders.csv', size: 48213, lastModified: '2026-11-02T10:00:00.000Z', etag: '9b2cf535f27731c974343645a3985328' },
+  { key: 'semaphore/hulls.csv.gz', size: 2048, lastModified: '2026-11-03T10:00:00.000Z', etag: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' },
+  { key: 'semaphore/broken.csv', size: 10, lastModified: '2026-11-03T10:00:00.000Z', etag: '00000000000000000000000000000000' },
+  { key: 'semaphore/parts/year=2025/part-0000.csv', size: 1_200_000, lastModified: '2026-01-01T00:00:00.000Z', etag: '11111111111111111111111111111111' },
+  { key: 'semaphore/parts/year=2026/part-0000.csv', size: 1_400_000, lastModified: '2026-06-01T00:00:00.000Z', etag: '22222222222222222222222222222222' },
+];
+const s3Jobs = new Map();
+function s3Allowed(bucket, key) {
+  const e = S3_BUCKETS.find((b) => b.bucket === bucket);
+  if (!e) return `The bucket "${bucket}" is not one Semaphore may read. Only the buckets in config\\settings.json (s3.buckets) can be browsed or imported.`;
+  if (!key.startsWith(e.prefix)) return `That is outside what Semaphore may read in ${bucket}: only s3://${bucket}/${e.prefix} is allowed.`;
+  return null;
+}
+function s3Listing(prefix) {
+  const folders = new Set();
+  const objects = [];
+  for (const o of S3_OBJECTS) {
+    if (!o.key.startsWith(prefix)) continue;
+    const rest = o.key.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash >= 0) folders.add(prefix + rest.slice(0, slash + 1));
+    else objects.push({ ...o, name: rest });
+  }
+  return { folders: [...folders].sort().map((f) => ({ prefix: f, name: f.slice(prefix.length).replace(/\/$/, '') })), objects };
+}
+function s3Shown(st) {
+  const { polls, fail, ...shown } = st;
+  return shown;
+}
+function s3Route(req, res, p, query, json) {
+  const m = req.method;
+  const q = new URLSearchParams(query);
+  if (p === '/api/s3/buckets') return m === 'GET' ? sendJson(res, 200, { buckets: S3_BUCKETS, maxObjectMb: 20480, maxPrefixObjects: 2000, problems: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/s3/list') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const bucket = q.get('bucket') ?? '';
+    const entry = S3_BUCKETS.find((b) => b.bucket === bucket);
+    const prefix = q.get('prefix') || (entry ? entry.prefix : '');
+    const why = s3Allowed(bucket, prefix);
+    if (why) return sendError(res, 403, 's3-not-allowed', why);
+    return sendJson(res, 200, { bucket, prefix, root: entry.prefix, ...s3Listing(prefix), nextToken: null });
+  }
+  if (p === '/api/s3/import') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!json || typeof json.bucket !== 'string') return sendError(res, 400, 'bad-request', 'Name the bucket.');
+    const keys = typeof json.key === 'string' ? [json.key] : Array.isArray(json.keys) ? json.keys.map(String) : null;
+    const prefix = typeof json.prefix === 'string' ? json.prefix : null;
+    if ((keys ? 1 : 0) + (prefix !== null ? 1 : 0) !== 1) return sendError(res, 400, 'bad-request', 'Give exactly one of key, keys or prefix.');
+    for (const k of keys ?? [prefix]) {
+      const why = s3Allowed(json.bucket, k);
+      if (why) return sendError(res, 403, 's3-not-allowed', why);
+    }
+    const picked = keys ? S3_OBJECTS.filter((o) => keys.includes(o.key)) : S3_OBJECTS.filter((o) => o.key.startsWith(prefix) && o.key.slice(prefix.length).includes('/'));
+    const name = (keys ? keys[0] : prefix).replace(/\/$/, '').split('/').pop().replace(/\.gz$/, '').replace(/\.[a-z]+$/, '');
+    const job = randomBytes(8).toString('hex');
+    const what = keys && keys.length === 1 ? `s3://${json.bucket}/${keys[0]}` : prefix !== null ? `s3://${json.bucket}/${prefix}` : `${keys.length} objects in s3://${json.bucket}`;
+    const st = { job, state: 'running', phase: 'downloading', what, bytes: 0, totalBytes: picked.reduce((n, o) => n + o.size, 0), objects: 0, objectCount: picked.length, table: typeof json.table === 'string' && json.table ? json.table : name, rows: null, columns: null, ms: null, error: null, polls: 0, fail: (keys ?? []).some((k) => k.includes('broken')) };
+    s3Jobs.set(job, st);
+    log('INFO', `S3 import ${job} started: ${what}`);
+    return sendJson(res, 202, s3Shown(st));
+  }
+  if (p === '/api/s3/import-status' || p.startsWith('/api/s3/import-status/')) {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const st = s3Jobs.get(p.slice('/api/s3/import-status/'.length));
+    if (!st) return sendError(res, 404, 'not-found', 'No such import (imports are forgotten when Semaphore stops).');
+    st.polls++;
+    if (st.state === 'running') {
+      if (st.polls === 1) Object.assign(st, { bytes: Math.round(st.totalBytes / 2), objects: Math.max(1, Math.floor(st.objectCount / 2)) });
+      else if (st.fail) Object.assign(st, { state: 'failed', phase: 'failed', error: 'S3 answered 403 when reading s3://maint-exports/semaphore/broken.csv: AccessDenied: Access Denied. The AWS session needs s3:ListBucket on the bucket and s3:GetObject on its objects.' });
+      else Object.assign(st, { state: 'done', phase: 'done', bytes: st.totalBytes, objects: st.objectCount, rows: 1250 * st.objectCount, columns: 6, ms: 2400 });
+    }
+    return sendJson(res, 200, s3Shown(st));
+  }
+  if (p === '/api/rds/discover') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const region = q.get('region') ?? '';
+    if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region)) return sendError(res, 400, 'bad-request', 'Give a region such as us-gov-west-1.');
+    const reader = `maint-aurora.cluster-ro-abc123.${region}.rds.amazonaws.com`;
+    const sql = `supply-sql.abc123.${region}.rds.amazonaws.com`;
+    return sendJson(res, 200, {
+      region,
+      note: 'Copy an entry into sources.json in the Semaphore folder; Semaphore does not write sources.json.',
+      databases: [
+        { type: 'cluster', id: 'maint-aurora', engine: 'aurora-postgresql', engineRaw: 'aurora-postgresql', version: '16.4', host: `maint-aurora.cluster-abc123.${region}.rds.amazonaws.com`, readerHost: reader, port: 5432, database: 'maint', iam: true, status: 'available', suggested: { id: 'maint-aurora', label: 'maint-aurora', kind: 'aws-rds', provider: 'odbc', engine: 'aurora-postgresql', host: reader, port: 5432, database: 'maint', region, auth: 'iam', user: 'semaphore_ro', vault: { accessKeyId: 'AWS_ACCESS_KEY_ID', secretAccessKey: 'AWS_SECRET_ACCESS_KEY', sessionToken: 'AWS_SESSION_TOKEN' } } },
+        { type: 'instance', id: 'supply-sql', engine: 'sqlserver', engineRaw: 'sqlserver-se', version: '16.00', host: sql, readerHost: '', port: 1433, database: '', iam: false, status: 'available', suggested: { id: 'supply-sql', label: 'supply-sql', kind: 'aws-rds', provider: 'odbc', engine: 'sqlserver', host: sql, port: 1433, database: 'master', region, auth: 'password', vault: { password: 'RDS_PASSWORD', user: 'RDS_USER' } } },
+      ],
+    });
+  }
+  return sendError(res, 404, 'not-found', 'Unknown API route.');
+}
+
 function apiRoute(req, res, p, query, json, body) {
   const m = req.method;
+  if (p.startsWith('/api/s3/') || p.startsWith('/api/rds/')) return s3Route(req, res, p, query, json);
   if (p === '/api/commands') return m === 'GET' ? sendJson(res, 200, []) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/info') return m === 'GET' ? sendJson(res, 200, info()) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/heartbeat') {
@@ -463,6 +1094,7 @@ function apiRoute(req, res, p, query, json, body) {
   if (p === '/api/query' || p === '/api/profile') {
     if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
     if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
+    if (p === '/api/profile' && json.source === 'local') return localProfile(res, typeof json.table === 'string' ? json.table : '');
     return sendError(res, 404, 'unknown-source', `No source '${String(json.source ?? '')}' on this computer.`);
   }
   if (p === '/api/vault') return m === 'GET' ? sendJson(res, 200, vaultStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
@@ -477,10 +1109,57 @@ function apiRoute(req, res, p, query, json, body) {
     vaultPaired = false;
     return sendJson(res, 200, vaultStatus());
   }
+  // Spoken answers (Intelligence.ps1): the mock has no TalkForge, so speech answers as the real server does when it is not running.
+  if (p === '/api/voice') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    const folder = voiceMock.talkforge === 'missing' ? '' : 'C:\\Users\\analyst\\Projects\\TalkForge';
+    return sendJson(res, 200, { url: 'http://127.0.0.1:25009', problem: '', tokenSource: 'lazarette', tokenShare: 'TALKFORGE_TOKEN', autoStart: true, folder, folderSetting: '', folderSource: '', folderProblem: '', input: voiceMock.input });
+  }
+  if (p === '/api/voice/status' || p === '/api/voice/start') {
+    // Get-SemTalkForgeState / Start-SemTalkForge: a start takes about 1.2 s; with no TalkForge folder it cannot start.
+    if (m !== (p.endsWith('start') ? 'POST' : 'GET')) return sendError(res, 405, 'method', 'Method not allowed.');
+    const now = talkforgeNow();
+    if (now === 'ready') return sendJson(res, 200, { state: 'ready', message: 'TalkForge is running.', startedHere: false });
+    if (now === 'starting') return sendJson(res, 200, { state: 'starting', message: 'Getting the voice ready...', startedHere: true });
+    if (p.endsWith('status')) return sendJson(res, 200, { state: 'offline', message: 'TalkForge is not running.', startedHere: false });
+    if (now === 'missing') return sendJson(res, 200, { state: 'unavailable', message: 'TalkForge was not found next to the Semaphore folder or in your Projects folder. Set voice.folder in config\\settings.json (or SEMAPHORE_VOICE_FOLDER), or run talkforge serve yourself.', startedHere: false });
+    voiceMock.talkforge = 'starting';
+    voiceMock.readyAt = Date.now() + 1200;
+    return sendJson(res, 200, { state: 'starting', message: 'Getting the voice ready...', startedHere: true });
+  }
+  if (p === '/api/voice/voices') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (voiceMock.talkforge === 'missing') return sendJson(res, 200, { found: false, default: '', voices: [], message: 'TalkForge was not found, so its voices cannot be listed. Set voice.folder in config\\settings.json (or SEMAPHORE_VOICE_FOLDER).' });
+    return sendJson(res, 200, { found: true, default: 'en_US-libritts-high', message: '', voices: [
+      { id: 'en_US-libritts-high', quality: 'high', speakers: 904, dataset: 'libritts', language: 'English, United States', default: true },
+      { id: 'en_US-libritts_r-medium', quality: 'medium', speakers: 904, dataset: 'libritts_r', language: 'English, United States', default: false },
+    ] });
+  }
+  if (p === '/api/voice/dictation/status') {
+    if (m !== 'GET') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (!voiceMock.input) return sendError(res, 403, 'voice-input-off', 'Voice input is turned off for this Semaphore (voice.input in config\\settings.json).');
+    if (voiceMock.sttMissing) return sendJson(res, 200, { ready: false, missing: ['transformers.min.js'], message: "Voice input needs TalkForge's speech-to-text files (1 missing). In the TalkForge folder run: populate-assets.ps1 -Only 'stt/*'" });
+    return sendJson(res, 200, { ready: true, missing: [], message: 'Voice input is ready.' });
+  }
+  if (p === '/api/voice/speak') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const text = typeof json?.text === 'string' ? json.text.trim() : '';
+    if (!text || text.length > 4000) return sendError(res, 400, 'input', 'Send 1-4000 characters of text.');
+    if (talkforgeNow() !== 'ready') return sendError(res, 503, 'voice-offline', 'TalkForge is not running at http://127.0.0.1:25009. Start it with talkforge serve, then try again.');
+    spoken.push(text);
+    return send(res, 200, 'audio/wav', mockWav(Math.min(0.6, 0.12 + text.length / 400)));
+  }
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
-  if (p === '/api/ai/check') return m === 'POST' ? sendJson(res, 200, { ok: false, detail: 'No Fairlead key is installed for Semaphore.', code: 'no-key' }) : sendError(res, 405, 'method', 'Method not allowed.');
-  if (p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 503, 'no-key', 'AI drafting is not set up on this computer.') : sendError(res, 405, 'method', 'Method not allowed.');
+  // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
+  if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
+  const widget = /^\/api\/widgets(?:\/([^/]*))?$/.exec(p);
+  if (widget) return widgetRoute(req, res, p === '/api/widgets' ? null : (widget[1] ?? ''), json);
+  const snap = /^\/api\/page-snapshots\/([^/]+)(?:\/([^/]+))?$/.exec(p);
+  if (snap) return pageSnapRoute(req, res, snap[1], snap[2] ?? null, json, body);
   if (p === '/api/client-log') return clientLogRoute(req, res, json, body);
+  if (p === '/api/local/scripts' || p === '/api/local/script-run' || p === '/api/local/export' || p === '/api/local/sources' || p.startsWith('/api/local/scripts/')) return scriptRoute(req, res, p, json);
+  if (p === '/api/pipelines' || p.startsWith('/api/pipelines/')) return pipelineRoute(req, res, p, json);
+  if (p.startsWith('/api/local/')) return localRoute(req, res, p, json, body);
   return sendError(res, 404, 'not-found', 'Unknown API route.');
 }
 
@@ -502,7 +1181,55 @@ function handle(req, res, body) {
     }
     if (p === '/__mock/state' && req.method === 'GET') {
       const now = Date.now();
-      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null })), clientLog, saves });
+      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
+    }
+    if (p === '/__mock/reset' && req.method === 'POST') {
+      for (const k of [...KINDS, 'widgets']) {
+        rmSync(path.join(homeDir, k), { recursive: true, force: true });
+        mkdirSync(path.join(homeDir, k), { recursive: true });
+      }
+      vaultPaired = false;
+      vaultState = vaultDefault;
+      voiceMock = { ...VOICE_DEFAULT, readyAt: 0 };
+      spoken.length = 0;
+      clientLog.length = 0;
+      clientLogTimes.length = 0;
+      saves = 0;
+      localTables.clear();
+      localJobs.clear();
+      s3Jobs.clear();
+      mockScripts.clear();
+      mockPipelines.clear();
+      mockRuns.clear();
+      log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/__mock/voice' && req.method === 'POST') {
+      let j = {};
+      try {
+        j = JSON.parse(body.toString('utf8') || '{}');
+      } catch {
+        return sendError(res, 400, 'bad-json', 'Not JSON.');
+      }
+      if (j.talkforge !== undefined) {
+        if (!['missing', 'offline', 'ready'].includes(j.talkforge)) return sendError(res, 400, 'invalid', 'talkforge must be missing, offline or ready.');
+        voiceMock.talkforge = j.talkforge;
+      }
+      if (j.input !== undefined) voiceMock.input = j.input !== false;
+      if (j.sttMissing !== undefined) voiceMock.sttMissing = !!j.sttMissing;
+      if (typeof j.sttText === 'string') voiceMock.sttText = j.sttText;
+      return sendJson(res, 200, { ok: true, voice: { ...voiceMock } });
+    }
+    if (p === '/__mock/vault' && req.method === 'POST') {
+      let state = '';
+      try {
+        state = String(JSON.parse(body.toString('utf8') || '{}').state ?? '');
+      } catch {
+        /* refused below */
+      }
+      if (!VAULT_STATES.includes(state)) return sendError(res, 400, 'invalid', `state must be one of ${VAULT_STATES.join(', ')}.`);
+      vaultState = state;
+      return sendJson(res, 200, { ok: true, vault: { paired: vaultPaired, state: vaultState } });
     }
     return sendError(res, 404, 'not-found', 'Not found.');
   }
@@ -523,7 +1250,8 @@ function handle(req, res, body) {
   }
   if (p === '/api' || p.startsWith('/api/')) {
     let json = null;
-    if (body.length > 0) {
+    // A local-database upload is the raw file, not JSON (server/Http.ps1 leaves it in the socket).
+    if (body.length > 0 && p !== '/api/local/import') {
       const text = body.toString('utf8');
       if (!text.trimStart().startsWith('{')) return sendError(res, 400, 'bad-json', 'Request body must be a JSON object.');
       try {
@@ -552,6 +1280,7 @@ function handle(req, res, body) {
     return apiRoute(req, res, p, query, json, body);
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'method', 'Method not allowed.');
+  if (p.startsWith('/stt/')) return serveStt(req, res, p);
   serveStatic(req, res, p);
 }
 

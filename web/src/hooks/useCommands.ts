@@ -10,9 +10,9 @@ import { listItems, type StoredItem } from '../lib/api.ts';
 import type { Command } from '../lib/commands.ts';
 
 export type ActionId =
-  | 'new' | 'open' | 'import' | 'download' | 'share' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
+  | 'new' | 'open' | 'import' | 'download' | 'share' | 'design' | 'assistant' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
   | 'playbook' | 'data' | 'leadership' | 'home' | 'undo' | 'redo' | 'ask' | 'draft-page' | 'starter' | 'experiment'
-  | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals' | 'settings';
+  | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals' | 'settings' | 'snapshots';
 
 export type Actions = Record<ActionId, Command>;
 
@@ -41,7 +41,10 @@ export function buildActions(d: CommandDeps): Actions {
     open: a('open', 'Open a saved hoist…', { disabled: !d.hasServer, hint: 'From the Semaphore folder' }),
     import: a('import', 'Import a hoist file…', { keywords: 'upload json' }),
     download: a('download', 'Download this hoist (JSON)', { keywords: 'export save file' }),
-    share: a('share', 'Share as a report…', { hint: 'One HTML file with working filters', keywords: 'export html' }),
+    snapshots: a('snapshots', 'Snapshots…', { disabled: !d.hasServer, hint: 'Save this page as it is, or go back to a saved one', keywords: 'restore version history backup undo save point' }),
+    share: a('share', 'Export or share…', { hint: 'PDF, Excel, PowerPoint, Word, HTML, CSV or JSON', keywords: 'export html pdf excel xlsx powerpoint pptx word docx csv json report download' }),
+    assistant: a('assistant', 'Semaphore assistant', { hint: 'Ask how to do something in Semaphore', keywords: 'help ask ai chat orb question how' }),
+    design: a('design', 'Page design…', { hint: 'Colours, cards, backdrop, type and motion', keywords: 'look style theme palette colour color animation effects' }),
     brief: a('brief', 'Brief me', { hint: 'What this page says, as leadership would read it', keywords: 'summary briefing' }),
     kits: a('kits', 'Flag kits…', { hint: 'Save flags as a kit, or fly a kit on this page', keywords: 'template reuse' }),
     sql: a('sql', 'SQL desk…', { disabled: !d.hasSql, hint: 'Write your own SELECT against a source', keywords: 'query database' }),

@@ -217,13 +217,13 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
           <span className="flex items-center gap-1" title="Reviewed answers in the playbook">
             <BadgeCheck size={13} /> {live.length} reviewed answer{live.length === 1 ? '' : 's'}
           </span>
-          <button type="button" onClick={onTheme} aria-label={theme === 'dark' ? 'Light theme' : 'Dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'} className="rounded-md p-1.5 text-ink-2 hover:bg-panel-2">
+          <button type="button" onClick={onTheme} aria-label={theme === 'dark' ? 'Light theme' : 'Dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'} className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <button type="button" onClick={onSettings} aria-label="Settings" title="Settings" className="rounded-md p-1 text-ink-2 hover:bg-panel-2">
+          <button type="button" onClick={onSettings} aria-label="Settings" title="Settings" className="grid size-8 place-items-center rounded-md text-ink-2 hover:bg-panel-2">
             <Settings2 size={16} />
           </button>
-          <button type="button" onClick={onBuilder} className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-ink-2 hover:border-accent" title="Open the analysts' builder">
+          <button type="button" onClick={onBuilder} className="flex min-h-8 items-center gap-1.5 rounded-md border border-line px-2.5 text-ink-2 hover:border-accent" title="Open the analysts' builder">
             <LayoutDashboard size={13} /> Builder
           </button>
         </div>
@@ -262,7 +262,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               e.preventDefault();
               void ask(q);
             }}
-            className="flex items-center gap-2 rounded-2xl border border-line bg-panel px-4 py-2 shadow-sm focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
+            className="focus-frame flex items-center gap-2 rounded-2xl border border-line bg-panel px-4 py-2 shadow-sm"
           >
             <Sparkles size={18} className="shrink-0 text-brass" />
             <input
@@ -311,6 +311,9 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               shown={a}
               index={index}
               onAsk={(x) => void ask(x)}
+              onFlag={() =>
+                void queue(a.answer.question, 'drafted', ['Flagged for review from the Leadership view: a reviewed answer someone wants looked at again.']).then((queued) => setAnswers((list) => list.map((x) => (x.key === a.key ? { ...x, queued } : x))))
+              }
               themeKey={themeKey}
               bz={playbook.social.bz && a.answer.entry ? { given: hasBz(playbook.bz, user, a.answer.entry.id), give: () => playbook.giveBz(a.answer.entry!.id) } : null}
             />
@@ -409,7 +412,7 @@ function BzButton({ given, give }: { given: boolean; give: () => Promise<boolean
   );
 }
 
-function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
+function AnswerCard({ shown, index, onAsk, onFlag, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onFlag: () => void; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
   const [why, setWhy] = useState(false);
   const { answer, result } = shown;
   const t = TRUST[shown.state === 'unanswered' && answer.trust !== 'none' ? 'none' : answer.trust];
@@ -464,6 +467,11 @@ function AnswerCard({ shown, index, onAsk, themeKey, bz }: { shown: Shown; index
                 </li>
               ))}
             </ul>
+          )}
+          {(answer.trust === 'reviewed' || answer.trust === 'adjusted') && !shown.queued && (
+            <button type="button" onClick={onFlag} className="mt-3 text-sm text-ink-2 underline-offset-2 hover:text-ink hover:underline">
+              Flag for review
+            </button>
           )}
           {bz && (answer.trust === 'reviewed' || answer.trust === 'adjusted') && (
             <div className="mt-4 flex items-center gap-2 border-t border-line pt-3">

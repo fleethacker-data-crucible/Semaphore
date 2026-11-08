@@ -1,11 +1,19 @@
 // The SQL desk: for analysts who want to write their own query against a source on this computer's
 // server, the lake included. It runs through the same /api/query as flags, so the same guard (one
 // SELECT, nothing that writes), row cap and, for the lake, the same cost guard and cache apply.
+// Analysts write in their own SQL language (Settings > SQL, or the picker here): what they write is
+// translated into the source's dialect before it runs, and the translated text is shown first.
 
-import { useRef, useState } from 'react';
+import { lazy, Suspense, useMemo, useRef, useState } from 'react';
 import { Download, History, Play, TerminalSquare, X } from 'lucide-react';
 import { ApiError, type QueryResponse, runServerQuery, type ServerSource } from '../lib/api.ts';
 import { useModal } from '../lib/modal.ts';
+import { dialectForSource, SQL_DIALECTS } from '../../../src/core/catalog.ts';
+import { DIALECT_NAMES, translateSql } from '../../../src/core/sql-translate.ts';
+import { setSqlPref, type SqlPref, useSqlPref } from '../lib/sql-pref.ts';
+
+// Script mode (several statements, the local database's write path) loads only when its tab is opened.
+const ScriptMode = lazy(() => import('./ScriptMode.tsx').then((m) => ({ default: m.ScriptMode })));
 
 const HISTORY_KEY = 'semaphore.sqldesk';
 const ROW_CAP = 5000;
@@ -55,13 +63,22 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
   const [error, setError] = useState<{ text: string; approve?: boolean } | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState(readHistory);
+  const [mode, setMode] = useState<'query' | 'script'>('query');
+  const pref = useSqlPref();
+  const target = (() => {
+    const s = sources.find((x) => x.id === source);
+    return s ? dialectForSource(s) : 'ansi';
+  })();
+  // What actually runs: the SQL as written, translated into the source's dialect when the person writes in another.
+  const translation = useMemo(() => (pref === 'source' || !sql.trim() ? null : translateSql(sql.trim(), pref, target)), [pref, sql, target]);
+  const toRun = translation ? translation.sql : sql.trim();
 
   const run = async (approve = false) => {
     if (!sql.trim() || !source) return;
     setRunning(true);
     setError(null);
     try {
-      const r = await runServerQuery(source, sql.trim(), [], ROW_CAP, { approve });
+      const r = await runServerQuery(source, toRun, [], ROW_CAP, { approve });
       setResult(r);
       remember(source, sql.trim());
       setHistory(readHistory());
@@ -86,14 +103,28 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
   const src = sources.find((s) => s.id === source);
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="SQL desk" className="w-[900px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label="SQL desk" className="w-[960px] max-w-full rounded-lg border border-line bg-panel shadow-xl">
         <header className="flex items-center gap-2 border-b border-line px-4 py-3">
           <TerminalSquare size={16} className="text-brass" />
-          <h2 className="flex-1 text-base font-semibold">SQL desk</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <h2 className="text-base font-semibold">SQL desk</h2>
+          <div className="ml-3 flex flex-1 gap-1" role="tablist" aria-label="SQL desk mode">
+            {(['query', 'script'] as const).map((m) => (
+              <button key={m} type="button" role="tab" aria-selected={mode === m} onClick={() => setMode(m)} className={`rounded-md border px-2 py-0.5 text-xs ${mode === m ? 'border-accent font-semibold' : 'border-line text-ink-3'}`}>
+                {m === 'query' ? 'Query' : 'Script'}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>
         </header>
+        {mode === 'script' ? (
+          <div className="p-4">
+            <Suspense fallback={<p className="text-xs text-ink-3">Loading Script mode…</p>}>
+              <ScriptMode sources={sources} />
+            </Suspense>
+          </div>
+        ) : (
         <div className="space-y-3 p-4">
           <p className="text-xs text-ink-2">
             Write one SELECT against a source on this computer. Semaphore only reads: statements that change data are refused. {src?.provider === 'athena' ? 'This is the lake: the query is sized before it runs, big scans ask first, and repeats come from the cache for free.' : ''}
@@ -117,6 +148,17 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
               </select>
             )}
             <History size={14} className="text-ink-3" aria-hidden />
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-2">
+              I write in
+              <select value={pref} onChange={(e) => setSqlPref(e.target.value as SqlPref)} aria-label="SQL language you write in" className="min-h-8 rounded-md border border-line bg-panel px-2 py-1 text-xs">
+                <option value="source">{DIALECT_NAMES[target]} (this source's)</option>
+                {SQL_DIALECTS.filter((d) => d !== target).map((d) => (
+                  <option key={d} value={d}>
+                    {DIALECT_NAMES[d]}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <textarea
             data-autofocus
@@ -134,6 +176,19 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
             placeholder={'SELECT region, SUM(labor_cost) AS cost\nFROM work_orders\nWHERE opened_on >= DATE \'2026-01-01\'\nGROUP BY region'}
             className="block w-full rounded-md border border-line bg-panel-2 p-2 font-mono text-xs"
           />
+          {translation && (
+            <details open={translation.changed} className="rounded-md border border-line p-2 text-xs" data-testid="sql-translation">
+              <summary className="cursor-pointer font-semibold">
+                {translation.changed ? `Runs as ${DIALECT_NAMES[target]}: translated from ${DIALECT_NAMES[pref as keyof typeof DIALECT_NAMES]}` : `Nothing to translate for ${DIALECT_NAMES[target]}`}
+              </summary>
+              {translation.changed && <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-panel-2 p-2 font-mono text-[11px]">{translation.sql}</pre>}
+              {translation.notes.map((n) => (
+                <p key={n} className="mt-1 text-warn">
+                  {n}
+                </p>
+              ))}
+            </details>
+          )}
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => run()} disabled={running || !sql.trim() || !source} className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-panel disabled:opacity-40">
               <Play size={14} /> {running ? 'Running…' : 'Run'}
@@ -195,6 +250,7 @@ export function SqlDesk({ sources, onClose }: { sources: ServerSource[]; onClose
             </div>
           )}
         </div>
+        )}
       </section>
     </div>
   );

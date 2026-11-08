@@ -26,12 +26,25 @@ export function stripHtmlComments(html) {
 export function checkIndexHtml(html) {
   const problems = [];
   const text = stripHtmlComments(html);
-  for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)) {
-    const attrs = m[1] ?? '';
+  // Scripts are walked in order, each from its own open tag to its own end tag, the way a browser
+  // reads them: a script that never ends is reported on its own, and does not borrow a later end tag.
+  const openRe = /<script\b([^>]*)>/gi;
+  let open;
+  while ((open = openRe.exec(text)) !== null) {
+    const attrs = open[1] ?? '';
+    const bodyStart = open.index + open[0].length;
+    const closeRe = /<\/script\b[^>]*>/gi;
+    closeRe.lastIndex = bodyStart;
+    const close = closeRe.exec(text);
+    if (!close) {
+      problems.push('an unclosed <script> tag');
+      break;
+    }
+    const body = text.slice(bodyStart, close.index);
     if (!/\ssrc\s*=/i.test(' ' + attrs)) problems.push('an inline <script> without src');
-    else if ((m[2] ?? '').trim() !== '') problems.push('a <script src> with inline code in its body');
+    else if (body.trim() !== '') problems.push('a <script src> with inline code in its body');
+    openRe.lastIndex = close.index + close[0].length;
   }
-  if (/<script\b(?![^>]*>[\s\S]*?<\/script)/i.test(text)) problems.push('an unclosed <script> tag');
   if (/<style\b/i.test(text)) problems.push('an inline <style> element');
   for (const m of text.matchAll(/<[a-z][^>]*>/gi)) {
     const tag = m[0];

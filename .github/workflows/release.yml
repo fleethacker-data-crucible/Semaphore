@@ -15,7 +15,10 @@ concurrency:
 
 jobs:
   release:
-    runs-on: [self-hosted, windows, powershell51, headless]
+    # GitHub-hosted: the repo is public and the org's runner groups refuse public repositories (see the
+    # note at the top of ci.yml). Windows PowerShell 5.1 is `shell: powershell` on this image, and the
+    # smoke test's Edge is installed on it.
+    runs-on: windows-latest
     timeout-minutes: 30
     env:
       SEMAPHORE_TAG: ${{ github.ref_name }}

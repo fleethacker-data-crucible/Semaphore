@@ -1,37 +1,43 @@
 // Recurring reports on screen: leadership's shelf of editions and the edition itself (frozen
 // answers, read like the page), and the analyst's offer to keep a page coming while away.
 
-import { useEffect, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { boardStyle, cardStyle } from '../lib/placement.ts';
 import { CalendarClock, Newspaper, ScrollText, Square, Volume2, X } from 'lucide-react';
 import type { Briefing } from '../../../src/core/briefing.ts';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import { designAttrs, designVars, type HoistDesign, parseDesign, resolveStyle } from '../../../src/core/design.ts';
 import { pickLocalVoice, speechText } from '../../../src/core/voice.ts';
 import { type Cadence, describeCadence, type Edition, type FrozenFlag, latestEditions, type ReportSchedule } from '../../../src/core/reports.ts';
 import type { FlagResult } from '../lib/data.ts';
 import { FlagView } from './FlagView.tsx';
 import { useModal } from '../lib/modal.ts';
+import { scrollBehavior } from '../lib/motion.ts';
 
 const noop = () => undefined;
 
-/** Frozen flags laid out on the page's own grid, read-only. Used by editions and shared reports. */
-export function FrozenGrid({ flags, cols, index, themeKey }: { flags: FrozenFlag[]; cols: number; index: CatalogIndex; themeKey: string }) {
+/** Frozen flags laid out on the page's own grid, read-only, in the page's design. Used by editions. */
+export function FrozenGrid({ flags, cols, index, themeKey, design }: { flags: FrozenFlag[]; cols: number; index: CatalogIndex; themeKey: string; design?: HoistDesign }) {
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridAutoRows: '64px' }}>
-      {flags.map(({ flag, result, error, insights }) => (
-        <article key={flag.id} id={`frozen-${flag.id}`} className="flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ gridColumn: `${flag.layout.x + 1} / span ${flag.layout.w}`, gridRow: `${flag.layout.y + 1} / span ${flag.layout.h}` }}>
-          <h3 className="truncate px-1 text-[13px] font-semibold">{flag.title}</h3>
+    <div {...designAttrs(design)} style={{ ...boardStyle(flags.map((x) => x.flag.layout), 64, 12), ...designVars(design) } as CSSProperties}>
+      {flags.map(({ flag, result, error, insights }) => {
+        const look = resolveStyle(design, flag.style);
+        return (
+        <article key={flag.id} id={`frozen-${flag.id}`} className="flag-card flex flex-col overflow-hidden rounded-xl border border-line bg-panel p-2 shadow-sm" style={{ ...cardStyle(flag.layout, cols, 64, 12), ...(look.accent ? { borderTopColor: look.accent, borderTopWidth: 3 } : {}) }}>
+          <h3 className={look.hideTitle ? 'sr-only' : `truncate px-1 text-[13px] font-semibold ${look.titleAlign === 'center' ? 'text-center' : ''}`}>{flag.title}</h3>
           <div className="min-h-0 flex-1">
             {flag.kind === 'text' ? (
               <p className="whitespace-pre-wrap p-1 text-sm text-ink-2">{flag.text || flag.brief}</p>
             ) : result ? (
-              <FlagView flag={flag} result={result as FlagResult} index={index} selections={{}} onSelect={noop} themeKey={themeKey} />
+              <FlagView flag={flag} result={result as FlagResult} index={index} selections={{}} onSelect={noop} themeKey={themeKey} {...(design ? { design } : {})} />
             ) : (
               <p className="p-1 text-xs text-warn">{error ?? 'No data.'}</p>
             )}
           </div>
           {insights[0] && flag.layout.h >= 4 && <p className="truncate px-1 text-[11px] text-ink-2">{insights[0].text}</p>}
         </article>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -39,6 +45,8 @@ export function FrozenGrid({ flags, cols, index, themeKey }: { flags: FrozenFlag
 export function EditionView({ edition, index, themeKey, onClose }: { edition: Edition; index: CatalogIndex; themeKey: string; onClose: () => void }) {
   const dialogRef = useRef<HTMLElement>(null);
   useModal(dialogRef, onClose);
+  // Editions come from the shared folder, so the design is checked like any other value from a file.
+  const design = useMemo(() => parseDesign(edition.design), [edition.design]);
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-ink/30 p-6" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <section ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} aria-label={edition.title} className="mx-auto max-w-6xl rounded-xl border border-line bg-bg shadow-xl">
@@ -50,13 +58,13 @@ export function EditionView({ edition, index, themeKey, onClose }: { edition: Ed
               Edition for {edition.date}, produced {new Date(edition.takenAt).toLocaleString()} while {edition.owner} is away. The same page, new data; nothing in it was changed by hand.
             </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
             <X size={16} />
           </button>
         </header>
         <div className="space-y-4 p-5">
-          {edition.briefing && <BriefingList briefing={edition.briefing} flags={edition.flags.map((f) => f.flag)} onFlag={(id) => document.getElementById(`frozen-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} />}
-          <FrozenGrid flags={edition.flags} cols={edition.cols} index={index} themeKey={themeKey} />
+          {edition.briefing && <BriefingList briefing={edition.briefing} flags={edition.flags.map((f) => f.flag)} onFlag={(id) => document.getElementById(`frozen-${id}`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' })} />}
+          <FrozenGrid flags={edition.flags} cols={edition.cols} index={index} themeKey={themeKey} {...(design ? { design } : {})} />
         </div>
       </section>
     </div>
@@ -129,7 +137,7 @@ export function BriefingPanel({ briefing, flags, onFlag, onClose }: { briefing: 
   return (
     <div className="fixed right-4 top-14 z-40 w-[420px] max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel shadow-xl" role="dialog" aria-label="Briefing">
       <div className="flex items-center justify-end px-2 pt-1">
-        <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-ink-3 hover:bg-panel-2">
+        <button type="button" onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-md text-ink-3 hover:bg-panel-2">
           <X size={14} />
         </button>
       </div>
@@ -170,9 +178,9 @@ export function ReportsShelf({ editions, index, themeKey }: { editions: Edition[
 export function ReportChip({ title, cadence, schedule, onAccept, onDismiss, onStop }: { title: string; cadence: Cadence | null; schedule: ReportSchedule | undefined; onAccept: (c: Cadence) => void; onDismiss: () => void; onStop: () => void }) {
   if (schedule) {
     return (
-      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-line px-2 py-0.5 text-[11px] text-ink-2" title={`Kept coming ${describeCadence(schedule.cadence)} while you are marked away: Semaphore produces this page on schedule for leadership.`}>
+      <span className="flex min-h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-line pl-2 pr-0.5 text-[11px] text-ink-2" title={`Kept coming ${describeCadence(schedule.cadence)} while you are marked away: Semaphore produces this page on schedule for leadership.`}>
         <CalendarClock size={12} className="text-brass" /> {schedule.cadence.every === 'week' ? 'Weekly' : 'Monthly'}
-        <button type="button" onClick={onStop} aria-label="Stop the regular report" title="Stop producing this page while you are away" className="rounded px-0.5 text-ink-3 hover:text-bad">
+        <button type="button" onClick={onStop} aria-label="Stop the regular report" title="Stop producing this page while you are away" className="grid size-8 place-items-center rounded-full text-ink-3 hover:text-bad">
           <X size={11} />
         </button>
       </span>
@@ -182,10 +190,10 @@ export function ReportChip({ title, cadence, schedule, onAccept, onDismiss, onSt
   return (
     <span role="status" className="flex items-center gap-1.5 border-b border-accent/30 bg-accent-soft px-4 py-1 text-[12px]">
       <CalendarClock size={13} className="text-accent" /> You open “{title || 'this page'}” {describeCadence(cadence)}. Keep it coming while you are away?
-      <button type="button" onClick={() => onAccept(cadence)} className="rounded bg-accent px-1.5 font-semibold text-panel">
+      <button type="button" onClick={() => onAccept(cadence)} className="min-h-8 rounded-md bg-accent px-2.5 font-semibold text-panel">
         Yes
       </button>
-      <button type="button" onClick={onDismiss} className="rounded px-1 text-ink-3 hover:text-ink">
+      <button type="button" onClick={onDismiss} className="min-h-8 rounded-md px-2 text-ink-3 hover:text-ink">
         No thanks
       </button>
     </span>

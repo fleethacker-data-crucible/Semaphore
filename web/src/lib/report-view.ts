@@ -39,6 +39,7 @@ export function reportView(f: FrozenFlag, selections: Selections): ReportView {
     if (previousRaw && !display.live.length) {
       const before = applySelections(previousRaw.plan, previousRaw.rows as Array<Record<string, Cell>>, comparisonSelections(r.plan, relevant), f.flag.behavior);
       out.previous = lineUp(display.rows, before.rows, comparisonShift(r.plan) ?? undefined);
+      out.previousTotals = before.totals;
       out.previousRaw = previousRaw;
     } else if (!note) note = 'The comparison is not shown under a selection: it is too large to filter in the file.';
     else note = `${note} The comparison is not shown.`;

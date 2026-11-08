@@ -8,7 +8,9 @@ import { runPlan, type TableRows } from '../../src/core/engine.ts';
 import type { QueryPlan } from '../../src/core/planner.ts';
 import { countValues, findDuplicates } from '../../src/core/quality.ts';
 
-const tables: TableRows = {};
+// No prototype: a table name can only ever be a table, never Object's machinery (csv.ts also
+// prefixes such names, so this is the second lock on the same door).
+const tables: TableRows = Object.create(null) as TableRows;
 
 type Request =
   | { id: number; type: 'load'; name: string; blob: Blob }

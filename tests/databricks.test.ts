@@ -4,7 +4,8 @@
 // Validating against a real Databricks workspace is still to do (docs/DATABRICKS.md).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DatabricksProvider, draftFlag, draftHoist } from '../src/core/intelligence/index.ts';
+import { draftFlag, draftHoist } from '../src/core/intelligence/index.ts';
+import { DatabricksProvider } from '../src/core/intelligence/remote.ts';
 import type { DraftFlagRequest } from '../src/core/intelligence/contract.ts';
 import type { FetchLike } from '../src/core/intelligence/remote.ts';
 import { learnFromHoist } from '../src/core/playbook.ts';

@@ -4,8 +4,8 @@
 // AI switched off, local rules draft every flag, and a failing Fairlead falls back to them too.
 
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
-import { type ExampleSource, type IntelligenceProvider, LocalRulesProvider, OpenAICompatibleProvider } from '../../../src/core/intelligence/index.ts';
-import type { FetchLike } from '../../../src/core/intelligence/remote.ts';
+import { type ExampleSource, type IntelligenceProvider, LocalRulesProvider } from '../../../src/core/intelligence/index.ts';
+import type { FetchLike, OpenAICompatibleProvider } from '../../../src/core/intelligence/remote.ts';
 import type { PlaybookEntry } from '../../../src/core/playbook.ts';
 import { api, sessionToken } from './api.ts';
 
@@ -108,12 +108,19 @@ export function draftingProvider(index: CatalogIndex, status: AiStatus | null, w
     if (token) headers['X-Semaphore-Session'] = token;
     return fetch(url, { ...init, headers, cache: 'no-store' });
   };
-  return new OpenAICompatibleProvider({
-    id: 'fairlead',
-    label: aiLabel(status),
-    url: `${location.origin}/api/ai/v1`,
-    model: status.model,
-    timeoutMs: DRAFT_TIMEOUT_MS,
-    fetch: withSession,
-  });
+  const settings = { id: 'fairlead', label: aiLabel(status), url: `${location.origin}/api/ai/v1`, model: status.model, timeoutMs: DRAFT_TIMEOUT_MS, fetch: withSession };
+  // The model client (remote.ts, with its prompts) loads the first time it is asked something, so a
+  // page that never drafts with Fairlead does not carry it (web/size-budget.json).
+  let client: Promise<OpenAICompatibleProvider> | null = null;
+  const remote = () => (client ??= import('../../../src/core/intelligence/remote.ts').then((m) => new m.OpenAICompatibleProvider(settings)));
+  return {
+    id: settings.id,
+    label: settings.label,
+    local: false,
+    ping: async () => (await remote()).ping(),
+    listModels: async () => (await remote()).listModels(),
+    draftFlag: async (r) => (await remote()).draftFlag(r),
+    draftHoist: async (r) => (await remote()).draftHoist(r),
+    runTask: async (r) => (await remote()).runTask(r),
+  };
 }

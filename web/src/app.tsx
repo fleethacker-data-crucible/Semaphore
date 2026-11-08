@@ -6,28 +6,27 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { Database, Sparkles, Wand2, X } from 'lucide-react';
 import exampleCatalog from '../../examples/fleet-maintenance/catalog.json';
 import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
-import { type Catalog, checkCatalog, dialectForKind, indexCatalog, type Metric, pruneCatalog } from '../../src/core/catalog.ts';
+import { type Catalog, checkCatalog, dialectForSource, indexCatalog, type Metric, pruneCatalog, type RdsEngine } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
-import { checkCsvSize, CsvError, readCsv } from '../../src/core/csv.ts';
-import { fleetExportToCsv } from '../../src/core/fleet-exports.ts';
+import { impactFor, impactLine } from '../../src/core/impact.ts';
+import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
-import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, LIMITS, oversize, parseHoist } from '../../src/core/hoist.ts';
+import { fileStem } from '../../src/core/export/model.ts';
+import { emptyBehavior, type Flag, type FlagKind, formatMb, GRID_COLS, type Hoist, type Layout, type LayoutMode, LIMITS, oversize, parseHoist, type TimeGrain } from '../../src/core/hoist.ts';
 import { learnSynonym, type Suggestion } from '../../src/core/intelligence/annotate.ts';
 import { applyFlagDraft, applyHoistDraft, draftFlag, draftHoist } from '../../src/core/intelligence/index.ts';
 import { starterHoistLocally } from '../../src/core/intelligence/local-rules.ts';
 import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
-import { applyQlikLabels, type QlikImported, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } from '../../src/core/qlik.ts';
-import { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } from '../../src/core/quality.ts';
-import { readQlikExpressionWithAi } from '../../src/core/intelligence/tasks.ts';
-import { DEFAULT_SIZE, findSlot, place } from '../../src/core/layout.ts';
+import type { QlikImported } from '../../src/core/qlik.ts';
+import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
-import { api, describeError, listItems, loadItem, profileTable, saveItem, type StoredItem } from './lib/api.ts';
+import { api, describeError, listItems, loadItem, profileTable, type StoredItem } from './lib/api.ts';
 import { notify } from './lib/toasts.ts';
 import { confirm } from './lib/confirm.ts';
 import { aiExamplesWanted, aiLabel, type AiStatus, aiWanted, checkAi, draftingProvider, examplesFor, loadAiStatus, setAiExamplesWanted, setAiWanted } from './lib/ai.ts';
@@ -40,17 +39,14 @@ import { csvWorker, WorkerError } from './lib/worker.ts';
 import { briefFrozen, dueSchedules, freezeHoist, produceDueEditions } from './lib/reports.ts';
 import type { Briefing } from '../../src/core/briefing.ts';
 import { BriefingPanel, ReportChip } from './components/Reports.tsx';
-import { AskView, DataPanel, KitsPanel, LineageView, PlaybookPanel, QlikImport, ShareDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
+import { AskView, AssistantRoot, CommandPalette, DataPanel, DesignDialog, HelpDialog, KitsPanel, LineageView, OpenHoistDialog, PlaybookPanel, QlikImport, ShareDialog, SignalBook, SnapshotsDialog, SqlDesk, SettingsDialog } from './components/LazyPanels.tsx';
 import { Panel, PanelBoundary, PanelSkeleton } from './components/ErrorBoundary.tsx';
 import { Toasts } from './components/Toasts.tsx';
 import { ConfirmHost } from './components/ConfirmHost.tsx';
 import { BrowserOnlyNote, SessionScreen } from './components/SessionScreen.tsx';
-import { CommandPalette } from './components/CommandPalette.tsx';
-import { HelpDialog } from './components/HelpDialog.tsx';
 import { Header } from './components/Header.tsx';
 import { ConflictBar, TabChangeBar } from './components/ConflictBar.tsx';
 import { DraftMiss, type DraftMissInfo } from './components/DraftMiss.tsx';
-import { OpenHoistDialog } from './components/OpenHoistDialog.tsx';
 import { useSession } from './hooks/useSession.ts';
 import { usePersistence } from './hooks/usePersistence.ts';
 import { useBusy } from './hooks/useBusy.ts';
@@ -59,12 +55,16 @@ import { useFlagKeys } from './hooks/useFlagKeys.ts';
 import { buildActions, useCommands } from './hooks/useCommands.ts';
 import { describeCadence, detectCadence, newSchedule, noteOpened } from '../../src/core/reports.ts';
 import { AskAnswer, AskBox } from './components/Ask.tsx';
-import { SignalBook } from './components/SignalBook.tsx';
 import { BriefEditor, BriefLegend } from './components/BriefEditor.tsx';
 import { Canvas } from './components/Canvas.tsx';
-import { buildReportHtml, download, reportPayload } from './lib/share.ts';
+import { LayoutBar } from './components/LayoutBar.tsx';
 import type { QlikImportPlan } from './components/QlikImport.tsx';
-import { formatDim } from './components/FlagView.tsx';
+import { formatDim } from './lib/chart-option.ts';
+import { applyThemeSpec, resolveMode, theme as themeStore, useSystemDark, useTheme } from './lib/theme.ts';
+import { applyReduceMotionChoice } from './lib/motion.ts';
+import { toggleAssistant, useAssistantOrb, useAssistantWanted } from './lib/assistant-bus.ts';
+import { chartLookOf, designAttrs, designVars, withoutChartLook } from '../../src/core/design.ts';
+import { cachedSliceKey, flagKeys as pageKeysFor, planSlice, relevantSelections } from './lib/relevance.ts';
 import { Inspector } from './components/Inspector.tsx';
 import { Palette } from './components/Palette.tsx';
 import { Welcome } from './components/Welcome.tsx';
@@ -132,6 +132,7 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<{ at: string; computer: string; refreshed: number; failed: unknown[] } | null>(null);
   const [playbookOpen, setPlaybookOpen] = useState(false);
   const [kitsOpen, setKitsOpen] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [signalOpen, setSignalOpen] = useState(false);
   const [ai, setAi] = useState<AiStatus | null>(null);
   const [useAi, setUseAi] = useState(aiWanted);
@@ -156,11 +157,18 @@ export function App() {
   const [sqlOpen, setSqlOpen] = useState(false);
   const [lineageOpen, setLineageOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
+  const assistantOrb = useAssistantOrb();
+  const assistantWanted = useAssistantWanted();
   const [openList, setOpenList] = useState<StoredItem[] | null>(null);
   const [profileNotes, setProfileNotes] = useState<string[]>([]);
   const [asked, setAsked] = useState<Flag | null>(null);
   const [autoKinds, setAutoKinds] = useState<Record<string, boolean>>({});
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => readLocal<'light' | 'dark'>(K.theme) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  // The theme (lib/theme.ts, as in Lazarette): its mode decides light or dark, 'system' following Windows.
+  const themeSpec = useTheme();
+  const systemDark = useSystemDark();
+  const theme = resolveMode(themeSpec.mode, systemDark);
+  const setTheme = useCallback((mode: 'light' | 'dark') => themeStore.set({ mode }), []);
   const askRef = useRef<HTMLInputElement>(null);
   // The local calendar day (the core reads dates in UTC), moved on at local midnight so a tab left
   // open overnight does not keep yesterday's windows.
@@ -183,8 +191,9 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    writeLocal(K.theme, theme);
-  }, [theme]);
+    applyThemeSpec(themeSpec, theme === 'dark');
+    applyReduceMotionChoice();
+  }, [theme, themeSpec]);
 
   // Skin (docs/SKINS.md): settings.json "skin" is the deployment's choice and wins; otherwise the
   // analyst's choice in this browser; otherwise Fleet UI.
@@ -243,6 +252,21 @@ export function App() {
     return { index, local, localSources, server, today, version: dataVersion, worker, workerTables: new Set(workerTables) };
   }, [index, sample, files, server, today, dataVersion, catalog.sources, worker, workerTables]);
 
+  // "Brief me" and the quick-chart answer belong to the page they were made on (declared here so a
+  // hoist switch can clear them).
+  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
+  // What goes when another hoist takes this one's place: selections, the selected flag, an open
+  // answer and briefing.
+  const leavePage = useCallback(() => {
+    setSelections({});
+    setSelectedId(null);
+    setAsked(null);
+    setBriefing(null);
+  }, []);
+
+  // The catalog has edits the folder has not got yet: the folder's copy must not replace them.
+  const catalogDirty = useRef(false);
+
   // Save (hooks/usePersistence.ts): always to this browser; to the Semaphore folder 1.2 s after the
   // last change, with the version check, the size check, and another tab's changes noticed.
   const persistence = usePersistence({
@@ -254,14 +278,17 @@ export function App() {
     newId,
     onLoadHoist: (h) => {
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
     },
     onLoadCatalog: (c) => {
       if (c && c.version === 1 && checkCatalog(c).length === 0) {
+        catalogDirty.current = false;
         setCatalogState(c);
         writeLocal(K.catalog, c);
       }
+    },
+    onCatalogSaved: () => {
+      catalogDirty.current = false;
     },
   });
   const { flushSave } = persistence;
@@ -273,6 +300,7 @@ export function App() {
         notify(problems[0]!, { tone: 'error' });
         return;
       }
+      catalogDirty.current = true;
       setCatalogState(c);
       if (!writeLocal(K.catalog, c)) notify(server ? 'This browser could not save the catalog (storage is full or blocked). The server keeps a copy.' : 'This browser could not save the catalog (storage is full or blocked). Download the hoist to keep your work.', { tone: 'error' });
       persistence.saveCatalog(c);
@@ -281,11 +309,13 @@ export function App() {
     [persistence.saveCatalog],
   );
 
-  // A server keeps the catalog for every browser on this computer; prefer its copy.
+  // A server keeps the catalog for every browser on this computer; prefer its copy, once per server
+  // (not again after an offline spell), and never over edits made here that it has not got yet.
   useEffect(() => {
     if (!server) return;
     loadItem<Catalog>('catalogs', 'default').then(
       (c) => {
+        if (catalogDirty.current) return;
         if (c && c.version === 1 && checkCatalog(c).length === 0) {
           setCatalogState(c);
           writeLocal(K.catalog, c);
@@ -293,11 +323,18 @@ export function App() {
       },
       // Nothing in the folder yet (or it could not be read): this browser's catalog becomes the folder's.
       () => {
-        if (!oversize(catalog, 'catalog')) saveItem('catalogs', 'default', catalog).catch(() => undefined);
+        if (!oversize(catalog, 'catalog')) persistence.saveCatalog(catalog);
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [server]);
+  }, [server?.pid]);
+
+  // While a save conflict waits for a choice, the hoist stays: a switch would lose the edits it holds.
+  const conflictBlocks = useCallback((): boolean => {
+    if (!persistence.conflict) return false;
+    notify(persistence.conflict.kind === 'hoists' ? 'Choose what to keep in the save conflict bar first: Load theirs, Save mine as a copy, or Overwrite. Then open another hoist.' : 'Choose what to keep for the catalog in the save conflict bar first. Then open another hoist.', { tone: 'error' });
+    return true;
+  }, [persistence.conflict]);
 
   const selected = hoist.flags.find((f) => f.id === selectedId) ?? null;
   const updateFlag = useCallback((id: string, patch: Partial<Flag>, group?: string) => change((h) => ({ ...h, flags: h.flags.map((f) => (f.id === id ? { ...f, ...patch } : f)) }), group), [change]);
@@ -309,9 +346,9 @@ export function App() {
       const id = newId();
       change((h) => {
         const items = h.flags.map((f) => ({ id: f.id, layout: f.layout }));
-        const flag: Flag = { id, kind: real, title: '', brief: '', layout: { x: 0, y: 0, ...size }, binding: null, behavior: emptyBehavior(), status: kind === 'text' ? 'ready' : 'empty', notes: [] };
+        const flag: Flag = { id, kind: real, title: '', brief: '', layout: { x: 0, y: 0, ...size }, binding: null, behavior: real === 'custom' ? { ...emptyBehavior(), onClick: 'filter-page' } : emptyBehavior(), status: kind === 'text' ? 'ready' : 'empty', notes: [] };
         if (at) {
-          const placed = place([...items, { id, layout: { ...at, ...size } }], id, { ...at, ...size }, h.grid.cols);
+          const placed = place([...items, { id, layout: { ...at, ...size } }], id, { ...at, ...size }, h.grid.cols, h.grid.mode ?? 'snap');
           const map = new Map(placed.map((p) => [p.id, p.layout]));
           return { ...h, flags: [...h.flags, flag].map((f) => ({ ...f, layout: map.get(f.id) ?? f.layout })) };
         }
@@ -320,6 +357,39 @@ export function App() {
       setAutoKinds((a) => ({ ...a, [id]: kind === 'auto' }));
       setSelectedId(id);
     },
+    [change],
+  );
+
+  // A copy of the page before a risky change, at most every 10 minutes (lib/page-snapshots.ts).
+  const autoSnap = (reason: string) => void (server && import('./lib/page-snapshots.ts').then((m) => m.autoSnapshot(hoist, catalog, reason)));
+
+  // How flags move on this hoist: switching snaps free positions to cells (or tidies, for auto).
+  const setLayoutMode = useCallback(
+    (mode: LayoutMode) =>
+      change((h) => {
+        if ((h.grid.mode ?? 'snap') === mode) return h;
+        const fixed = new Map(relayout(h.flags, h.grid.cols, mode).map((p) => [p.id, p.layout]));
+        return { ...h, grid: mode === 'snap' ? { cols: h.grid.cols } : { cols: h.grid.cols, mode }, flags: h.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
+      }),
+    [change],
+  );
+  const tidyUp = useCallback(
+    () =>
+      change((h) => {
+        const fixed = new Map(compact(snapAll(h.flags, h.grid.cols)).map((p) => [p.id, p.layout]));
+        return { ...h, flags: h.flags.map((f) => ({ ...f, layout: fixed.get(f.id) ?? f.layout })) };
+      }),
+    [change],
+  );
+  // Free mode stacks flags in list order, the last on top.
+  const restack = useCallback(
+    (id: string, to: 'front' | 'back') =>
+      change((h) => {
+        const f = h.flags.find((x) => x.id === id);
+        if (!f) return h;
+        const rest = h.flags.filter((x) => x.id !== id);
+        return { ...h, flags: to === 'front' ? [...rest, f] : [f, ...rest] };
+      }),
     [change],
   );
 
@@ -348,6 +418,9 @@ export function App() {
     [change],
   );
 
+  // The title each flag's last draft gave it, so a redraft can tell a drafted title from a typed one.
+  const draftedTitles = useRef(new Map<string, string>());
+
   // Reviewed examples ride along with a draft only when the analyst switched them on (lib/ai.ts).
   const aiExamples = useMemo(() => examplesFor(useExamples, ai, useAi, playbook.entries, user), [useExamples, ai, useAi, playbook.entries, user]);
 
@@ -363,14 +436,18 @@ export function App() {
       if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
       else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
-      // A fresh draft takes the drafted title; one the analyst typed is kept.
-      if (!selected.binding || selected.title === '' || selected.title === titleOf(selected)) next.title = draft.title || selected.title;
+      // A fresh draft takes the drafted title, and so does a redraft whose title is still the one the
+      // last draft gave it; a title the analyst typed is kept.
+      if (!selected.binding || selected.title === '' || selected.title === draftedTitles.current.get(selected.id)) {
+        next.title = draft.title || selected.title;
+        draftedTitles.current.set(selected.id, next.title);
+      }
       if (next.kind !== selected.kind && next.layout.w < DEFAULT_SIZE[next.kind].w) {
         next.layout = { ...next.layout, w: DEFAULT_SIZE[next.kind].w, h: Math.max(next.layout.h, DEFAULT_SIZE[next.kind].h) };
       }
       change((h) => {
         const flags = h.flags.map((f) => (f.id === selected.id ? next : f));
-        const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols).map((p) => [p.id, p.layout]));
+        const placed = new Map(place(flags, selected.id, next.layout, h.grid.cols, h.grid.mode ?? 'snap').map((p) => [p.id, p.layout]));
         return { ...h, flags: flags.map((f) => ({ ...f, layout: placed.get(f.id) ?? f.layout })) };
       });
       // No measure found: the "Why it didn't draft" card says what was understood and what to do next.
@@ -390,6 +467,7 @@ export function App() {
   const draftPage = useCallback(
     async (mode: 'add' | 'replace' | 'starter') => {
       const provider = draftingProvider(index, ai, useAi);
+      if (mode !== 'add') autoSnap('Redrafting the whole page');
       await runBusy(mode === 'starter' || provider.local ? 'Drafting the page…' : `Drafting the page with ${provider.label}…`, async () => {
         const base = mode === 'add' ? hoist : { ...hoist, flags: [], filters: [] };
         const outcome = mode === 'starter' ? null : await draftHoist(provider, hoist.brief, index, { style: teamStyle, ...(aiExamples ? { examples: aiExamples } : {}) });
@@ -473,12 +551,16 @@ export function App() {
       const tables: TableRows = { ...files };
       const held = new Set(workerTables);
       let notKept: string | null = null;
-      for (const file of Array.from(list)) {
+      const picked = Array.from(list);
+      for (const [at, file] of picked.entries()) {
         try {
+          sayBusy(readingLabel(file.name, at + 1, picked.length, file.size));
           checkCsvSize(file.size);
           // A JSON export from PacketRat, Eight Bells and the like is turned into CSV text first
           // (src/core/fleet-exports.ts). A plain CSV is never read on the page: its first line tells.
           const json = /\.json$/i.test(file.name);
+          // The readers load with the first file, not with the page (web/size-budget.json).
+          const { fleetExportToCsv } = await import('../../src/core/fleet-exports.ts');
           const fleet = json || fleetExportToCsv(file.name, await file.slice(0, 65536).text()) !== null;
           const fx = fleet ? fleetExportToCsv(file.name, await file.text()) : null;
           const blob: Blob = fx ? new Blob([fx.csv], { type: 'text/csv' }) : file;
@@ -527,8 +609,8 @@ export function App() {
         const p = await profileTable(source, table);
         const s = server?.sources.find((x) => x.id === source);
         const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-        const dialect = dialectForKind(kind);
-        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
+        const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+        const proposal = proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -543,6 +625,8 @@ export function App() {
   // the chart expressions as measures. One catalog update at the end; returns what happened.
   const importQlik = useCallback(
     async (plan: QlikImportPlan): Promise<string[]> => {
+      // The Qlik readers load with the import, not with the page (web/size-budget.json).
+      const { applyQlikLabels, qlikCleaningSteps, qlikMeasures, qlikRelationshipCandidates } = await import('../../src/core/qlik.ts');
       const out: string[] = [];
       const imported: QlikImported[] = [];
       let cat = catalog;
@@ -553,8 +637,8 @@ export function App() {
             const p = await profileTable(t.source, t.table);
             const s = server?.sources.find((x) => x.id === t.source);
             const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
-            const dialect = dialectForKind(kind);
-            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
+            const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+            cat = proposeCatalog({ source: { id: t.source, label: s?.label ?? t.source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, cat).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
@@ -581,6 +665,7 @@ export function App() {
           }
           out.push(...cleaning.notes);
           const candidates = qlikRelationshipCandidates(plan.script, cat, imported);
+          const { checkRelationship, proposeRelationship, toValueCounts, valuesPlan } = await import('../../src/core/quality.ts');
           const checkCtx: DataContext = { ...ctx, index: indexCatalog(cat) };
           for (const c of candidates) {
             sayBusy(`Checking the ${c.from.label} link…`);
@@ -606,7 +691,8 @@ export function App() {
     [catalog, server, setCatalog, ctx, runBusy, sayBusy],
   );
 
-  const readQlikWithAi = useCallback((label: string, expression: string) => readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
+  // The model's smaller jobs (tasks.ts) load when one is first asked for, not with the page.
+  const readQlikWithAi = useCallback(async (label: string, expression: string) => (await import('../../src/core/intelligence/tasks.ts')).readQlikExpressionWithAi(draftingProvider(index, ai, useAi), label, expression, catalog), [index, ai, useAi, catalog]);
   const addMeasures = useCallback((metrics: Metric[]) => setCatalog({ ...catalog, metrics: [...catalog.metrics, ...metrics] }), [catalog, setCatalog]);
 
   // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.
@@ -628,8 +714,8 @@ export function App() {
   const removeSource = useCallback(
     (id: string) => {
       if (id === FILES_SOURCE) {
-        for (const name of Object.keys(files)) void deleteFile(name);
-        allFiles().then((all) => all.forEach((f) => deleteFile(f.name)));
+        // Stored files are keyed by file name (not table name): remove every one this browser keeps.
+        allFiles().then((all) => all.forEach((f) => void deleteFile(f.name)));
         setFiles({});
         void worker?.clear();
         setWorkerTables([]);
@@ -646,16 +732,20 @@ export function App() {
         hierarchies: (catalog.hierarchies ?? []).filter((h) => !h.levels.some((l) => fieldKeys.has(l))),
       });
     },
-    [catalog, files, setCatalog],
+    [catalog, setCatalog],
   );
 
   const loadExample = useCallback(() => {
     const ex = exampleCatalog as Catalog;
     setCatalog({ ...catalog, version: 1, sources: [...catalog.sources.filter((s) => !EXAMPLE_SOURCES.has(s.id)), ...ex.sources], fields: [...catalog.fields.filter((f) => !EXAMPLE_SOURCES.has(f.source)), ...ex.fields], metrics: [...catalog.metrics.filter((m) => !EXAMPLE_SOURCES.has(m.source)), ...ex.metrics] });
+    if (conflictBlocks()) return;
     const h = parseHoist(exampleHoist, indexCatalog(ex)).hoist;
-    if (h) history.replace(h);
-    setSelections({});
-  }, [catalog, setCatalog, history]);
+    if (h) {
+      void flushSave();
+      history.replace(h);
+      leavePage();
+    }
+  }, [catalog, setCatalog, history, conflictBlocks, flushSave, leavePage]);
 
   const exportHoist = () => {
     const blob = new Blob([JSON.stringify(hoist, null, 2)], { type: 'application/json' });
@@ -667,6 +757,7 @@ export function App() {
   };
 
   const importHoist = async (file: File) => {
+    if (conflictBlocks()) return;
     // The size check comes first (#91): the folder takes 2 MB a hoist, so a bigger file is never read in.
     if (file.size > LIMITS.docBytes) {
       notify(`${file.name} is ${formatMb(file.size)}, over the ${formatMb(LIMITS.docBytes)} a hoist may be. Remove some flags from it, or split it into two hoists.`, { tone: 'error' });
@@ -683,8 +774,7 @@ export function App() {
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
       void flushSave();
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
       notify(warnings.length ? `Opened “${h.title}”. ${warnings.slice(0, 2).join(' ')}` : `Opened “${h.title}”.`, { tone: warnings.length ? 'info' : 'success' });
     } catch (e) {
       notify(`Could not open ${file.name}. ${describeError(e)}`, { tone: 'error' });
@@ -692,14 +782,14 @@ export function App() {
   };
 
   const openFromServer = async (id: string) => {
+    if (conflictBlocks()) return;
     try {
       const raw = await loadItem<unknown>('hoists', id);
       const { hoist: h, warnings } = parseHoist(raw, index);
       if (!h) throw new Error(warnings[0] ?? 'Not a hoist.');
       void flushSave();
       history.replace(h);
-      setSelections({});
-      setSelectedId(null);
+      leavePage();
       setOpenList(null);
       if (warnings.length) notify(warnings.slice(0, 2).join(' '));
     } catch (e) {
@@ -707,14 +797,15 @@ export function App() {
     }
   };
   const showOpenList = useCallback(() => {
+    if (conflictBlocks()) return;
     listItems('hoists').then(setOpenList, (e: unknown) => notify(`Could not list the saved hoists. ${describeError(e)}`, { tone: 'error' }));
-  }, []);
+  }, [conflictBlocks]);
   const newHoist = useCallback(() => {
+    if (conflictBlocks()) return;
     void flushSave();
     history.replace(blankHoist());
-    setSelections({});
-    setSelectedId(null);
-  }, [flushSave, history]);
+    leavePage();
+  }, [flushSave, history, conflictBlocks, leavePage]);
 
   // End session (#87): confirm, send the pending save, stop the heartbeat, then stop the server.
   const endTheSession = useCallback(async () => {
@@ -739,7 +830,7 @@ export function App() {
       playbook.saveEntries(learnt).then(
         () => {
           const fresh = learnt.filter((e) => e.revisions === 0 && !playbook.entries.some((x) => x.id === e.id));
-          if (fresh.length && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
+          if (fresh.length && hoist.id !== exampleHoist.id && !announcedByAccept(fresh.map((e) => e.id))) notify(`Leadership can now ask for "${fresh[0]!.title}"${fresh.length > 1 ? ` and ${fresh.length - 1} more` : ''}.`, { tone: 'success' });
           const all = [...playbook.entries.filter((e) => !learnt.some((l) => l.id === e.id)), ...learnt];
           for (const q of resolveQuestions(playbook.questions, all)) void playbook.saveQuestion(q);
         },
@@ -811,7 +902,6 @@ export function App() {
   }, [playbook.loaded, playbook.schedules, playbook.away, ctx]);
 
   // "Brief me": the open page's briefing, written by the AI when it is on, checked against the facts.
-  const [briefing, setBriefing] = useState<Briefing | 'loading' | null>(null);
   const briefMe = useCallback(async () => {
     if (briefing === 'loading') return;
     setBriefing('loading');
@@ -884,7 +974,7 @@ export function App() {
 
   // Keyboard (hooks/useShortcuts.ts, listed in the ? help): palette, help, undo and redo, delete,
   // arrows to nudge, Escape to deselect, / for a quick chart. Flag keys come from useFlagKeys.
-  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
+  const onAcceptFlag = useAccept({ hoist, index, user, entries: playbook.entries, questions: playbook.questions, style: teamStyle, updateFlag, notify, onSeeLeadership: () => setView('ask'), saveEntries: playbook.saveEntries, saveQuestion: playbook.saveQuestion });
   const flagKeys = useFlagKeys({ selectedId, selectedStatus: selected?.status, onAccept: onAcceptFlag, onDuplicate: duplicateFlag });
   useShortcuts({
     enabled: currentView === 'builder' && !welcome,
@@ -900,11 +990,15 @@ export function App() {
       setAsked(null);
     },
     onDelete: () => selectedId && removeFlag(selectedId),
+    ...(hoist.grid.mode === 'free' ? { onStack: (to: 'front' | 'back') => selectedId && restack(selectedId, to) } : {}),
     onArrow: (dx, dy, resize) => {
       if (!selected) return;
       const l = selected.layout;
-      const target = resize ? { ...l, w: Math.max(1, l.w + dx), h: Math.max(1, l.h + dy) } : { ...l, x: l.x + dx, y: Math.max(0, l.y + dy) };
-      onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols), `keys-${selected.id}`);
+      // Free mode moves an eighth of a cell per key press; the other modes a whole cell.
+      const mode = hoist.grid.mode ?? 'snap';
+      const s = mode === 'free' ? FREE_STEP : 1;
+      const target = resize ? { ...l, w: Math.max(1, l.w + dx * s), h: Math.max(1, l.h + dy * s) } : { ...l, x: l.x + dx * s, y: Math.max(0, l.y + dy * s) };
+      onLayout(place(hoist.flags, selected.id, target, hoist.grid.cols, mode), `keys-${selected.id}`);
     },
   });
 
@@ -914,7 +1008,8 @@ export function App() {
     return values.map((v) => ({ key, value: v, text: `${label}: ${formatDim(v, grain as never)}` }));
   });
   const examples = useMemo(() => exampleBriefs(catalog), [catalog]);
-  const themeKey = `${theme}:${server?.skin || skin}`;
+  // Charts re-read their colours whenever anything that changes a colour changes.
+  const themeKey = `${theme}:${server?.skin || skin}:${themeSpec.accent}:${themeSpec.tint}:${themeSpec.tintStrength}:${themeSpec.contrast}`;
   const waiting = playbook.questions.filter((q) => q.status === 'open').length + playbook.entries.filter((e) => e.status === 'needs-review').length;
 
   if (currentView === 'refresh') {
@@ -949,7 +1044,10 @@ export function App() {
           open: showOpenList,
           import: () => importInput.current?.click(),
           download: exportHoist,
+          snapshots: () => setSnapshotsOpen(true),
           share: () => setShareOpen(true),
+          assistant: toggleAssistant,
+          design: () => setDesignOpen(true),
           brief: () => void briefMe(),
           kits: () => setKitsOpen(true),
           signals: () => setSignalOpen(true),
@@ -981,8 +1079,9 @@ export function App() {
           end: () => void endTheSession(),
         },
       }),
+    // `history` is a new object every render; only its stable functions and flags matter here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [server, busy, history, hoist, theme, skin, skinFixed, ai, useAi, useExamples, newHoist, showOpenList, briefMe, draftPage, toggleAi, toggleExamples, endTheSession],
+    [server, busy, history.canUndo, history.canRedo, history.undo, history.redo, hoist, theme, skin, skinFixed, ai, useAi, useExamples, newHoist, showOpenList, briefMe, draftPage, toggleAi, toggleExamples, endTheSession],
   );
   const paletteCommands = useCommands({
     actions,
@@ -993,7 +1092,7 @@ export function App() {
     questions: playbook.questions,
     onSelectFlag: (id) => {
       setSelectedId(id);
-      document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ block: 'center' });
+      document.querySelector(`[data-flag="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' });
     },
     onOpenHoist: (id) => void openFromServer(id),
     onInsert: (label) => change((h) => ({ ...h, brief: `${h.brief.trimEnd()}${h.brief.trim() ? ' ' : ''}${label}`.slice(0, LIMITS.briefChars) }), 'hoist-brief'),
@@ -1013,6 +1112,7 @@ export function App() {
             skin={skin}
             onSkin={skinFixed ? null : setSkin}
             hasServer={!!server}
+            server={server ? { version: server.version, port: server.port, home: server.home, pid: server.pid, ...(server.user ? { user: server.user } : {}) } : null}
             ai={ai}
             aiOn={!!ai?.configured && useAi}
             onAi={toggleAi}
@@ -1051,6 +1151,7 @@ export function App() {
       <>
         <Welcome
           lastTitle={hoist.title}
+          impactLine={playbook.social.impact ? impactLine(impactFor(playbook.entries, playbook.asks, playbook.bz, user, 0)?.thisWeek ?? 0) : null}
           canOpenSaved={!!server}
           onContinue={() => setWelcome(false)}
           onNew={() => {
@@ -1211,11 +1312,11 @@ export function App() {
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-panel px-4 py-1.5 text-xs" aria-label="Page selections">
           <span className="text-ink-3">Selected:</span>
           {selectionChips.map((c) => (
-            <button key={`${c.key}-${String(c.value)}`} type="button" onClick={() => onSelectValue(c.key, c.value, true)} className="flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 font-medium text-panel" title="Remove this selection">
+            <button key={`${c.key}-${String(c.value)}`} type="button" onClick={() => onSelectValue(c.key, c.value, true)} className="flex min-h-8 items-center gap-1 rounded-full bg-accent px-2.5 font-medium text-panel" title="Remove this selection">
               {c.text} <X size={11} />
             </button>
           ))}
-          <button type="button" onClick={() => setSelections({})} className="ml-1 text-ink-3 underline hover:text-ink">
+          <button type="button" onClick={() => setSelections({})} className="ml-1 min-h-8 px-1 text-ink-3 underline hover:text-ink">
             Clear all
           </button>
         </div>
@@ -1241,8 +1342,24 @@ export function App() {
               }}
             />
           )}
-          <div className="mx-auto max-w-[1400px] p-4">
+          <div className="mx-auto min-h-full max-w-[1400px] p-4" {...designAttrs(hoist.design)} style={designVars(hoist.design) as React.CSSProperties}>
             <Shakedown catalog={catalog} onAsk={() => setView('ask')} onTypeForMe={(brief) => { const id = newId(); change((h) => withBriefFlag(h, id, brief)); setAutoKinds((a) => ({ ...a, [id]: true })); setSelectedId(id); }} />
+            {hoist.flags.length > 0 && (
+              <LayoutBar
+                mode={hoist.grid.mode ?? 'snap'}
+                hasSelection={!!selected}
+                onMode={(m) => {
+                  if (m !== (hoist.grid.mode ?? 'snap')) autoSnap('Changing the layout');
+                  setLayoutMode(m);
+                }}
+                onTidy={() => {
+                  autoSnap('Tidy up');
+                  tidyUp();
+                }}
+                onFront={() => selected && restack(selected.id, 'front')}
+                onBack={() => selected && restack(selected.id, 'back')}
+              />
+            )}
             <Canvas
               hoist={hoist}
               ctx={ctx}
@@ -1299,6 +1416,18 @@ export function App() {
                   onDelete={() => removeFlag(selected.id)}
                   onClose={() => setSelectedId(null)}
                   onLearn={onLearn}
+                  onOpenDesign={() => setDesignOpen(true)}
+                  onUseForPage={() =>
+                    change((h) => {
+                      const { look: _look, ...rest } = h.design ?? {};
+                      return { ...h, design: { ...rest, charts: { ...rest.charts, ...chartLookOf(selected.style) } }, flags: h.flags.map((f) => ({ ...f, style: withoutChartLook(f.style) })) };
+                    })
+                  }
+                  onSaveFlag={(format, result) => {
+                    void import('./lib/export.ts')
+                      .then(async ({ exportFlagOf, saveFlag }) => saveFlag(format, await exportFlagOf({ flag: selected, result, insights: [] }, index, hoist.design)))
+                      .then((name) => notify(`Saved ${name}.`, { tone: 'success' }), (e: Error) => notify(e.message, { tone: 'error' }));
+                  }}
                 />
               </PanelBoundary>
             </div>
@@ -1325,6 +1454,7 @@ export function App() {
       )}
 
       {signalOpen && (
+        <Panel name="Signal Book" onClose={() => setSignalOpen(false)}>
         <SignalBook hoist={hoist} catalog={catalog} playbook={playbook} user={user} onClose={() => setSignalOpen(false)}
           onTry={(t) => {
             setSignalOpen(false);
@@ -1333,6 +1463,7 @@ export function App() {
             else ({ data: setDataOpen, qlik: setQlikOpen, kits: setKitsOpen, lineage: setLineageOpen })[t.panel](true);
           }}
         />
+        </Panel>
       )}
 
       {kitsOpen && (
@@ -1343,6 +1474,7 @@ export function App() {
             index={index}
             onClose={() => setKitsOpen(false)}
             onApply={(h, summary) => {
+              autoSnap('Flying a kit');
               change(h);
               notify(summary, { tone: 'success' });
             }}
@@ -1382,7 +1514,7 @@ export function App() {
             flags={hoist.flags}
             onFlag={(id) => {
               setSelectedId(id);
-              document.querySelector(`[data-flag="${id}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
+              document.querySelector(`[data-flag="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
             }}
             onClose={() => setBriefing(null)}
           />
@@ -1393,15 +1525,37 @@ export function App() {
         <Panel name="share dialog" onClose={() => setShareOpen(false)}>
           <ShareDialog
             title={hoist.title}
+            selections={Object.values(selections).filter((v) => v.length).length}
             onClose={() => setShareOpen(false)}
-            onSave={async (passphrase) => {
-              const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
-              const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
-              const name = `${(hoist.title || 'semaphore-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'semaphore-report'}-${new Date().toISOString().slice(0, 10)}.html`;
-              download(name, html);
-              return name;
+            onExport={async (format, { passphrase, selectedOnly }) => {
+              if (format === 'html') {
+                const frozen = await freezeHoist(hoist, ctx, index, { keepRaw: true, keepDrill: true });
+                const { buildReportHtml, download, reportPayload } = await import('./lib/share.ts');
+                const html = await buildReportHtml(reportPayload(hoist, frozen, catalog, user, theme, server?.skin || skin), passphrase || undefined);
+                const name = `${fileStem(hoist.title)}-${new Date().toISOString().slice(0, 10)}.html`;
+                download(name, html);
+                return name;
+              }
+              const slice = planSlice(hoist);
+              const sliceKey = cachedSliceKey(hoist);
+              const frozen = await freezeHoist(hoist, ctx, index, selectedOnly ? { selectionsFor: (f) => relevantSelections(selections, pageKeysFor(slice, sliceKey, f, index), f.behavior) } : {});
+              const picked = selectedOnly
+                ? Object.entries(selections).flatMap(([key, values]) => {
+                    const [field, grain] = key.split('@');
+                    return values.length ? [`${index.field(field!)?.label ?? field}: ${values.map((v) => formatDim(v, grain as TimeGrain | undefined)).join(', ')}`] : [];
+                  })
+                : [];
+              const { buildDocument, saveDocument } = await import('./lib/export.ts');
+              const doc = await buildDocument({ title: hoist.title, brief: hoist.brief, by: user, filters: [...hoist.filters.map((f) => filterText(f, index)), ...picked], flags: frozen, index, design: hoist.design });
+              return saveDocument(format, doc);
             }}
           />
+        </Panel>
+      )}
+
+      {designOpen && (
+        <Panel name="page design" onClose={() => setDesignOpen(false)}>
+          <DesignDialog design={hoist.design} onClose={() => setDesignOpen(false)} onChange={(design) => change((h) => ({ ...h, design }), 'design')} />
         </Panel>
       )}
 
@@ -1423,16 +1577,50 @@ export function App() {
         </Panel>
       )}
 
-      {openList && <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />}
-      {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
-      {helpOpen && <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />}
+      {snapshotsOpen && (
+        <Panel name="snapshots" onClose={() => setSnapshotsOpen(false)}>
+          <SnapshotsDialog
+            hoist={hoist}
+            catalog={catalog}
+            index={index}
+            onClose={() => setSnapshotsOpen(false)}
+            onRestore={(h) => {
+              change(h);
+              setSelections({});
+              setSelectedId(null);
+            }}
+          />
+        </Panel>
+      )}
+      {openList && (
+        <Panel name="open hoist" onClose={() => setOpenList(null)}>
+          <OpenHoistDialog items={openList} onOpen={(id) => void openFromServer(id)} onClose={() => setOpenList(null)} />
+        </Panel>
+      )}
+      {paletteOpen && (
+        <Panel name="command palette" onClose={() => setPaletteOpen(false)}>
+          <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+        </Panel>
+      )}
+      {(assistantOrb || assistantWanted) && (
+        <Suspense fallback={null}>
+          <AssistantRoot
+            orb={assistantOrb}
+            ai={ai}
+            aiOn={!!ai?.configured && useAi}
+            page={{ title: hoist.title, brief: hoist.brief, flags: hoist.flags.map((f) => ({ title: f.title, kind: f.kind, brief: f.brief })) }}
+          />
+        </Suspense>
+      )}
+
+      {helpOpen && (
+        <Panel name="help" onClose={() => setHelpOpen(false)}>
+          <HelpDialog index={index} onClose={() => setHelpOpen(false)} onPalette={() => setPaletteOpen(true)} onTry={(brief) => addBriefFlag(brief.slice(0, 60), brief)} />
+        </Panel>
+      )}
       {overlays}
     </div>
   );
-}
-
-function titleOf(f: Flag): string {
-  return f.title;
 }
 
 /** Example briefs written from the catalog, so the first thing to try uses real names. */

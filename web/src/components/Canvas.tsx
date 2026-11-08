@@ -1,6 +1,8 @@
-// The hoist: a 12-column lego grid. Flags snap to whole cells, push others down when they land
-// on them and float up to fill gaps (src/core/layout.ts). Drag a flag by its grip, resize it by
-// its corner, drop a new one from the palette, or move the selected flag with the arrow keys.
+// The hoist: a 12-column grid in the hoist's layout mode (src/core/layout.ts). Snap: flags sit on
+// whole cells wherever they are dropped and gaps stay. Free: flags go anywhere in eighth-cell steps
+// and may overlap (hold Alt to line up with the cells). Auto: the tidy lego grid that floats flags up.
+// Drag a flag by its grip, resize it by its corner, drop a new one from the palette, or move the
+// selected flag with the arrow keys. The cells show while a flag is being dragged.
 // Cards sit in the page in reading order (top to bottom, left to right), so Tab visits them in the
 // order they are seen. Each card gets only the slice of the page it reads (lib/relevance.ts), so
 // typing a title or picking a value on another table does not redraw it.
@@ -8,8 +10,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../../src/core/crossfilter.ts';
-import type { FlagKind, Hoist, Layout } from '../../../src/core/hoist.ts';
-import { DEFAULT_SIZE, place } from '../../../src/core/layout.ts';
+import type { FlagKind, Hoist, Layout, LayoutMode } from '../../../src/core/hoist.ts';
+import { DEFAULT_SIZE, FREE_STEP, place } from '../../../src/core/layout.ts';
 import type { DataContext } from '../lib/data.ts';
 import { scrollBehavior } from '../lib/motion.ts';
 import { cachedSliceKey, planSlice, useRelevantSelections, useStableValue } from '../lib/relevance.ts';
@@ -38,7 +40,9 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(1000);
   const [dropAt, setDropAt] = useState<Layout | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
   const cols = hoist.grid.cols;
+  const mode: LayoutMode = hoist.grid.mode ?? 'snap';
 
   useEffect(() => {
     if (!box.current) return;
@@ -66,22 +70,33 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
       const sy = e.clientY;
       const group = `drag-${id}-${Date.now()}`;
       let last = '';
+      setDragging(id);
+      const layoutMode: LayoutMode = hoistRef.current.grid.mode ?? 'snap';
       const move = (ev: PointerEvent) => {
-        const dx = Math.round((ev.clientX - sx) / (colW + GAP_PX));
-        const dy = Math.round((ev.clientY - sy) / (ROW_PX + GAP_PX));
-        const target = mode === 'move' ? { ...start, x: start.x + dx, y: Math.max(0, start.y + dy) } : { ...start, w: Math.max(1, start.w + dx), h: Math.max(1, start.h + dy) };
+        // Free mode moves in eighth-cell steps; holding Alt lines the flag up with whole cells.
+        const step = layoutMode === 'free' && !ev.altKey ? FREE_STEP : 1;
+        const snap = (v: number) => Math.round(v / step) * step;
+        const dx = snap((ev.clientX - sx) / (colW + GAP_PX));
+        const dy = snap((ev.clientY - sy) / (ROW_PX + GAP_PX));
+        const target =
+          mode === 'move'
+            ? { ...start, x: step === 1 ? Math.round(start.x + dx) : start.x + dx, y: Math.max(0, step === 1 ? Math.round(start.y + dy) : start.y + dy) }
+            : { ...start, w: Math.max(1, step === 1 ? Math.round(start.w + dx) : start.w + dx), h: Math.max(1, step === 1 ? Math.round(start.h + dy) : start.h + dy) };
         const key = JSON.stringify(target);
         if (key === last) return;
         last = key;
         const items = hoistRef.current.flags.map((f) => ({ id: f.id, layout: f.layout }));
-        onLayout(place(items, id, target, cols), group);
+        onLayout(place(items, id, target, cols, layoutMode), group);
       };
       const up = () => {
+        setDragging(null);
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
       };
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);
     },
     [colW, cols, onLayout],
   );
@@ -91,7 +106,10 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
     box.current?.querySelector(`[data-flag="${CSS.escape(selectedId)}"]`)?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
   }, [selectedId]);
 
-  const rows = Math.max(8, ...hoist.flags.map((f) => f.layout.y + f.layout.h)) + 2;
+  const rows = Math.ceil(Math.max(8, ...hoist.flags.map((f) => f.layout.y + f.layout.h))) + 2;
+  // Stacking: in free mode the list order (last on top), with the selected and dragged flag above the rest.
+  const stackOf = new Map(hoist.flags.map((f, i) => [f.id, i + 1]));
+  const zFor = (id: string) => (id === dragging ? 1000 : id === selectedId ? 900 : mode === 'free' ? (stackOf.get(id) ?? 1) : 1);
   const sliceKey = cachedSliceKey(hoist);
   const slice = useStableValue(sliceKey, () => planSlice(hoist));
   const selectionsFor = useRelevantSelections(hoist.flags, slice, sliceKey, index, selections);
@@ -100,8 +118,9 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
   return (
     <div
       ref={box}
-      className="relative"
-      style={{ height: rows * (ROW_PX + GAP_PX) }}
+      className={`relative ${dragging ? 'canvas-cells' : ''}`}
+      data-layout-mode={mode}
+      style={{ height: rows * (ROW_PX + GAP_PX), '--cell-w': `${colW + GAP_PX}px`, '--cell-h': `${ROW_PX + GAP_PX}px`, '--cell-gap': `${GAP_PX}px` } as React.CSSProperties}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onSelectFlag(null);
       }}
@@ -128,7 +147,7 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
       {hoist.flags.length === 0 && !dropAt && <div className="absolute inset-0">{empty}</div>}
       {dropAt && <div className="pointer-events-none absolute rounded-xl border-2 border-dashed border-accent bg-accent-soft/40" style={px(dropAt)} />}
       {reading.map((f) => (
-        <div key={f.id} data-flag={f.id} className="absolute transition-[left,top,width,height] duration-150 ease-out" style={px(f.layout)}>
+        <div key={f.id} data-flag={f.id} className={`absolute ${dragging === f.id ? '' : 'transition-[left,top,width,height] duration-150 ease-out'}`} style={{ ...px(f.layout), zIndex: zFor(f.id) }}>
           <FlagCard
             hoist={slice}
             flag={f}
@@ -137,6 +156,7 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
             selections={selectionsFor(f)}
             selected={selectedId === f.id}
             themeKey={themeKey}
+            {...(hoist.design ? { design: hoist.design } : {})}
             onSelectFlag={onSelectFlag}
             onSelectValue={onSelectValue}
             onAccept={onAccept}

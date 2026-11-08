@@ -125,7 +125,7 @@ test('a second modal over the first isolates the first, and closing in either or
 
 test('every overlay uses the shared helper with a name, aria-modal and a way to take focus (source check)', () => {
   const files: Array<[string, string]> = [
-    ['ShareDialog.tsx', 'Share as a report'],
+    ['ShareDialog.tsx', 'Export or share'],
     ['SqlDesk.tsx', 'SQL desk'],
     ['DataPanel.tsx', 'Data and catalog'],
     ['LineageView.tsx', 'Lineage'],
@@ -140,7 +140,7 @@ test('every overlay uses the shared helper with a name, aria-modal and a way to 
     assert.ok(src.includes(name), `${file} lost its name ${name}`);
   }
   const share = readFileSync(new URL('../web/src/components/ShareDialog.tsx', import.meta.url), 'utf8');
-  assert.match(share, /data-autofocus type="password"/);
+  assert.match(share, /data-autofocus={format === f.id/);
   const sql = readFileSync(new URL('../web/src/components/SqlDesk.tsx', import.meta.url), 'utf8');
   assert.match(sql, /<textarea\s+data-autofocus/);
 });

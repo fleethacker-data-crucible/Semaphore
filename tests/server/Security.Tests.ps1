@@ -87,7 +87,7 @@ Describe 'Host and Origin gate' {
     }
 
     It 'sends exactly the security header set on every response' {
-        $csp = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        $csp = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         $want = @(
             $csp,
             'X-Content-Type-Options: nosniff',
@@ -391,6 +391,73 @@ Describe 'Hoists and catalogs' {
     }
 }
 
+Describe 'Body limits and request parsing' {
+    It 'caps a document PUT at 2 MB before the body is read or parsed, and gives /api/query the long deadline' {
+        $doc = Get-SemBodyLimit -Path '/api/hoists/h1'
+        $doc.MaxBytes | Should -Be 2097152
+        $doc.DeadlineMs | Should -Be 10000
+        $doc.TooLarge | Should -BeLike '*2 MB*'
+        (Get-SemBodyLimit -Path '/api/team/t1').MaxBytes | Should -Be 2097152
+        $q = Get-SemBodyLimit -Path '/api/query'
+        $q.MaxBytes | Should -Be 8388608
+        $q.DeadlineMs | Should -Be 30000
+        (Get-SemBodyLimit -Path '/api/heartbeat').DeadlineMs | Should -Be 10000
+        (Get-SemBodyLimit -Path '/api/hoists').MaxBytes | Should -Be 8388608 -Because 'the list route takes no body; only /<id> is a document'
+    }
+
+    It 'refuses an oversized document before parsing it (the body is not JSON at all)' {
+        $big = 'x' * 2097153
+        $r = Invoke-TestRequest -Method 'PUT' -Path '/api/hoists/big' -Headers (Get-Auth) -Body $big
+        $r.Status | Should -Be 413
+        ($r.Body | ConvertFrom-Json).code | Should -Be 'too-large'
+    }
+
+    It 'parses the request line strictly: upper-case method only' {
+        (ConvertFrom-SemRequestHead -Text "GET / HTTP/1.1`r`nHost: 127.0.0.1:8800").Method | Should -Be 'GET'
+        (ConvertFrom-SemRequestHead -Text "get / HTTP/1.1`r`nHost: 127.0.0.1:8800").ErrorStatus | Should -Be 400
+        (ConvertFrom-SemRequestHead -Text "GET / HTTP/1.1`r`nHost: 127.0.0.1:8800`r`nContent-Length: 2`r`nContent-Length: 2").ErrorMessage | Should -BeLike '*Duplicate*'
+    }
+
+    It 'answers HEAD on a missing or refused path with headers only' {
+        foreach ($p in @('/assets/nope.js', '/..%2fsecret', '/.git/config')) {
+            $r = Invoke-TestRequest -Method 'HEAD' -Path $p
+            $r.Status | Should -Be 404
+            $r.Body | Should -Be ''
+            $r.Head | Should -Match 'Content-Length: \d+'
+        }
+        (Invoke-TestRequest -Method 'GET' -Path '/assets/nope.js').Body | Should -Match '"not-found"'
+    }
+}
+
+Describe 'Refresh report' {
+    BeforeAll {
+        $script:SavedLog = $script:SemLogPath
+        $script:ReportLog = Join-Path ([IO.Path]::GetTempPath()) ('sem-rr-' + [guid]::NewGuid().ToString('N') + '.log')
+        $script:SemLogPath = $script:ReportLog
+    }
+    AfterAll {
+        $script:SemLogPath = $script:SavedLog
+        Remove-Item -LiteralPath $script:ReportLog -Force -ErrorAction SilentlyContinue
+    }
+    It 'folds page-supplied id, title and error into one log-safe line each, capped, in the log and the saved report' {
+        $forged = "x`r`n2026-11-07 09:00:00  [INFO] Stopped (end)"
+        $long = 'T' * 400
+        $body = '{"refreshed":2,"skipped":0,"failed":[{"id":"' + ('i' * 100) + '","title":"' + $long + '","error":"' + ($forged -replace "`r", '\r' -replace "`n", '\n') + '"}]}'
+        $r = Invoke-TestRequest -Method 'POST' -Path '/api/refresh-report' -Headers (Get-Auth) -Body $body
+        $r.Status | Should -Be 200
+        $saved = [IO.File]::ReadAllText([IO.Path]::Combine($script:Sem.Home, 'snapshots', '.last-refresh.json')) | ConvertFrom-Json
+        $saved.failed[0].id.Length | Should -Be 67   # 64 + '...'
+        $saved.failed[0].title.Length | Should -Be 203
+        $saved.failed[0].error | Should -Be 'x | 2026-11-07 09:00:00  [INFO] Stopped (end)'
+        $saved.failed[0].error | Should -Not -Match "`n"
+        $lines = @([IO.File]::ReadAllLines($script:ReportLog) | Where-Object { $_ -match 'Snapshot failed' })
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Match 'x \| 2026-11-07 09:00:00  \[INFO\] Stopped \(end\)'
+        @([IO.File]::ReadAllLines($script:ReportLog) | Where-Object { $_ -match '^2026-11-07 09:00:00  \[INFO\] Stopped' }).Count | Should -Be 0 -Because 'a forged line never starts a log entry'
+        (Invoke-TestRequest -Method 'GET' -Path '/api/refresh-report' -Headers (Get-Auth)).Status | Should -Be 200
+    }
+}
+
 Describe 'SQL guard and parameters' {
     It 'allows a plain SELECT' {
         Test-SemSqlGuard 'SELECT "region", SUM("cost") AS "m0" FROM "jobs" WHERE "opened" >= ? GROUP BY "region"' | Should -BeNullOrEmpty
@@ -402,9 +469,30 @@ Describe 'SQL guard and parameters' {
         @{ Why = 'a semicolon'; Sql = 'SELECT 1; DROP TABLE t' }, @{ Why = 'a line comment'; Sql = 'SELECT 1 -- x' },
         @{ Why = 'a block comment'; Sql = 'SELECT /* x */ 1' }, @{ Why = 'SELECTINTO-like prefix'; Sql = 'SELECTX 1' },
         @{ Why = 'over 100 KB'; Sql = ('SELECT ' + ('a' * 102400)) },
-        @{ Why = 'SELECT INTO (makes a table)'; Sql = 'SELECT * INTO copy_of_jobs FROM jobs' }
+        @{ Why = 'SELECT INTO (makes a table)'; Sql = 'SELECT * INTO copy_of_jobs FROM jobs' },
+        @{ Why = 'a second T-SQL statement with no semicolon (EXEC)'; Sql = 'SELECT 1 EXEC sp_who' },
+        @{ Why = 'a second T-SQL statement with no semicolon (DROP)'; Sql = "SELECT 1 DROP TABLE t" },
+        @{ Why = 'a second statement on a new line'; Sql = "SELECT 1`nDELETE FROM t WHERE 1=1" },
+        @{ Why = 'a keyword in another case'; Sql = 'SELECT 1 execute sp_who' },
+        @{ Why = 'a batch separator'; Sql = "SELECT 1`nGO`nTRUNCATE TABLE t" }
     ) {
         Test-SemSqlGuard $Sql | Should -Not -BeNullOrEmpty
+    }
+
+    It 'lets a statement keyword stand inside a string or a quoted name: <Why>' -TestCases @(
+        @{ Why = 'a string literal'; Sql = "SELECT 'drop table x' AS note, 'exec' AS verb FROM t" },
+        @{ Why = 'a bracketed column'; Sql = 'SELECT [update], [delete] FROM [insert]' },
+        @{ Why = 'a double-quoted column'; Sql = 'SELECT "merge" FROM "jobs" WHERE "go" = ?' },
+        @{ Why = 'a backtick name'; Sql = 'SELECT `create` FROM `t`' },
+        @{ Why = 'a doubled quote inside a string'; Sql = "SELECT 'it''s drop' FROM t" },
+        @{ Why = 'a word that only starts like one'; Sql = 'SELECT executed, dropped, created_at, updated_by FROM t' }
+    ) {
+        Test-SemSqlGuard $Sql | Should -BeNullOrEmpty
+    }
+
+    It 'names the keyword it refused' {
+        Test-SemSqlGuard 'SELECT 1 EXEC sp_who' | Should -BeLike '*EXEC*'
+        Remove-SemSqlQuoted "SELECT 'a''b' AS [x y], `"q`" FROM t" | Should -Be "SELECT ' '' ' AS [   ], `" `" FROM t"
     }
 
     It 'types parameter values' {
@@ -449,10 +537,12 @@ Describe 'SQL guard and parameters' {
     It 'lists sources without their connection strings' {
         $r = Invoke-TestRequest -Path '/api/info' -Headers (Get-Auth)
         $j = $r.Body | ConvertFrom-Json
-        @($j.sources).Count | Should -Be 2
+        @($j.sources).Count | Should -Be 3   # two from sources.json, then the built-in local database
         $j.sources[0].id | Should -Be 'maint'
+        $j.sources[2].id | Should -Be 'local'
+        $j.sources[2].kind | Should -Be 'local'
         $j.sources[0].placeholders | Should -Be 'question'
-        $r.Body | Should -Not -Match 'DSN=|PWD='
+        $r.Body | Should -Not -Match 'DSN=|PWD=|Data Source='
     }
 
     It 'checks and quotes identifiers like catalog.ts isIdentifier()' {

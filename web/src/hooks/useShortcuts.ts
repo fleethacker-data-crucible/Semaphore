@@ -18,6 +18,8 @@ export interface ShortcutHandlers {
   onDelete: () => void;
   /** An arrow key with a flag selected: dx, dy, and whether Shift (resize) was held. */
   onArrow: (dx: number, dy: number, resize: boolean) => void;
+  /** ] or [ with a flag selected: bring it to the front or send it to the back (free layouts). */
+  onStack?: (to: 'front' | 'back') => void;
   hasSelection: boolean;
   /** hooks/useFlagKeys.ts: true when it handled the key. */
   flagKeys: (e: KeyboardEvent) => boolean;
@@ -74,6 +76,9 @@ export function useShortcuts(h: ShortcutHandlers): void {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && k.hasSelection) {
         e.preventDefault();
         k.onDelete();
+      } else if (k.hasSelection && k.onStack && (e.key === ']' || e.key === '[')) {
+        e.preventDefault();
+        k.onStack(e.key === ']' ? 'front' : 'back');
       } else if (k.hasSelection && ARROWS[e.key]) {
         e.preventDefault();
         const [dx, dy] = ARROWS[e.key]!;

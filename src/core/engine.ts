@@ -8,6 +8,7 @@ import type { Filter, TimeGrain } from './hoist.ts';
 import type { QueryPlan } from './planner.ts';
 import type { Cell, ResultRow } from './crossfilter.ts';
 import { cleanType, cleanValue, dedupes, stepsFor } from './cleaning.ts';
+import { calendarDay, dayStart } from './dates.ts';
 import { aliasOf, BASE_ALIAS } from './joins.ts';
 import { type ManyRows, prepareManyRows } from './manyjoin.ts';
 import { periodStart } from './sql.ts';
@@ -159,11 +160,9 @@ export function runPlan(plan: QueryPlan, index: CatalogIndex, tables: TableRows,
 export function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: FieldType }, today: Date): (row: R) => boolean {
   const get = c.get;
   if (c.type === 'date') {
+    // Filter values are YYYY-MM-DD (or longer text whose first ten characters are); cells read as the calendar day they name.
     const day = (v: unknown) => String(v).slice(0, 10);
-    const val = (row: R) => {
-      const v = get(row);
-      return v === null ? null : day(v);
-    };
+    const val = (row: R) => calendarDay(get(row));
     switch (f.op) {
       case 'eq':
         return (r) => val(r) === day(f.values[0]);
@@ -196,13 +195,18 @@ export function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: Field
     if (c.type === 'boolean') return v === true || v === 'true' || v === 1;
     return String(v);
   };
-  const values = f.values.map(norm);
+  // A value that is not a number on a number field matches nothing (NaN would otherwise match
+  // every non-numeric cell, since a Set treats NaN as equal to NaN).
+  const values = f.values.map(norm).filter((v) => !(typeof v === 'number' && Number.isNaN(v)));
   switch (f.op) {
     case 'eq':
       return (r) => norm(get(r)) === values[0];
     case 'in': {
       const set = new Set(values);
-      return (r) => set.has(norm(get(r)));
+      return (r) => {
+        const v = norm(get(r));
+        return !(typeof v === 'number' && Number.isNaN(v)) && set.has(v);
+      };
     }
     case 'gte':
       return (r) => {
@@ -224,13 +228,13 @@ export function filterTest<R>(f: Filter, c: { get: (row: R) => Cell; type: Field
   }
 }
 
-/** Start of the period a date falls in, as YYYY-MM-DD (UTC). Weeks start on Monday. */
+/**
+ * Start of the period a date falls in, as YYYY-MM-DD. Weeks start on Monday. The cell's calendar
+ * text decides the day (dates.ts), so a row a filter keeps lands in the bucket the filter named.
+ */
 export function truncateDate(v: Cell, grain: TimeGrain): Cell {
-  if (v === null || typeof v === 'boolean') return null;
-  const s = String(v);
-  const t = Date.parse(s.length === 10 ? `${s}T00:00:00Z` : s);
-  if (Number.isNaN(t)) return null;
-  return periodStart(new Date(t), grain, 0);
+  const day = dayStart(v);
+  return day === null ? null : periodStart(day, grain, 0);
 }
 
 function compareCells(a: Cell, b: Cell): number {

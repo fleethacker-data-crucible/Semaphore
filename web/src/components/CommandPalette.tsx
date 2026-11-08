@@ -34,7 +34,7 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
   return (
     <div className="fixed inset-0 z-[65] flex items-start justify-center bg-ink/30 pt-[12vh]" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <section ref={ref} role="dialog" aria-modal="true" aria-label="Command palette" tabIndex={-1} className="fl-dialog flex max-h-[70vh] w-[600px] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-[14px] border border-line bg-panel shadow-xl">
-        <div className="flex items-center gap-2 border-b border-line px-3">
+        <div className="focus-row flex items-center gap-2 border-b border-line px-3">
           <Search size={16} aria-hidden="true" className="shrink-0 text-ink-3" />
           <input
             data-autofocus

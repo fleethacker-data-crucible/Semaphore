@@ -2,20 +2,24 @@
 // produced in plain English, why Semaphore is or is not sure, what is worth a look, and the
 // controls an analyst reaches for most. The binding and SQL are a click away, never in the way.
 
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Flag as FlagIcon, MessagesSquare, Sparkles, Trash2, X } from 'lucide-react';
 import type { CatalogIndex } from '../../../src/core/catalog.ts';
 import type { Selections } from '../../../src/core/crossfilter.ts';
 import { describeFlag } from '../../../src/core/describe.ts';
-import type { Behavior, Flag, FlagKind, Hoist } from '../../../src/core/hoist.ts';
+import { type Behavior, type Flag, FLAG_KINDS, type FlagKind, type Hoist } from '../../../src/core/hoist.ts';
+import { CHART_KINDS, fitRichKind, isRichKind, KIND_NEEDS } from '../../../src/core/kinds.ts';
 import { findInsights } from '../../../src/core/insights.ts';
 import { annotateBrief, type Suggestion, usedKinds } from '../../../src/core/intelligence/annotate.ts';
 import { flushAccepts, shortDate, useReviewedAt } from '../lib/accept.ts';
-import type { DataContext } from '../lib/data.ts';
+import type { DataContext, FlagResult } from '../lib/data.ts';
 import { noteGrammarUsed } from '../lib/onboarding.ts';
 import { BriefEditor, BriefHints, BriefLegend, Understood } from './BriefEditor.tsx';
 import { useFlagResult } from './FlagCard.tsx';
 import { KIND_META } from './Palette.tsx';
+import { StylePanel } from './LazyPanels.tsx';
+import { dialectName, shownSql } from '../lib/sql-language.ts';
+import { useSqlPref } from '../lib/sql-pref.ts';
 
 export interface InspectorProps {
   hoist: Hoist;
@@ -35,9 +39,18 @@ export interface InspectorProps {
   onLearn: (word: string, s: Suggestion) => void;
   /** Open the leadership view (shown with an accepted flag: "See it as leadership will"). */
   onSeeAsLeadership?: () => void;
+  onUseForPage: () => void;
+  onOpenDesign: () => void;
+  /** Save this flag on its own, as it stands now. */
+  onSaveFlag: (format: 'png' | 'svg' | 'csv', result: FlagResult) => void;
 }
 
-const KINDS: FlagKind[] = ['kpi', 'bar', 'line', 'area', 'pie', 'table', 'filter', 'text'];
+const KINDS = FLAG_KINDS;
+// Inspector > Model loads with the model list, only when a model flag is selected.
+const ModelPanel = lazy(() => import('./ModelPanel.tsx'));
+const PivotPanel = lazy(() => import('./PivotPanel.tsx'));
+// Inspector > Widget (the code editor and the team library) loads only when a custom flag is selected.
+const CustomPanel = lazy(() => import('./CustomPanel.tsx'));
 
 export function Inspector(p: InspectorProps) {
   const { flag, hoist, index } = p;
@@ -48,6 +61,10 @@ export function Inspector(p: InspectorProps) {
     () => (result ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: p.ctx.today }, index) : []),
     [result, flag, index, p.ctx.today],
   );
+  const sqlPref = useSqlPref();
+  // A richer kind whose fields do not fit is drawn as the nearest kind that does; say so here.
+  const kindNote = isRichKind(flag.kind) && flag.binding ? fitRichKind(flag.kind, flag.binding, index).note : undefined;
+  const sqlView = useMemo(() => (result?.sql ? shownSql(result.sql, result.plan, index, p.ctx.today, sqlPref) : null), [result, index, p.ctx.today, sqlPref]);
   const reasons = useMemo(() => annotateBrief(flag.brief, index).reasons, [flag.brief, index]);
   // Only fields in the table this flag reads can affect it.
   const firstMetric = flag.binding?.metrics[0] ? index.metric(flag.binding.metrics[0]) : undefined;
@@ -180,6 +197,7 @@ export function Inspector(p: InspectorProps) {
                   type="button"
                   role="radio"
                   aria-checked={on}
+                  title={isRichKind(k) ? `${KIND_META[k].hint}. Needs ${KIND_NEEDS[k]}.` : KIND_META[k].hint}
                   onClick={() => {
                     p.onAutoKind(false);
                     p.onChange({ kind: k });
@@ -192,7 +210,42 @@ export function Inspector(p: InspectorProps) {
               );
             })}
           </div>
+          {kindNote && (
+            <p className="text-[11.5px] leading-5 text-warn" data-testid="kind-note">
+              {kindNote}
+            </p>
+          )}
         </section>
+
+        {flag.kind === 'model' && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading the models…</p>}>
+            <ModelPanel flag={flag} index={index} onChange={p.onChange} />
+          </Suspense>
+        )}
+        {flag.kind === 'pivot' && (
+          <Suspense fallback={null}>
+            <PivotPanel flag={flag} index={index} onChange={p.onChange} />
+          </Suspense>
+        )}
+
+        {flag.kind === 'custom' && (
+          <Suspense fallback={<p className="text-xs text-ink-3">Loading the editor…</p>}>
+            <CustomPanel flag={flag} onChange={p.onChange} />
+          </Suspense>
+        )}
+
+        <Suspense fallback={null}>
+        <StylePanel
+          flag={flag}
+          design={hoist.design}
+          hasSeries={(result?.plan.own.length ?? 0) > 1}
+          onStyle={(style) => p.onChange({ style }, `style-${flag.id}`)}
+          onPivot={(pivot) => p.onChange({ pivot }, `style-${flag.id}`)}
+          index={index}
+          onUseForPage={p.onUseForPage}
+          onOpenDesign={p.onOpenDesign}
+        />
+        </Suspense>
 
         {flag.kind !== 'text' && (
           <section className="space-y-1">
@@ -267,7 +320,7 @@ export function Inspector(p: InspectorProps) {
                         type="button"
                         aria-pressed={on}
                         onClick={() => setBehavior({ ignore: on ? flag.behavior.ignore.filter((k) => k !== f.key) : [...flag.behavior.ignore, f.key] })}
-                        className={`rounded-full border px-2 py-0.5 ${on ? 'border-brass bg-brass-soft text-ink' : 'border-line text-ink-3 hover:border-brass'}`}
+                        className={`min-h-8 rounded-full border px-2 ${on ? 'border-brass bg-brass-soft text-ink' : 'border-line text-ink-3 hover:border-brass'}`}
                       >
                         {f.label}
                       </button>
@@ -285,7 +338,8 @@ export function Inspector(p: InspectorProps) {
           {details && (
             <div className="mt-2 space-y-2">
               <pre className="scroll-thin max-h-56 overflow-auto rounded-md bg-panel-2 p-2 font-mono text-[11px]">{JSON.stringify({ binding: flag.binding, behavior: flag.behavior }, null, 2)}</pre>
-              {result?.sql && <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px]">{result.sql.sql}</pre>}
+              {sqlView && sqlView.translated && <p className="text-[11px] text-ink-2">In {dialectName(sqlView.shown.dialect)}, your SQL language (Settings &gt; SQL). It runs as {dialectName(result!.sql!.dialect)}.</p>}
+              {sqlView && <pre className="whitespace-pre-wrap break-words rounded-md bg-panel-2 p-2 font-mono text-[11px]">{sqlView.shown.sql}</pre>}
               {result && (
                 <p className="text-[11px] text-ink-3">
                   {result.display.rows.length} rows shown · {result.origin === 'page' ? 'answered in this page' : 'from the server'} in {result.ms} ms
@@ -295,6 +349,27 @@ export function Inspector(p: InspectorProps) {
             </div>
           )}
         </section>
+
+        {result && flag.kind !== 'filter' && flag.kind !== 'text' && (
+          <section aria-label="Save this flag" className="flex flex-wrap items-center gap-1 border-t border-line pt-3">
+            <span className="mr-1 text-xs font-semibold text-ink-2">Save as</span>
+            {(CHART_KINDS.includes(flag.kind) ? (['png', 'svg', 'csv'] as const) : flag.kind === 'custom' ? (['png', 'csv'] as const) : (['csv'] as const)).map((f) => (
+              <button key={f} type="button" onClick={() => p.onSaveFlag(f, result)} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
+                {f}
+              </button>
+            ))}
+          </section>
+        )}
+        {result && flag.kind === 'table' && result.plan.source === 'local' && (
+          <section aria-label="Export the whole table" className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs font-semibold text-ink-2">All of {result.plan.table}</span>
+            {(['csv', 'parquet', 'sqlite', 'xlsx'] as const).map((f) => (
+              <button key={f} type="button" onClick={() => void import('../lib/scripts.ts').then((m) => m.downloadLocalTable(result.plan.table, f)).then((r) => r.note && window.alert(r.note), (e: Error) => window.alert(e.message))} className="min-h-8 rounded-md border border-[var(--fl-control-border)] px-2 text-xs uppercase hover:border-accent">
+                {f}
+              </button>
+            ))}
+          </section>
+        )}
 
         <div className="flex gap-2 border-t border-line pt-3">
           <button type="button" onClick={p.onDuplicate} title="Duplicate (D)" className="flex h-8 items-center gap-1 rounded-md border border-[var(--fl-control-border)] px-2 text-xs hover:border-accent">

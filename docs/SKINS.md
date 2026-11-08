@@ -9,13 +9,15 @@ changes the whole app: the builder, the leadership view and the charts.
 | `fleet` (default) | [Fleet Unified UI](https://github.com/fleethacker-data-crucible/Fairlead/blob/main/docs/UNIFIED-UI.md) v0.2: the `--fl-*` tokens from `web/vendor/fleet/fleet.css`, Night watch (dark) and Chart room (light), Semaphore's sea-blue signature accent |
 | `classic` | Semaphore's palette before Fleet UI, from its brand mark |
 
-Light and dark are separate from the skin: every skin has both, and the theme button switches them.
+Light and dark are separate from the skin: every skin has both, and **Settings > Appearance** switches
+between Night watch (dark) and Chart room (light).
 
 ## Choosing the skin
 
 1. **`settings.json` `"skin"`** (`config\settings.json`): the deployment's choice. When set, every
-   browser uses it and the skin button is hidden. `""` (the default) leaves the choice to the analyst.
-2. **The skin button** in the header (paintbrush), saved per browser.
+   browser uses it and the skin list in Settings says so. `""` (the default) leaves the choice to the analyst.
+2. **Settings > Appearance > Skin**, saved per browser (`semaphore.skin`). (The paintbrush in the
+   header is Page design, which styles the page and its charts, not the skin: [DESIGN.md](DESIGN.md).)
 3. Otherwise `fleet`.
 
 ## Changing the look at the last minute, without a rebuild
@@ -59,5 +61,9 @@ Rules for a skin:
 ## Building a skin into the app
 
 Add a block to `web/src/styles.css` next to `classic`, add it to `SKINS` in `web/src/app.tsx` so the
-skin button offers it, and rebuild. Skins in `config\skin.css` need no build but are not offered by the
-button; select them with `settings.json`.
+Settings skin list offers it, and rebuild. Skins in `config\skin.css` need no build but are not offered
+in Settings; select them with `settings.json`.
+
+## Themes
+
+On top of the skin, each person can choose a theme in Settings > Appearance, the same ten presets and "Make it yours" controls as Lazarette (web/src/lib/theme.ts, web/src/lib/theme-presets.ts). A theme writes the Fleet tokens (--fl-accent, --fl-background, --fl-card and the rest) at run time, so on the Fleet skin it changes every colour. The Classic and Colour-blind safe skins keep their own colours and take the theme's shape, density, type, motion, pattern and glow. Themes are kept in this browser under `semaphore.theme.v1`, and the old light or dark choice (`semaphore.theme`) becomes the theme's mode once. A theme file exported from Semaphore imports into Lazarette and the other way round.

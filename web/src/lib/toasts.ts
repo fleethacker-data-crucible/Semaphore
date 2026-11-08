@@ -13,6 +13,8 @@ export interface ToastAction {
 export interface NotifyOptions {
   tone?: ToastTone;
   action?: ToastAction;
+  /** A second, quieter action, on its own line. */
+  secondary?: ToastAction;
   /** Override the 5 s life of an info or success toast (0 keeps it). Errors always stay. */
   timeoutMs?: number;
 }
@@ -21,6 +23,7 @@ export interface Toast {
   text: string;
   tone: ToastTone;
   action?: ToastAction;
+  secondary?: ToastAction;
 }
 
 export const INFO_MS = 5000;
@@ -57,7 +60,7 @@ export function createToastStore(timers: { set: (fn: () => void, ms: number) => 
       // The same words again replace the old toast rather than stacking up.
       for (const old of list.filter((x) => x.text === text && x.tone === tone)) dismiss(old.id);
       const id = next++;
-      const toast: Toast = { id, text, tone, ...(opts.action ? { action: opts.action } : {}) };
+      const toast: Toast = { id, text, tone, ...(opts.action ? { action: opts.action } : {}), ...(opts.secondary ? { secondary: opts.secondary } : {}) };
       // Errors are never pushed out by newer info toasts; the oldest info goes first.
       let kept = [...list, toast];
       while (kept.length > MAX) {
