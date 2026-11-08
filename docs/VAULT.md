@@ -96,4 +96,4 @@ Not tested, for Anthony to check on the target machine:
 
 ## TalkForge token for spoken answers
 
-The assistant can read answers aloud through TalkForge (). Semaphore needs the token TalkForge was started with. Share it from Lazarette as  (Settings > Tools > Semaphore), or set  in the environment or . The server reads it only when it speaks, sends it only to the configured loopback address (), and never shows or logs it.
+The assistant can read answers aloud through TalkForge (`talkforge serve`). Semaphore needs the token TalkForge was started with. Share it from Lazarette as `TALKFORGE_TOKEN` (Settings > Tools > Semaphore), or set `SEMAPHORE_VOICE_TOKEN` in the environment or `config\semaphore.env`. The server reads it only when it speaks, sends it only to the configured loopback address (`SEMAPHORE_VOICE_URL`, default `http://127.0.0.1:25009`), and never shows or logs it.
