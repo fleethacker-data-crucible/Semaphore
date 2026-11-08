@@ -22,8 +22,8 @@ export interface Relationship {
   to: ColumnRef;
   /** When it was discovered or checked: share of `from` values found in `to`, 0..1. */
   match?: number;
-  /** Where it came from: a person, discovery, or a Qlik association. */
-  origin?: 'analyst' | 'discovered' | 'qlik';
+  /** Where it came from: a person, discovery, a Qlik association, or an imported dbt or Power BI model. */
+  origin?: 'analyst' | 'discovered' | 'qlik' | 'dbt' | 'powerbi';
 }
 
 export interface PlannedJoin {
