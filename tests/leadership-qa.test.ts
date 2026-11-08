@@ -110,7 +110,7 @@ test('an analyst can reject a draft with a reason, or take it to the builder to 
 
 const snap = async (scale = 1, asOf = today): Promise<Snapshot> => {
   const s = (await takeSnapshot(cost, index, async (p) => runPlan(p, index, tables, today), asOf))!;
-  return { ...s, rows: s.rows.map((r) => ({ ...r, a0: typeof r.a0 === 'number' ? r.a0 * scale : r.a0 })) };
+  return { ...s, rows: s.rows.map((r) => (typeof r.a0 === 'number' ? { ...r, a0: r.a0 * scale } : r)) };
 };
 
 test('an alert is a flag, its red rule and who asked; only measures with a red rule can have one', () => {
