@@ -109,7 +109,7 @@ List them in `sources.json` in your Semaphore folder (`%USERPROFILE%\Semaphore`,
 
 Semaphore uses .NET Framework's ODBC and OLE DB APIs. The appropriate database driver/provider, matching the PowerShell process architecture, must already be installed; Semaphore does not install it. Then open **Data**, pick the table and choose **Profile and add**.
 
-**Passwords from Lazarette.** A connection string never holds a password (one with `PWD=` is refused). Use a DSN, Windows authentication, or Lazarette: pair once (Lazarette > Settings > Tools > Pair tool, then `Semaphore-CLI.bat vault pair`), share the item with Semaphore under a variable name, and name it in the source:
+**Passwords from Lazarette.** A connection string never holds a password (one with `PWD=` is refused). Use a DSN, Windows authentication, or Lazarette: pair once (Lazarette > Settings > Tools > Pair tool, then paste the code in Semaphore under Settings > Lazarette), share the item with Semaphore under a variable name, and name it in the source:
 
 ```json
 { "id": "maint", "kind": "postgres", "provider": "odbc", "connection": "Driver={PostgreSQL Unicode};Server=db;Database=maint",

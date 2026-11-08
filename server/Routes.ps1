@@ -24,6 +24,8 @@
 #   POST   /api/query    { source, sql, params, rowCap, timeoutSec }   (Query.ps1, worker pool)
 #   POST   /api/profile  { source, table? }                           (Query.ps1, worker pool)
 #   GET    /api/vault                     Lazarette bridge status, never a secret (Vault.ps1)
+#   POST   /api/vault/pair   { code }     stores a pairing code from Settings; the code is never logged or returned
+#   POST   /api/vault/unpair              forgets the pairing on this computer
 #   GET    /api/ai                        AI status, never the key            (Intelligence.ps1)
 #   POST   /api/ai/check                  is Fairlead reachable with the key  (Intelligence.ps1, worker pool)
 #   POST   /api/ai/v1/chat/completions    drafting request passed to Fairlead (Intelligence.ps1, worker pool)
@@ -376,6 +378,17 @@ function Invoke-SemRoute {
     if ($p -eq '/api/vault') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
         [void](Initialize-SemVault -Root $script:Sem.Root)
+        Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home); return
+    }
+    if ($p -eq '/api/vault/pair') {
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        [void](Initialize-SemVault -Root $script:Sem.Root)
+        Invoke-SemVaultPairRoute -Req $Req; return
+    }
+    if ($p -eq '/api/vault/unpair') {
+        if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
+        [void](Initialize-SemVault -Root $script:Sem.Root)
+        [void](Unregister-SemVaultPairing)
         Send-SemJson 200 (Get-SemVaultStatus -HomeDir $script:Sem.Home); return
     }
     if ($p -eq '/api/ai') {

@@ -84,6 +84,8 @@ const HASHED_ASSET = /[.-][A-Za-z0-9]{8,}\.[a-z0-9]+$/; // contract 4
 
 const token = randomBytes(32).toString('base64url');
 const launchCodes = new Map(); // code -> expiry (ms)
+let vaultPaired = false;
+const vaultStatus = () => ({ tool: 'Semaphore', paired: vaultPaired, running: true, locked: vaultPaired ? false : null, problem: vaultPaired ? null : 'Semaphore is not paired with Lazarette.', sources: [], shared: [], notShared: [] });
 const presence = {
   autoStop: !stay,
   timeoutMs: msEnv('SEMAPHORE_MOCK_HEARTBEAT_TIMEOUT_MS', 90_000),
@@ -463,7 +465,18 @@ function apiRoute(req, res, p, query, json, body) {
     if (!json) return sendError(res, 400, 'bad-json', 'The body must be a JSON object.');
     return sendError(res, 404, 'unknown-source', `No source '${String(json.source ?? '')}' on this computer.`);
   }
-  if (p === '/api/vault') return m === 'GET' ? sendJson(res, 200, { found: false, unlocked: false, problem: 'Lazarette is not part of the mock.', sources: [] }) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/vault') return m === 'GET' ? sendJson(res, 200, vaultStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
+  if (p === '/api/vault/pair') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (typeof json?.code !== 'string' || !/^lztl1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(json.code)) return sendError(res, 400, 'vault-code', 'That is not a Lazarette pairing code. In Lazarette open Settings > Tools, pair Semaphore and copy the code that starts with lztl1.');
+    vaultPaired = true;
+    return sendJson(res, 200, vaultStatus());
+  }
+  if (p === '/api/vault/unpair') {
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    vaultPaired = false;
+    return sendJson(res, 200, vaultStatus());
+  }
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/ai/check') return m === 'POST' ? sendJson(res, 200, { ok: false, detail: 'No Fairlead key is installed for Semaphore.', code: 'no-key' }) : sendError(res, 405, 'method', 'Method not allowed.');
   if (p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 503, 'no-key', 'AI drafting is not set up on this computer.') : sendError(res, 405, 'method', 'Method not allowed.');
