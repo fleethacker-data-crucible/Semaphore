@@ -218,6 +218,8 @@ if (-not (Test-Path -LiteralPath $env:TEMP)) { [void][IO.Directory]::CreateDirec
 . (Join-Path $here 'S3.ps1')
 . (Join-Path $here 'LocalScript.ps1')
 . (Join-Path $here 'Pipeline.ps1')
+. (Join-Path $here 'Alerts.ps1')
+. (Join-Path $here 'Mail.ps1')
 . (Join-Path $here 'Commands.ps1')
 Import-Module (Join-Path $here 'FleetPort.psm1') -Force
 

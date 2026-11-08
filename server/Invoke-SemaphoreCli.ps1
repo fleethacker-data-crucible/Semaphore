@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
 $cliArgs = @($args | ForEach-Object { [string]$_ })
-foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
+foreach ($f in 'Common.ps1', 'Http.ps1', 'Routes.ps1', 'Query.ps1', 'Intelligence.ps1', 'Lake.ps1', 'Vault.ps1', 'Connectors.ps1', 'LocalDb.ps1', 'S3.ps1', 'LocalScript.ps1', 'Pipeline.ps1', 'Alerts.ps1', 'Mail.ps1', 'Commands.ps1') { . (Join-Path $here $f) }
 $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $words = New-Object System.Collections.Generic.List[string]

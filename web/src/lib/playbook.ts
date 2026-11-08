@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type AwayNotice, isAwayNotice } from '../../../src/core/away.ts';
 import { type Edition, isEdition, isReportSchedule, isUsageLog, type ReportSchedule, type UsageLog } from '../../../src/core/reports.ts';
-import { type AskLog, addBz, type BzLog, bumpAsk, expiredIds, isAskLog, isBzLog, withUses } from '../../../src/core/impact.ts';
+import { type AskLog, addBz, type BzLog, bumpAsk, DRAFTED_ASK, expiredIds, isAskLog, isBzLog, withUses } from '../../../src/core/impact.ts';
 import { isEntry, isQuestion, type PlaybookEntry, type QuestionItem, withAskers } from '../../../src/core/playbook.ts';
 import { emptyOverrides, isStyleOverrides, type StyleOverrides } from '../../../src/core/style.ts';
 import { isSnapshot, type Snapshot } from '../../../src/core/snapshot.ts';
@@ -128,6 +128,8 @@ export interface PlaybookState {
   bz: BzLog[];
   /** A reviewed answer was shown to this person: one more in their own file for this week. */
   recordAsk: (entryId: string) => void;
+  /** A drafted (not reviewed) answer was shown to this person: counted apart, for the reviewed share (answer-quality.ts). */
+  recordDrafted: () => void;
   /** "BZ: this helped". False when they already said it this week, or BZ is off. */
   giveBz: (entryId: string) => Promise<boolean>;
   reload: () => void;
@@ -314,6 +316,8 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
     [put, user, social.impact],
   );
 
+  const recordDrafted = useCallback(() => recordAsk(DRAFTED_ASK), [recordAsk]);
+
   const giveBz = useCallback(
     async (entryId: string) => {
       if (!social.bz) return false;
@@ -329,7 +333,7 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
   const entries = useMemo(() => withUses(stored, asks), [stored, asks]);
 
   return {
-    social, deployment, asks, bz, recordAsk, giveBz,
+    social, deployment, asks, bz, recordAsk, recordDrafted, giveBz,
     entries, questions, snapshots, loaded, where: server ? 'shared folder' : 'this browser',
     saveEntries, saveQuestion, saveSnapshot, styleOverrides, saveStyleOverrides, away, saveAway, removeAway,
     usage, schedules, editions, saveReportDoc, removeReportDoc,
