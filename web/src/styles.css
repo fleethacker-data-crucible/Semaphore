@@ -353,7 +353,8 @@ body {
   [data-design-motion='lively'] .flag-card { animation: none; }
   [data-design-card='raised'] .flag-card:hover { transform: none; }
 }
-.flag-handle { opacity: 0; }
+/* Faint on every card so it can be found, full on hover, focus or selection. */
+.flag-handle { opacity: 0.35; }
 .flag-card:hover .flag-handle,
 .flag-card:focus-within .flag-handle,
 .flag-card[aria-current='true'] .flag-handle { opacity: 1; }

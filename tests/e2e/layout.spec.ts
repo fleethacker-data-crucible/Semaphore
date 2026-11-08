@@ -93,3 +93,19 @@ test('the cells show while a flag is being dragged', async ({ semaphore, page })
   await page.mouse.up();
   await expect(page.locator('.canvas-cells')).toHaveCount(0);
 });
+
+test('a flag can be dragged by its title bar, and a click on the title still selects it', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  const card = page.locator('[data-flag-card]', { hasText: 'Labor cost by region' }).first();
+  const title = card.locator('h3');
+  const before = (await card.boundingBox())!;
+  const t = (await title.boundingBox())!;
+  await page.mouse.move(t.x + 20, t.y + t.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(t.x + 20, t.y + t.height / 2 + 2 * 68, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await card.boundingBox())!.y - before.y, { timeout: 5000 }).toBeGreaterThan(2 * 68 - 10);
+  await title.click();
+  await expect(page.getByRole('complementary', { name: 'Flag inspector' })).toBeVisible();
+});

@@ -173,7 +173,16 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
           {described}
         </p>
       )}
-      <header className="flex cursor-pointer items-center gap-1 px-2 pt-2" onClick={(e) => (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined)}>
+      <header
+        className="flag-titlebar flex cursor-grab touch-none items-center gap-1 px-2 pt-2 active:cursor-grabbing"
+        title="Drag to move this flag; click the title to edit it"
+        // The whole title bar moves the flag, not only the grip; its buttons and links keep their own clicks.
+        onPointerDown={(e) => {
+          if (e.button !== 0 || (e.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return;
+          onDragStart(e, flag.id, 'move');
+        }}
+        onClick={(e) => (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'H3' ? onSelectFlag(flag.id) : undefined)}
+      >
         <button
           type="button"
           aria-label="Move flag"
