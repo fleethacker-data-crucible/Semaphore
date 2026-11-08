@@ -179,7 +179,10 @@ test('bucket by ranges: whole-number ranges close at the next whole number; outs
   assert.ok(!words.ok && /not a number/.test(words.error));
 });
 
-test('bucket into quartiles: NTILE where the dialect has it, the same groups in the page, bounds for Access', () => {
+/** The equal-count rule in SQL: RANK() and COUNT() over the table, compared as whole numbers. */
+const TILE_SQL = /\(RANK\(\) OVER \(PARTITION BY CASE WHEN .+? IS NULL THEN 1 ELSE 0 END ORDER BY .+?\) - 1\) \* 4 < COUNT\(.+?\) OVER \(\) \* 1 THEN/;
+
+test('bucket into quartiles: RANK and COUNT where the dialect has them, the same groups in the page, bounds for Access', () => {
   const r = proposeReshape('bucket days open into quartiles', indexCatalog(base()), { source: 's', table: 'crew' });
   assert.ok(r.ok);
   assert.equal(r.needsValues, 'crew.days');
@@ -192,11 +195,13 @@ test('bucket into quartiles: NTILE where the dialect has it, the same groups in 
   const rows = display(catalog, { metrics: ['people'], dimensions: [{ field: q }] });
   assert.deepEqual(Object.fromEntries(rows.map((x) => [String(x.dims[q]), x.values.people])), { Q1: 2, Q2: 2, Q3: 2, Q4: 2, null: 1 });
   const sql = both(catalog, { metrics: ['people'], dimensions: [{ field: q }] }).sql;
-  assert.match(sql, /NTILE\(4\) OVER/);
-  // NTILE's rule: with 10 values in 4 groups, the first two groups hold 3.
+  assert.match(sql, TILE_SQL);
+  assert.doesNotMatch(sql, /NTILE/);
+  // The rule: group = floor((rank - 1) * k / n) + 1. With 10 distinct values in 4 groups: 3, 2, 3, 2.
   const rank = tileRanker([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 4);
-  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(rank), [1, 1, 1, 2, 2, 2, 3, 3, 4, 4]);
-  assert.deepEqual(tileBounds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => ({ value, count: 1 })), 4), [3, 6, 8]);
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(rank), [1, 1, 1, 2, 2, 3, 3, 3, 4, 4]);
+  assert.deepEqual(tileBounds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => ({ value, count: 1 })), 4), [3, 5, 8]);
+  assert.match(p.step.sentence, /equal values always share a group, so groups can differ in size/);
   const access = renderSql(plan({ ...catalog, sources: [{ id: 's', label: 'S', kind: 'access', dialect: 'access' }] }, { metrics: ['people'], dimensions: [{ field: q }] }), indexCatalog({ ...catalog, sources: [{ id: 's', label: 'S', kind: 'access', dialect: 'access' }] }), today);
   assert.match(access.sql, /Switch\(\[days\] <= \?, \?/);
   assert.deepEqual(access.params.slice(0, 2).map((x) => x.value), [7, 'Q1']);
@@ -211,15 +216,15 @@ test('every dialect renders each step, with values bound and placeholders in the
   const month = catalog.fields.find((f) => f.table === 'crew_by_month' && f.column === 'month')!.key;
   const total = catalog.metrics.find((m) => m.table === undefined && m.field?.startsWith('crew_by_month'))!.key;
   const want: Record<Dialect, RegExp[]> = {
-    postgres: [/SPLIT_PART\(/, /SUBSTR\("code", 1, 3\)/, /COALESCE\(\$\d+ \|\| NULLIF\(TRIM\("city"\), ''\), ''\)/, /NTILE\(4\)/, /UNION ALL/, /CAST\(\$\d+ AS VARCHAR\(200\)\)/],
-    oracle: [/INSTR\("name", :p\d+, 1, 1\)/, /NVL2\(/, /NTILE\(4\)/, /UNION ALL/],
+    postgres: [/SPLIT_PART\(/, /SUBSTR\("code", 1, 3\)/, /COALESCE\(\$\d+ \|\| NULLIF\(TRIM\("city"\), ''\), ''\)/, TILE_SQL, /UNION ALL/, /CAST\(\$\d+ AS VARCHAR\(200\)\)/],
+    oracle: [/INSTR\("name", :p\d+, 1, 1\)/, /NVL2\(/, TILE_SQL, /UNION ALL/],
     access: [/InStr\(\[name\] & \?, \?\)/, /Mid\(\[code\], 1, 3\)/, /IIf\(Trim\(\[city\]\) = '', Null/, /Switch\(/, /UNION ALL/],
-    tsql: [/CHARINDEX\(@p\d+, \[name\] \+ @p\d+\)/, /SUBSTRING\(\[code\], 1, 3\)/, /COALESCE\(@p\d+ \+ NULLIF/, /NTILE\(4\)/, /NVARCHAR\(200\)/],
-    synapse: [/CHARINDEX\(/, /NTILE\(4\)/],
-    spark: [/SPLIT_PART\(`name`/, /CONCAT\(/, /NTILE\(4\)/, /CAST\(\? AS STRING\)/],
-    mysql: [/SUBSTRING_INDEX\(SUBSTRING_INDEX\(`name`/, /CONCAT\(/, /NTILE\(4\)/],
-    sqlite: [/instr\(/, /NTILE\(4\)/],
-    ansi: [/SPLIT_PART\(/, /NTILE\(4\)/, /CAST\(\? AS VARCHAR\(200\)\)/],
+    tsql: [/CHARINDEX\(@p\d+, \[name\] \+ @p\d+\)/, /SUBSTRING\(\[code\], 1, 3\)/, /COALESCE\(@p\d+ \+ NULLIF/, TILE_SQL, /NVARCHAR\(200\)/],
+    synapse: [/CHARINDEX\(/, TILE_SQL],
+    spark: [/SPLIT_PART\(`name`/, /CONCAT\(/, TILE_SQL, /CAST\(\? AS STRING\)/],
+    mysql: [/SUBSTRING_INDEX\(SUBSTRING_INDEX\(`name`/, /CONCAT\(/, TILE_SQL],
+    sqlite: [/instr\(/, TILE_SQL],
+    ansi: [/SPLIT_PART\(/, TILE_SQL, /CAST\(\? AS VARCHAR\(200\)\)/],
   };
   for (const dialect of SQL_DIALECTS) {
     const c: Catalog = { ...catalog, sources: [{ id: 's', label: 'S', kind: dialect === 'access' ? 'access' : dialect === 'oracle' ? 'oracle' : dialect === 'postgres' ? 'postgres' : 'other', dialect }] };
@@ -266,4 +271,86 @@ test('preview, undo, and a catalog check that refuses broken steps', () => {
   assert.throws(() => runPlan(plan(broken, { metrics: ['people'], dimensions: [{ field: name }] }), indexCatalog(broken), tables, today), /delimiter/);
   const orphan: Catalog = { ...first.catalog, cleaning: [] };
   assert.ok(checkCatalog(orphan).some((x) => /not in the catalog/.test(x)));
+});
+
+test('equal-count groups with heavy ties: equal values share a group, and the page, SQLite SQL and Access bounds agree', () => {
+  // Many repeats, blanks, one value that holds most rows, and a value that is everything.
+  const sets: Array<Array<number | null>> = [
+    [1, 1, 1, 1, 1, 1, 1, 2, 3, 3, 3, 3, 3, 5, 5, 8, 8, 8, 8, 8, 8, 8, 8, 8, null, null, null, 13],
+    [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 9, 1],
+    [7, 7, 7, 7, 7, null],
+    [0.5, -2, -2, 10, 10, 10, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 99],
+  ];
+  for (const days of sets) {
+    const rows = days.map((d) => ({ name: null, city: null, state: null, code: null, days: d, jan: null, feb: null, mar: null }));
+    const local = new sqlite.DatabaseSync(':memory:');
+    local.exec('CREATE TABLE crew (name TEXT, city TEXT, state TEXT, code TEXT, days REAL, jan INTEGER, feb INTEGER, mar INTEGER)');
+    const ins = local.prepare('INSERT INTO crew VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    for (const r of rows) ins.run(r.name, r.city, r.state, r.code, r.days, r.jan, r.feb, r.mar);
+    const counts = new Map<number, number>();
+    for (const d of days) if (d !== null) counts.set(d, (counts.get(d) ?? 0) + 1);
+    const n = [...counts.values()].reduce((a, b) => a + b, 0);
+    for (const [k, words] of [[2, 'halves'], [3, 'tertiles'], [4, 'quartiles'], [5, '5 equal groups'], [10, 'deciles']] as const) {
+      const r = proposeReshape(`bucket days open into ${words}`, indexCatalog(base()), { source: 's', table: 'crew' });
+      assert.ok(r.ok, r.ok ? '' : r.error);
+      const p = withBounds(r, [...counts].map(([value, count]) => ({ value, count })));
+      const catalog = acceptReshape(base(), p);
+      const index = indexCatalog(catalog);
+      const q = p.step.into![0]!;
+      const fp = plan(catalog, { metrics: ['people'], dimensions: [{ field: 'crew.days' }, { field: q }] });
+      const sql = renderSql(fp, index, today);
+      const fromSql = local.prepare(sql.sql).all(...(sql.params.map((x) => x.value) as Array<string | number>)) as Array<Record<string, unknown>>;
+      const fromPage = runPlan(fp, index, { crew: rows as unknown as TableRows[string] }, today).rows as Array<Record<string, unknown>>;
+      assert.deepEqual(norm(fromSql), norm(fromPage), `${k} groups of ${JSON.stringify(days)}`);
+      // Grouped by value and group: each value appears once, so equal values never split.
+      const groupOf = new Map<number, string>();
+      for (const row of fromPage) {
+        const v = row.d0 as number | null;
+        if (v === null) {
+          assert.equal(row.d1, null, 'a blank stays blank');
+          continue;
+        }
+        assert.ok(!groupOf.has(v), `value ${v} in two groups`);
+        groupOf.set(v, row.d1 as string);
+      }
+      // The rule by hand: floor(values below * k / n) + 1, and Access's bounds give the same label.
+      const bounds = p.step.bounds!;
+      assert.equal(bounds.length, k - 1);
+      for (const [v] of counts) {
+        const below = days.filter((d) => d !== null && d < v).length;
+        const want = impl.tileLabel(Math.floor((below * k) / n) + 1, k);
+        assert.equal(groupOf.get(v), want, `${v} of ${JSON.stringify(days)} in ${k}`);
+        const at = bounds.findIndex((b) => v <= b);
+        assert.equal(impl.tileLabel(at < 0 ? k : at + 1, k), want, `Access bounds ${JSON.stringify(bounds)} for ${v}`);
+      }
+    }
+    local.close();
+  }
+});
+
+test('equal-count SQL for every dialect: RANK and COUNT window functions, Access a Switch over bounds', () => {
+  const r = proposeReshape('bucket days open into quartiles', indexCatalog(base()), { source: 's', table: 'crew' });
+  assert.ok(r.ok);
+  const p = withBounds(r, [1, 1, 1, 1, 2, 3, 3, 9].map((value) => ({ value, count: 1 })));
+  // Below 1: 0 → Q1; below 2: 4 → Q3; below 3: 5 → Q3; below 9: 7 → Q4. Q2 is empty and takes Q1's bound.
+  assert.deepEqual(p.step.bounds, [1, 1, 3]);
+  const want: Record<Dialect, RegExp> = {
+    postgres: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN "days" IS NULL THEN 1 ELSE 0 END ORDER BY "days"\) - 1\) \* 4 < COUNT\("days"\) OVER \(\) \* 3 THEN \$3 ELSE \$4 END/,
+    oracle: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN "days" IS NULL THEN 1 ELSE 0 END ORDER BY "days"\) - 1\) \* 4 < COUNT\("days"\) OVER \(\) \* 1 THEN :p1/,
+    tsql: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN \[days\] IS NULL THEN 1 ELSE 0 END ORDER BY \[days\]\) - 1\) \* 4 < COUNT\(\[days\]\) OVER \(\) \* 1 THEN @p1/,
+    synapse: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN \[days\] IS NULL THEN 1 ELSE 0 END ORDER BY \[days\]\) - 1\) \* 4 < COUNT\(\[days\]\) OVER \(\) \* 2 THEN @p2/,
+    spark: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN `days` IS NULL THEN 1 ELSE 0 END ORDER BY `days`\) - 1\) \* 4 < COUNT\(`days`\) OVER \(\) \* 1 THEN \?/,
+    mysql: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN `days` IS NULL THEN 1 ELSE 0 END ORDER BY `days`\) - 1\) \* 4 < COUNT\(`days`\) OVER \(\) \* 1 THEN \?/,
+    sqlite: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN "days" IS NULL THEN 1 ELSE 0 END ORDER BY "days"\) - 1\) \* 4 < COUNT\("days"\) OVER \(\) \* 1 THEN \?/,
+    ansi: /\(RANK\(\) OVER \(PARTITION BY CASE WHEN "days" IS NULL THEN 1 ELSE 0 END ORDER BY "days"\) - 1\) \* 4 < COUNT\("days"\) OVER \(\) \* 1 THEN \?/,
+    access: /IIf\(\[days\] Is Null, Null, Switch\(\[days\] <= \?, \?, \[days\] <= \?, \?, \[days\] <= \?, \?, True, \?\)\)/,
+  };
+  for (const dialect of SQL_DIALECTS) {
+    const c: Catalog = acceptReshape({ ...base(), sources: [{ id: 's', label: 'S', kind: dialect === 'access' ? 'access' : dialect === 'oracle' ? 'oracle' : dialect === 'postgres' ? 'postgres' : 'other', dialect }] }, p);
+    const q = renderSql(plan(c, { metrics: ['people'], dimensions: [{ field: p.step.into![0]! }] }), indexCatalog(c), today);
+    assert.match(q.sql, want[dialect], `${dialect}: ${q.sql}`);
+    assert.doesNotMatch(q.sql, /NTILE|FLOOR/i, dialect);
+    if (dialect === 'access') assert.deepEqual(q.params.slice(0, 7).map((x) => x.value), [1, 'Q1', 1, 'Q2', 3, 'Q3', 'Q4']);
+    else assert.deepEqual(q.params.filter((x) => typeof x.value === 'string' && /^Q\d$/.test(x.value)).map((x) => x.value), ['Q1', 'Q2', 'Q3', 'Q4']);
+  }
 });

@@ -218,7 +218,7 @@ function DescribeFix({ catalog, ctx, table, onAccept }: { catalog: Catalog; ctx:
     try {
       let p: ReshapeProposal = r;
       let note: string | undefined;
-      // Equal-count groups read the field's values once, for the dialects that have no NTILE.
+      // Equal-count groups read the field's values once, for Access, which has no window functions.
       if (r.needsValues) {
         const v = await valuesOf({ ...ctx, index }, index.field(r.needsValues)!);
         p = withBounds(r, v.values);

@@ -3,7 +3,7 @@
 //   split    "split full name on the comma into last and first"     new fields, one per part
 //   merge    "join city and state with ', ' as location"            one new field
 //   bucket   "group days open into 0-7, 8-30, 31-90, 90+"           one new field of labels
-//            "bucket cost into quartiles"                            equal-count groups (NTILE)
+//            "bucket cost into quartiles"                            equal-count groups (RANK and COUNT; ties share a group)
 //   unpivot  "turn the month columns Jan..Dec into rows of month and value"
 //            a new long table: the table's other columns, the column's name, its value
 //
