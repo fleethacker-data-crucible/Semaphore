@@ -92,7 +92,9 @@ export interface Field {
   synonyms?: string[];
 }
 
-export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct';
+// MODEL-IMPORTS (reconcile at merge with the calculated-measures branch): 'formula' and Metric.formula are the fixed
+// contract for calculated measures. Only the type is added here, so the dbt and Power BI importers can emit them.
+export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct' | 'formula';
 
 export interface Metric {
   key: string;
@@ -102,6 +104,8 @@ export interface Metric {
   field?: string;
   /** Table the metric counts rows of when `field` is omitted. */
   table?: string;
+  /** MODEL-IMPORTS (see Aggregate): for agg 'formula', other metric keys with + - * /, unary minus, parentheses and numbers. */
+  formula?: string;
   source: string;
   format?: 'number' | 'currency' | 'percent';
   synonyms?: string[];
@@ -179,6 +183,11 @@ export function checkCatalog(catalog: Catalog): string[] {
     if (metricKeys.has(m.key) || fieldKeys.has(m.key)) problems.push(`Duplicate key "${m.key}".`);
     metricKeys.add(m.key);
     if (!sourceIds.has(m.source)) problems.push(`Metric "${m.key}" names unknown source "${m.source}".`);
+    // MODEL-IMPORTS (see Aggregate): a calculated measure has a formula instead of a field.
+    if (m.agg === 'formula') {
+      if (!m.formula?.trim()) problems.push(`Metric "${m.key}" is calculated but has no formula.`);
+      continue;
+    }
     if (m.field === undefined) {
       if (m.agg !== 'count') problems.push(`Metric "${m.key}" needs a field for ${m.agg}.`);
       if (!m.table || !isIdentifier(m.table)) problems.push(`Metric "${m.key}" counts rows but names no valid table.`);

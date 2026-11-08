@@ -1,0 +1,11 @@
+table LocalDateTable_6f1c
+	isHidden
+
+	column Date
+		dataType: dateTime
+		isHidden
+		sourceColumn: [Date]
+
+	partition LocalDateTable_6f1c = calculated
+		mode: import
+		source = Calendar(Date(Year(MIN('Work Orders'[Opened])), 1, 1), Date(Year(MAX('Work Orders'[Opened])), 12, 31))

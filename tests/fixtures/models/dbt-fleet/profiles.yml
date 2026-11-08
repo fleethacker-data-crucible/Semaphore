@@ -1,0 +1,4 @@
+fleet:
+  outputs:
+    dev:
+      password: not-a-real-secret

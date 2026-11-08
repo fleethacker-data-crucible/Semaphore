@@ -10,7 +10,7 @@ import { listItems, type StoredItem } from '../lib/api.ts';
 import type { Command } from '../lib/commands.ts';
 
 export type ActionId =
-  | 'new' | 'open' | 'import' | 'download' | 'share' | 'design' | 'assistant' | 'brief' | 'kits' | 'sql' | 'lineage' | 'qlik'
+  | 'new' | 'open' | 'import' | 'download' | 'share' | 'design' | 'assistant' | 'brief' | 'kits' | 'sql' | 'lineage' | 'models'
   | 'playbook' | 'data' | 'leadership' | 'home' | 'undo' | 'redo' | 'ask' | 'draft-page' | 'starter' | 'experiment'
   | 'theme' | 'skin' | 'ai' | 'examples' | 'help' | 'palette' | 'end' | 'signals' | 'settings' | 'snapshots';
 
@@ -49,7 +49,7 @@ export function buildActions(d: CommandDeps): Actions {
     kits: a('kits', 'Flag kits…', { hint: 'Save flags as a kit, or fly a kit on this page', keywords: 'template reuse' }),
     sql: a('sql', 'SQL desk…', { disabled: !d.hasSql, hint: 'Write your own SELECT against a source', keywords: 'query database' }),
     lineage: a('lineage', 'Lineage', { hint: 'Where each flag’s numbers come from', keywords: 'sources trace' }),
-    qlik: a('qlik', 'Import from Qlik…', { keywords: 'qvf script expressions' }),
+    models: a('models', 'Import a model…', { hint: 'Qlik, dbt or Power BI', keywords: 'qlik qvf script dbt metricflow semantic metrics power bi pbip tmdl bim dax' }),
     playbook: a('playbook', 'Playbook', { hint: 'What leadership can ask for, their questions, what needs review' }),
     data: a('data', 'Data', { hint: 'Sources, the catalog, cleaning and links', keywords: 'csv catalog measures fields add' }),
     leadership: a('leadership', 'Leadership view', { hint: 'Ask a question, get an answer', keywords: 'ask view' }),
