@@ -13,7 +13,7 @@
 
 Semaphore is an analyst workbench for building dashboards from plain-English briefs, CSV files and configured database sources. Analysts review each proposed chart and its SQL, accept useful work into a shared playbook, and publish summarized snapshots that leadership can question without opening a database. It targets Windows thin clients and Qlik-style analytical workflows.
 
-> **Engineering preview, version 0.4.1.** What changed in each release is in [CHANGELOG.md](CHANGELOG.md). Sample and CSV workflows are available here; database adapters and the Athena integration need validation against the intended services and target workstations.
+> **Engineering preview, version 0.4.2.** What changed in each release is in [CHANGELOG.md](CHANGELOG.md). Sample and CSV workflows are available here; database adapters and the Athena integration need validation against the intended services and target workstations.
 
 Part of the Data Crucible family alongside Lazarette, Halyard and Shellback, and built on the same [TechStack](TechStack).
 

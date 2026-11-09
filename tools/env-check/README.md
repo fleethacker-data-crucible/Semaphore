@@ -21,7 +21,7 @@ Check-Environment.bat
 Check-Environment.bat -NoBrowser            skip the browser tests
 Check-Environment.bat -NoLaunch             serve the page but open the printed address yourself
 Check-Environment.bat -NoSemaphoreRun       do not start a real Semaphore copy
-Check-Environment.bat -ZipPath C:\path\Semaphore-0.4.1.zip
+Check-Environment.bat -ZipPath C:\path\Semaphore-0.4.2.zip
 ```
 
 If PowerShell cannot run the script at all, the window shows the execution policy and language mode it sees; send a photo of it.

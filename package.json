@@ -1,6 +1,6 @@
 {
   "name": "semaphore",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Semaphore: local-first dashboard intelligence. Drop flags on a hoist, describe them, and Semaphore wires the data.",
   "type": "module",
