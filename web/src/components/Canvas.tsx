@@ -60,6 +60,10 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
 
   const hoistRef = useRef(hoist);
   hoistRef.current = hoist;
+  // The drag in progress, ended when the canvas goes away (the leadership view opened mid-drag), so its
+  // window listeners never keep moving a flag on a page no one is looking at.
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), []);
   const onDragStart = useCallback(
     (e: React.PointerEvent, id: string, mode: 'move' | 'resize') => {
       e.preventDefault();
@@ -73,6 +77,9 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
       setDragging(id);
       const layoutMode: LayoutMode = hoistRef.current.grid.mode ?? 'snap';
       const move = (ev: PointerEvent) => {
+        // The button came up somewhere the window never heard about (another window, a frame): stop here
+        // instead of leaving the flag stuck to the pointer.
+        if (ev.buttons === 0) return up();
         // Free mode moves in eighth-cell steps; holding Alt lines the flag up with whole cells.
         const step = layoutMode === 'free' && !ev.altKey ? FREE_STEP : 1;
         const snap = (v: number) => Math.round(v / step) * step;
@@ -89,11 +96,14 @@ export function Canvas({ hoist, ctx, index, selections, selectedId, themeKey, on
         onLayout(place(items, id, target, cols, layoutMode), group);
       };
       const up = () => {
+        endDrag.current = null;
         setDragging(null);
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
         window.removeEventListener('pointercancel', up);
       };
+      endDrag.current?.();
+      endDrag.current = up;
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
       window.addEventListener('pointercancel', up);

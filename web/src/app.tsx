@@ -21,8 +21,8 @@ import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
 import type { QlikImported } from '../../src/core/qlik.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
-import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
-import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
+import type { TableProfile } from '../../src/core/profile.ts';
+import { checkHealth, entryId, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, type Snapshot, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
@@ -106,10 +106,14 @@ function blankHoist(): Hoist {
   return { version: 1, id: newId('h'), title: 'Untitled hoist', brief: '', grid: { cols: GRID_COLS }, filters: [], flags: [], updated: new Date().toISOString() };
 }
 
+// The catalog proposal (src/core/profile.ts) loads with the first table or file added, not at start.
+const loadProfile = () => import('../../src/core/profile.ts');
+
 /** One profiled server table into the catalog: Semaphore's proposal of its fields and measures. */
-function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
+async function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
   const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
   const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+  const { proposeCatalog } = await loadProfile();
   return proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
 }
 
@@ -156,6 +160,12 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The busy line, and the guard that keeps a second draft or import from starting during one (#91).
   const { busy, run: runBusy, say: sayBusy } = useBusy();
+  const viewRef = useRef<View>('builder');
+  const heldNotes = useRef<Array<[string, Parameters<typeof notify>[1]]>>([]);
+  const notifyBuilder = useCallback((text: string, opts?: Parameters<typeof notify>[1]) => {
+    if (viewRef.current === 'builder') notify(text, opts);
+    else heldNotes.current.push([text, opts]);
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -451,8 +461,8 @@ export function App() {
       const by = outcome.draft.answeredBy;
       const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
       const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [credit, ...outcome.draft.notes] };
-      if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
-      else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
+      if (outcome.fallbackReason) notifyBuilder(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
+      else if (by) notifyBuilder(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
       // A fresh draft takes the drafted title, and so does a redraft whose title is still the one the
       // last draft gave it; a title the analyst typed is kept.
@@ -471,8 +481,8 @@ export function App() {
       // No measure found: the "Why it didn't draft" card says what was understood and what to do next.
       if (!draft.binding) setDraftMiss({ flagId: selected.id, brief: next.brief, note: draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.' });
       else setDraftMiss((m) => (m?.flagId === selected.id ? null : m));
-    }).catch((e: unknown) => notify(`Could not draft this flag. ${describeError(e)}`, { tone: 'error' }));
-  }, [selected, index, hoist, autoKinds, change, ai, useAi, teamStyle, aiExamples, runBusy]);
+    }).catch((e: unknown) => notifyBuilder(`Could not draft this flag. ${describeError(e)}`, { tone: 'error' }));
+  }, [selected, index, hoist, autoKinds, change, ai, useAi, teamStyle, aiExamples, runBusy, notifyBuilder]);
 
   // "Use <measure>" on the draft-miss card: draft again once the new brief is in the hoist.
   const [redraftFor, setRedraftFor] = useState<string | null>(null);
@@ -494,11 +504,11 @@ export function App() {
         change(next);
         setSelections({});
         setSelectedId(null);
-        if (outcome?.fallbackReason) notify(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
-        else if (draft.notes.length) notify(draft.notes[0]!);
-      }).catch((e: unknown) => notify(`Could not draft the page. ${describeError(e)}`, { tone: 'error' }));
+        if (outcome?.fallbackReason) notifyBuilder(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
+        else if (draft.notes.length) notifyBuilder(draft.notes[0]!);
+      }).catch((e: unknown) => notifyBuilder(`Could not draft the page. ${describeError(e)}`, { tone: 'error' }));
     },
-    [hoist, index, change, ai, useAi, teamStyle, aiExamples, runBusy],
+    [hoist, index, change, ai, useAi, teamStyle, aiExamples, runBusy, notifyBuilder],
   );
 
   const toggleExamples = useCallback(() => {
@@ -602,6 +612,7 @@ export function App() {
             fields: cat.fields.filter((f) => !(f.source === FILES_SOURCE && f.table === t.name)),
             metrics: cat.metrics.filter((m) => !(m.source === FILES_SOURCE && (m.table === t.name || cat.fields.find((f) => f.key === m.field)?.table === t.name))),
           };
+          const { proposeCatalog } = await loadProfile();
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
           cat = pruneCatalog(proposal.catalog);
           notes.push(`${name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
@@ -624,7 +635,7 @@ export function App() {
     (source: string, table: string) =>
       runBusy(`Profiling ${table}…`, async () => {
       try {
-        const proposal = profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
+        const proposal = await profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -649,7 +660,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            cat = (await profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p)).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
@@ -715,7 +726,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            cat = (await profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p)).catalog;
             placed.push({ model: t.model, source: t.source, table: p.table });
             out.push(`${t.model}: ${p.table} profiled, ${p.columns.length} columns.`);
           } catch (e) {
@@ -861,14 +872,27 @@ export function App() {
   // (usePlaybook, user and the team style are set up near the top: the draft handlers use them.)
   const currentView: View = view ?? 'builder';
   const setView = useCallback((v: 'builder' | 'ask') => {
+    viewRef.current = v;
     setViewState(v);
     writeLocal(K.view, v);
   }, []);
+  // A draft started in the builder can finish after the analyst has gone to the leadership view: its
+  // messages wait for the builder instead of appearing over the leadership view.
+  useEffect(() => {
+    viewRef.current = currentView;
+    if (currentView !== 'builder' || !heldNotes.current.length) return;
+    for (const [text, opts] of heldNotes.current.splice(0)) notify(text, opts);
+  }, [currentView]);
 
   useEffect(() => {
     if (!playbook.loaded || currentView !== 'builder') return;
     const timer = window.setTimeout(() => {
-      const learnt = learnFromHoist(playbook.entries, hoist, index, user);
+      // An accepted flag that is open in the inspector is being edited: leadership keeps the version it
+      // already has until the analyst is done with it (selects something else), so a half-made edit is
+      // never shown in the leadership view as reviewed. A flag accepted just now has no entry yet and
+      // is learnt at once, as before.
+      const editing = selectedId && playbook.entries.some((e) => e.id === entryId(hoist.id, selectedId)) ? selectedId : null;
+      const learnt = learnFromHoist(playbook.entries, editing ? { ...hoist, flags: hoist.flags.filter((f) => f.id !== editing) } : hoist, index, user);
       if (!learnt.length) return;
       playbook.saveEntries(learnt).then(
         () => {
@@ -882,7 +906,7 @@ export function App() {
     }, 2000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoist, playbook.loaded, currentView]);
+  }, [hoist, playbook.loaded, currentView, selectedId]);
 
   const checkedHealth = useRef(false);
   useEffect(() => {
@@ -1219,7 +1243,8 @@ export function App() {
       )}
       <SessionScreen session={session} view={currentView === 'ask' ? 'ask' : 'builder'} onRetry={session.retry} />
       <ConfirmHost />
-      <Toasts busy={busy} />
+      {/* The busy line belongs to the builder's own work (a draft in flight), not the leadership view. */}
+      <Toasts busy={currentView === 'builder' ? busy : null} />
     </>
   );
 
