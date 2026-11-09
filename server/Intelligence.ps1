@@ -84,6 +84,28 @@ function Save-SemAiKeyFile {
     if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, $null) } else { [IO.File]::Move($tmp, $Path) }
 }
 
+function Get-SemFairleadLocalTokenPath {
+    # The client key Fairlead makes on its first start for apps of this Windows account (Fairlead PR 75):
+    # %LOCALAPPDATA%\Fairlead\local-token, locked to this account. Fairlead accepts it from loopback only.
+    $base = $env:LOCALAPPDATA
+    if (-not $base) { $base = [Environment]::GetFolderPath('LocalApplicationData') }
+    return [IO.Path]::Combine($base, 'Fairlead', 'local-token')
+}
+
+function Read-SemLocalTokenFile {
+    # The first line of a local-token file, trimmed, or $null when there is none, it is larger than 4 KB,
+    # or it cannot be read. Shared by Fairlead's and TalkForge's local tokens. Never logged.
+    param([string]$Path)
+    try {
+        if (-not $Path -or -not [IO.File]::Exists($Path)) { return $null }
+        if ((New-Object IO.FileInfo $Path).Length -gt 4096) { return $null }
+        $text = [IO.File]::ReadAllText($Path)
+        $line = ($text -split "`r?`n", 2)[0].Trim().TrimStart([char]0xFEFF)
+        if (-not $line) { return $null }
+        return $line
+    } catch { return $null }
+}
+
 function Test-SemAiUrl {
     # $null when the URL is an http(s) address on this machine with no user info, else the reason.
     param([string]$Url)
@@ -96,8 +118,10 @@ function Test-SemAiUrl {
 }
 
 function Get-SemAiSettings {
-    # Url, Model, PrivacyLocal, Key (or $null), KeySource: environment | credential-manager | file | none, Problem (or $null).
-    param([string]$Root = (Get-SemRoot), [string]$KeyPath = (Get-SemAiKeyPath))
+    # Url, Model, PrivacyLocal, Key (or $null), KeySource: environment | credential-manager | file | local-token | none, Problem (or $null).
+    # Key order: SEMAPHORE_AI_KEY, then Credential Manager Fairlead/Semaphore (a key installed in Fairlead > Clients),
+    # then the legacy DPAPI file, then the first line of %LOCALAPPDATA%\Fairlead\local-token (made by Fairlead itself).
+    param([string]$Root = (Get-SemRoot), [string]$KeyPath = (Get-SemAiKeyPath), [string]$LocalTokenPath = (Get-SemFairleadLocalTokenPath))
     $url = Get-SemEnvValue -Name 'SEMAPHORE_AI_URL' -Root $Root
     if (-not $url) { $url = $script:SemAiDefaultUrl }
     $url = $url.TrimEnd('/')
@@ -118,6 +142,11 @@ function Get-SemAiSettings {
         catch { $key = $null; $credProblem = 'Could not read the Fairlead key from Windows Credential Manager: ' + $_.Exception.Message; Write-SemLog 'WARN' $credProblem }
     }
     if (-not $key) { $key = Read-SemAiKeyFile -Path $KeyPath; $source = 'file' }
+    # The local token: an explicit legacy path is the test seam, so it is read then only when its path is given too.
+    if (-not $key -and (-not $PSBoundParameters.ContainsKey('KeyPath') -or $PSBoundParameters.ContainsKey('LocalTokenPath'))) {
+        $t = Read-SemLocalTokenFile -Path $LocalTokenPath
+        if ($t -and (Test-SemAiKeyShape $t)) { $key = $t; $source = 'local-token' }
+    }
     if (-not $key) { $source = 'none' }
     $problem = Test-SemAiUrl $url
     if (-not $problem -and -not $key -and $credProblem) { $problem = $credProblem }
@@ -485,6 +514,14 @@ function Invoke-SemAiRequest {
     # Worker side of POST /api/ai/check and POST /api/ai/v1/chat/completions.
     param($Req, [string]$Root = (Get-SemRoot))
     $s = Get-SemAiSettings -Root $Root
+    if ($Req.Path -eq '/api/ai/start') {
+        # The Connections card's Fix button: start Fairlead now, with or without a key (its first start makes
+        # the local token). Nothing is sent to it; the key, when there is one, still waits for the id check.
+        if ((Test-SemAiUrl $s.Url)) { Send-SemJson 200 ([ordered]@{ state = 'unavailable'; message = (Test-SemAiUrl $s.Url) }); return }
+        $r = Start-SemFairlead -Root $Root -Settings $s -Explicit
+        Send-SemJson 200 ([ordered]@{ state = $r.State; message = $r.Message })
+        return
+    }
     if ($s.Problem) { Send-SemError 400 'ai-config' $s.Problem; return }
     if (-not $s.Key) { Send-SemError 409 'ai-not-configured' 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.'; return }
     if ($Req.Path -ne '/api/ai/check' -and $Req.Path -ne '/api/ai/v1/chat/completions') { Send-SemError 404 'not-found' 'Unknown API route.'; return }
@@ -585,7 +622,9 @@ function New-SemFairleadStartInfo {
 function Start-SemFairlead {
     # Starts Fairlead unless it answers on its port or was started in the last minute. Returns
     # @{ State = 'running' | 'starting' | 'unavailable'; Message }.
-    param([string]$Root = (Get-SemRoot), $Settings = $null)
+    # -Explicit: the person pressed a button (POST /api/ai/start), so fairlead.autoStart (which is about starting
+    # it automatically) does not stop it.
+    param([string]$Root = (Get-SemRoot), $Settings = $null, [switch]$Explicit)
     if ($null -eq $Settings) { $Settings = Get-SemAiSettings -Root $Root }
     $f = $script:SemFairlead
     [Threading.Monitor]::Enter($f.SyncRoot)
@@ -594,7 +633,7 @@ function Start-SemFairlead {
         if (((Get-Date) - $f.StartedAt).TotalSeconds -lt $script:SemFairleadStartSeconds) { return @{ State = 'starting'; Message = 'Fairlead is starting.' } }
         $fs = Get-SemFairleadSettings -Root $Root
         $no = { param($m) $f.Message = $m; return @{ State = 'unavailable'; Message = $m } }
-        if (-not $fs.AutoStart) { return (& $no ('Fairlead is not running at ' + $Settings.Url + ', and starting it automatically is off (fairlead.autoStart in config\settings.json). Start it with Launch-Fairlead.bat.')) }
+        if (-not $fs.AutoStart -and -not $Explicit) { return (& $no ('Fairlead is not running at ' + $Settings.Url + ', and starting it automatically is off (fairlead.autoStart in config\settings.json). Start it with Launch-Fairlead.bat.')) }
         try { $u = [Uri]$Settings.Url } catch { $u = $null }
         if ($null -eq $u -or $u.Port -ne 8776) { return (& $no ('Fairlead is not running at ' + $Settings.Url + '. Semaphore starts Fairlead only on its own address (port 8776); start it with Launch-Fairlead.bat.')) }
         if ($fs.FolderProblem) { return (& $no $fs.FolderProblem) }
@@ -654,8 +693,10 @@ function Wait-SemFairleadIdentity {
 # no proxy is used, and the text and the token are never logged.
 #
 # Address: SEMAPHORE_VOICE_URL (environment or config\semaphore.env), default http://127.0.0.1:25009.
-# Token: SEMAPHORE_VOICE_TOKEN in the same places, else the Lazarette share TALKFORGE_TOKEN (Settings >
-# Tools > Semaphore in Lazarette), read when needed and dropped straight after.
+# Token: SEMAPHORE_VOICE_TOKEN in the same places, else the first line of %LOCALAPPDATA%\TalkForge\local-token
+# (made by TalkForge's first serve for apps of this Windows account, TalkForge PR 44), else, as a last fallback,
+# the Lazarette share TALKFORGE_TOKEN (Settings > Tools > Semaphore in Lazarette). Read when needed and dropped
+# straight after.
 
 $script:SemVoiceDefaultUrl = 'http://127.0.0.1:25009'
 $script:SemVoiceTokenShare = 'TALKFORGE_TOKEN'
@@ -673,14 +714,21 @@ function Test-SemVoiceUrl {
     return 'The TalkForge address must be http://127.0.0.1:<port>, the address talkforge serve prints; TalkForge only runs on this computer.'
 }
 
+function Get-SemTalkForgeLocalTokenPath {
+    $base = $env:LOCALAPPDATA
+    if (-not $base) { $base = [Environment]::GetFolderPath('LocalApplicationData') }
+    return [IO.Path]::Combine($base, 'TalkForge', 'local-token')
+}
+
 function Get-SemVoiceSettings {
-    # Url, Problem (or ''), and where the token would come from: environment | lazarette.
+    # Url, Problem (or ''), and where the token would come from: environment | local-token | lazarette.
     param([string]$Root = (Get-SemRoot))
     $url = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_URL' -Root $Root
     if (-not $url) { $url = $script:SemVoiceDefaultUrl }
     $url = $url.Trim().TrimEnd('/')
     $tokenSource = 'lazarette'
     if (Get-SemEnvValue -Name 'SEMAPHORE_VOICE_TOKEN' -Root $Root) { $tokenSource = 'environment' }
+    elseif (Read-SemLocalTokenFile -Path (Get-SemTalkForgeLocalTokenPath)) { $tokenSource = 'local-token' }
     return @{ Url = $url; Problem = (Test-SemVoiceUrl $url); TokenSource = $tokenSource; TokenShare = $script:SemVoiceTokenShare }
 }
 
@@ -691,7 +739,7 @@ function Get-SemVoiceStatus {
     $s = Get-SemVoiceSettings -Root $Root
     $tf = Get-SemTalkForgeSettings -Root $Root
     return [ordered]@{
-        url = $s.Url; problem = $s.Problem; tokenSource = $s.TokenSource; tokenShare = $s.TokenShare
+        url = $s.Url; problem = $s.Problem; tokenSource = $s.TokenSource; keySource = $s.TokenSource; tokenShare = $s.TokenShare
         autoStart = [bool]$tf.AutoStart; folder = [string]$tf.Folder; folderSetting = [string]$tf.FolderSetting; folderSource = [string]$tf.FolderSource; folderProblem = [string]$tf.FolderProblem
         input = [bool]$tf.Input
     }
@@ -702,13 +750,20 @@ function Read-SemVoiceToken {
     param([string]$Root = (Get-SemRoot))
     $t = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_TOKEN' -Root $Root
     if ($t) { return $t.Trim() }
+    $t = Read-SemLocalTokenFile -Path (Get-SemTalkForgeLocalTokenPath)
+    if ($t) { return $t }
+    # The old way, a token shared by hand from Lazarette, only for a Semaphore paired with it.
+    $none = 'Semaphore has no TalkForge token yet. Start TalkForge once (it makes its own local token for this Windows account in %LOCALAPPDATA%\TalkForge\local-token), or set SEMAPHORE_VOICE_TOKEN.'
+    $paired = $false
+    try { $paired = [bool](Test-LazaretteToolPairing -Tool $script:SemVaultTool) } catch { $paired = $false }
+    if (-not $paired) { throw $none }
     $got = $null
     try {
         try { $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names @($script:SemVoiceTokenShare) -Purpose 'Semaphore spoken answers' }
         catch { throw (ConvertTo-SemVaultError -Message ([string]$_.Exception.Message)).Message }
         $v = $got[$script:SemVoiceTokenShare]
         if ($null -eq $v -or ([string]$v).Length -eq 0) {
-            throw ('Share the TalkForge token with Semaphore: in Lazarette open Settings > Tools > Semaphore and share {0} (the token TalkForge was started with), or set SEMAPHORE_VOICE_TOKEN.' -f $script:SemVoiceTokenShare)
+            throw ('Semaphore has no TalkForge token yet. Start TalkForge once so it makes its local token (%LOCALAPPDATA%\TalkForge\local-token), set SEMAPHORE_VOICE_TOKEN, or share {0} with Semaphore in Lazarette (Settings > Tools > Semaphore).' -f $script:SemVoiceTokenShare)
         }
         return [string]$v
     } finally { $got = $null }
@@ -806,9 +861,27 @@ function New-SemTalkForgeStartInfo {
     # Semaphore's own console or pipe open for as long as TalkForge runs. TalkForge never prints the token.
     $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true
     # Only this token reaches TalkForge: no token file or Lazarette item of its own, and none of Semaphore's.
-    foreach ($name in 'TALKFORGE_TOKEN_FILE', 'TALKFORGE_LAZARETTE_ITEM', 'SEMAPHORE_VOICE_TOKEN', 'SEMAPHORE_AI_KEY') { if ($si.EnvironmentVariables.ContainsKey($name)) { $si.EnvironmentVariables.Remove($name) } }
-    $si.EnvironmentVariables['TALKFORGE_TOKEN'] = $Token
+    # With no token (none configured), TalkForge starts with its own local token alone (TalkForge PR 44).
+    foreach ($name in 'TALKFORGE_TOKEN', 'TALKFORGE_TOKEN_FILE', 'TALKFORGE_LAZARETTE_ITEM', 'SEMAPHORE_VOICE_TOKEN', 'SEMAPHORE_AI_KEY') { if ($si.EnvironmentVariables.ContainsKey($name)) { $si.EnvironmentVariables.Remove($name) } }
+    if ($Token) { $si.EnvironmentVariables['TALKFORGE_TOKEN'] = $Token }
     return $si
+}
+
+function Test-SemTalkForgeLocalTokenSupport {
+    # $true when the TalkForge in this folder makes its own local token (it knows TALKFORGE_LOCAL_TOKEN), so
+    # it can be started with no token at all. An older TalkForge needs one, as before.
+    param([string]$Folder)
+    try {
+        $tools = Join-Path $Folder 'tools'
+        if (-not (Test-Path -LiteralPath $tools -PathType Container)) { return $false }
+        $n = 0
+        foreach ($f in (Get-ChildItem -LiteralPath $tools -Recurse -File -Include '*.mjs', '*.js' -ErrorAction SilentlyContinue)) {
+            if (++$n -gt 300) { break }
+            if ($f.Length -gt 2MB) { continue }
+            if ([IO.File]::ReadAllText($f.FullName).Contains('TALKFORGE_LOCAL_TOKEN')) { return $true }
+        }
+    } catch { }
+    return $false
 }
 
 function Start-SemTalkForge {
@@ -838,8 +911,13 @@ function Start-SemTalkForge {
         if (-not $node) { return (& $no 'TalkForge needs Node.js 18 or newer, and node was not found on this computer. Ask IT for Node.js, or run talkforge serve where it is installed.') }
         $token = $null; $si = $null
         try {
-            try { $token = Read-SemVoiceToken -Root $Root } catch { return (& $no ([string]$_.Exception.Message)) }
-            if ($token.Length -lt 16) { return (& $no 'The TalkForge token must be 16 or more characters. Share a longer one.') }
+            # A configured token (SEMAPHORE_VOICE_TOKEN) is passed on. Without one, a TalkForge that makes its own
+            # local token is started with no token at all; an older one still gets the Lazarette share.
+            $configured = Get-SemEnvValue -Name 'SEMAPHORE_VOICE_TOKEN' -Root $Root
+            if ($configured) { $token = $configured.Trim() }
+            elseif (Test-SemTalkForgeLocalTokenSupport -Folder $tf.Folder) { $token = '' }
+            else { try { $token = Read-SemVoiceToken -Root $Root } catch { return (& $no ([string]$_.Exception.Message)) } }
+            if ($token -and $token.Length -lt 16) { return (& $no 'The TalkForge token must be 16 or more characters. Share a longer one.') }
             $si = New-SemTalkForgeStartInfo -Node $node -Folder $tf.Folder -Port $port -Token $token
             $t.Process = [Diagnostics.Process]::Start($si)
             $t.Process.BeginOutputReadLine(); $t.Process.BeginErrorReadLine()   # drained with no handler: the lines are dropped

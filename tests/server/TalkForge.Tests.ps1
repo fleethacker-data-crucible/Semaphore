@@ -133,6 +133,8 @@ Describe 'Starting TalkForge when speech is needed' {
         [Environment]::SetEnvironmentVariable('SEMAPHORE_VOICE_TOKEN', $script:Token)
         $script:LogLines = New-Object Collections.ArrayList
         Mock Write-SemLog { param($Level, $Text) [void]$script:LogLines.Add("$Level $Text") }
+        # Never the real %LOCALAPPDATA%\TalkForge\local-token.
+        Mock Get-SemTalkForgeLocalTokenPath { return (Join-Path $TestDrive 'no-talkforge\local-token') }
     }
     AfterEach {
         [void](Stop-SemTalkForgeChild)
@@ -245,11 +247,90 @@ Describe 'Starting TalkForge when speech is needed' {
         $tf = New-FakeTalkForge (Join-Path $TestDrive ('tf-' + [guid]::NewGuid().ToString('N')))
         Set-SemVoiceSettingsFile -Root $script:Root -Voice @{ folder = $tf }
         [Environment]::SetEnvironmentVariable('SEMAPHORE_VOICE_TOKEN', $null)
+        Mock Test-LazaretteToolPairing { return $true }
         Mock Get-LazaretteToolSecrets { return @{ TALKFORGE_TOKEN = $null } }
         $s = Start-SemTalkForge -Root $script:Root
         $s.state | Should -Be 'unavailable'
         $s.message | Should -Match 'TALKFORGE_TOKEN'
         $script:SemTalkForge.Process | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'TalkForge local token (TalkForge PR 44)' {
+    BeforeEach {
+        $script:Saved = @{}
+        foreach ($n in 'SEMAPHORE_VOICE_URL', 'SEMAPHORE_VOICE_TOKEN', 'SEMAPHORE_VOICE_FOLDER', 'TALKFORGE_TOKEN') { $script:Saved[$n] = [Environment]::GetEnvironmentVariable($n); [Environment]::SetEnvironmentVariable($n, $null) }
+        $script:SavedLocal = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = Join-Path $TestDrive ('appdata-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($env:LOCALAPPDATA)
+        $script:SemTalkForge.Process = $null; $script:SemTalkForge.Message = ''; $script:SemTalkForge.Port = 0
+        $script:Root = New-SemRoot
+        $script:Port = Get-FreePort
+        [Environment]::SetEnvironmentVariable('SEMAPHORE_VOICE_URL', "http://127.0.0.1:$($script:Port)")
+        Mock Write-SemLog { }
+    }
+    AfterEach {
+        [void](Stop-SemTalkForgeChild)
+        $env:LOCALAPPDATA = $script:SavedLocal
+        foreach ($n in $script:Saved.Keys) { [Environment]::SetEnvironmentVariable($n, $script:Saved[$n]) }
+    }
+
+    It 'reads the token from %LOCALAPPDATA%\TalkForge\local-token after SEMAPHORE_VOICE_TOKEN, and says so in the status' {
+        (Get-SemVoiceStatus -Root $script:Root).tokenSource | Should -Be 'lazarette'
+        [void][IO.Directory]::CreateDirectory((Join-Path $env:LOCALAPPDATA 'TalkForge'))
+        [IO.File]::WriteAllText((Join-Path $env:LOCALAPPDATA 'TalkForge\local-token'), "local-token-0123456789abcdef`n")
+        Read-SemVoiceToken -Root $script:Root | Should -Be 'local-token-0123456789abcdef'
+        $st = Get-SemVoiceStatus -Root $script:Root
+        $st.tokenSource | Should -Be 'local-token'
+        $st.keySource | Should -Be 'local-token'
+        ($st | ConvertTo-Json) | Should -Not -Match 'local-token-0123'
+        [Environment]::SetEnvironmentVariable('SEMAPHORE_VOICE_TOKEN', $script:Token)
+        Read-SemVoiceToken -Root $script:Root | Should -Be $script:Token
+        (Get-SemVoiceStatus -Root $script:Root).tokenSource | Should -Be 'environment'
+    }
+
+    It 'says how to get a token, without asking Lazarette, when there is none and Semaphore is not paired' {
+        Mock Get-LazaretteToolSecrets { throw 'must not be asked' }
+        { Read-SemVoiceToken -Root $script:Root } | Should -Throw -ExpectedMessage '*Start TalkForge once*'
+        Should -Invoke Get-LazaretteToolSecrets -Times 0 -Exactly
+    }
+
+    It 'builds the start info without TALKFORGE_TOKEN when there is no token, even if this process has one' {
+        [Environment]::SetEnvironmentVariable('TALKFORGE_TOKEN', 'inherited-token-should-not-travel')
+        $si = New-SemTalkForgeStartInfo -Node 'C:\node\node.exe' -Folder 'C:\TF' -Port 25009 -Token ''
+        $si.EnvironmentVariables.ContainsKey('TALKFORGE_TOKEN') | Should -BeFalse
+        $si.Arguments | Should -Be '"C:\TF\tools\talkforge.mjs" serve --port 25009 --idle-timeout 30'
+    }
+
+    It 'starts a TalkForge that makes its own local token with no token at all' {
+        $tf = Join-Path $TestDrive ('tf-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $tf 'tools'))
+        $js = @'
+// TALKFORGE_LOCAL_TOKEN=off turns the local token off (stand-in for TalkForge PR 44)
+import { createServer } from 'node:http';
+import { writeFileSync } from 'node:fs';
+const a = process.argv; const port = Number(a[a.indexOf('--port') + 1]);
+writeFileSync(new URL('./seen.json', import.meta.url), JSON.stringify({ env: Object.keys(process.env).filter((k) => /TOKEN|KEY/i.test(k)) }));
+createServer((q, r) => { r.writeHead(200, { 'content-type': 'application/json' }); r.end(JSON.stringify({ ok: true, tool: process.env.TALKFORGE_TOKEN ? 'wrong' : 'talkforge' })); }).listen(port, '127.0.0.1');
+setTimeout(() => process.exit(0), 60000);
+'@
+        [IO.File]::WriteAllText((Join-Path $tf 'tools\talkforge.mjs'), $js)
+        Test-SemTalkForgeLocalTokenSupport -Folder $tf | Should -BeTrue
+        Set-SemVoiceSettingsFile -Root $script:Root -Voice @{ folder = $tf }
+        Mock Get-LazaretteToolSecrets { throw 'must not be asked' }
+        $s = Start-SemTalkForge -Root $script:Root
+        $s.state | Should -Be 'starting'
+        for ($i = 0; $i -lt 60 -and $s.state -eq 'starting'; $i++) { Start-Sleep -Milliseconds 250; $s = Get-SemTalkForgeState -Root $script:Root }
+        $s.state | Should -Be 'ready'
+        $seen = Get-Content -Raw (Join-Path $tf 'tools\seen.json') | ConvertFrom-Json
+        @($seen.env) | Should -Not -Contain 'TALKFORGE_TOKEN'
+        Should -Invoke Get-LazaretteToolSecrets -Times 0 -Exactly
+    }
+
+    It 'treats a TalkForge folder without the local token as an older one' {
+        $tf = New-FakeTalkForge (Join-Path $TestDrive ('tf-' + [guid]::NewGuid().ToString('N')))
+        Test-SemTalkForgeLocalTokenSupport -Folder $tf | Should -BeFalse
+        Test-SemTalkForgeLocalTokenSupport -Folder (Join-Path $TestDrive 'nowhere') | Should -BeFalse
     }
 }
 

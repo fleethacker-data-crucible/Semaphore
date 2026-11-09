@@ -97,6 +97,8 @@ Describe 'Starting Fairlead' {
         Set-SemSettingsFile $root @{ fairlead = @{ autoStart = $false } }
         $port = Get-FreePort
         (Start-SemFairlead -Root $root -Settings @{ Url = "http://127.0.0.1:$port/v1" }).Message | Should -Match 'fairlead\.autoStart'
+        # The Connections card's Fix (-Explicit) is a person pressing a button, not an automatic start.
+        (Start-SemFairlead -Root $root -Settings @{ Url = "http://127.0.0.1:$port/v1" } -Explicit).Message | Should -Match 'port 8776'
         Set-SemSettingsFile $root @{ fairlead = @{ autoStart = $true } }
         (Start-SemFairlead -Root $root -Settings @{ Url = "http://127.0.0.1:$port/v1" }).Message | Should -Match 'port 8776'
     }

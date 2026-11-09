@@ -105,6 +105,8 @@ export interface PlaybookState {
   where: 'shared folder' | 'this browser';
   saveEntries: (list: PlaybookEntry[]) => Promise<void>;
   saveQuestion: (q: QuestionItem) => Promise<void>;
+  /** Deletes a question (an ask) from the queue: moved to questions\.trash with a server. */
+  removeQuestion: (id: string) => Promise<void>;
   saveSnapshot: (s: Snapshot) => Promise<void>;
   /** The team style card's overrides (team/style): what analysts switched off or pinned. */
   styleOverrides: StyleOverrides;
@@ -232,6 +234,16 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
     [put],
   );
 
+  const removeQuestion = useCallback(
+    async (id: string) => {
+      if (server) await api(`/api/questions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      else localRemove('questions', id);
+      questionsRef.current = questionsRef.current.filter((x) => x.id !== id);
+      setQuestions(questionsRef.current);
+    },
+    [server],
+  );
+
   const saveSnapshot = useCallback(
     async (s: Snapshot) => {
       try {
@@ -335,7 +347,7 @@ export function usePlaybook(server: ServerInfo | null, serverChecked: boolean): 
   return {
     social, deployment, asks, bz, recordAsk, recordDrafted, giveBz,
     entries, questions, snapshots, loaded, where: server ? 'shared folder' : 'this browser',
-    saveEntries, saveQuestion, saveSnapshot, styleOverrides, saveStyleOverrides, away, saveAway, removeAway,
+    saveEntries, saveQuestion, removeQuestion, saveSnapshot, styleOverrides, saveStyleOverrides, away, saveAway, removeAway,
     usage, schedules, editions, saveReportDoc, removeReportDoc,
     reload: () => setTick((t) => t + 1),
   };

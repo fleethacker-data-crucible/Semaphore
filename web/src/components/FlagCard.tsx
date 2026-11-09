@@ -17,6 +17,7 @@ import { findInsights } from '../../../src/core/insights.ts';
 import { shortDate, useReviewedAt } from '../lib/accept.ts';
 import { ApprovalNeeded, approveQuery, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import { toggleFlipped, useFlipped } from '../lib/flag-keys.ts';
+import { forgetFlagLive, noteFlagLive } from '../lib/flag-live.ts';
 import { markStep } from '../lib/onboarding.ts';
 import { cachedSliceKey, flagKeys, relevantSelections } from '../lib/relevance.ts';
 import { recordSkill } from '../lib/skills.ts';
@@ -124,6 +125,12 @@ function FlagCardInner({ hoist, flag: own, ctx, index, selections, selected, the
     () => (result && flag.kind !== 'filter' ? findInsights({ flag, rows: result.display.rows, ...(result.previous ? { previous: result.previous } : {}), totals: result.display.totals, today: ctx.today }, index) : []),
     [result, flag, index, ctx.today],
   );
+  // What this card shows, for the assistant's page outline (lib/flag-live.ts).
+  const loadError = load.state === 'error' ? load.error : undefined;
+  useEffect(() => {
+    noteFlagLive(own.id, { ...(result ? { result } : {}), ...(loadError ? { error: loadError } : {}), insights: insights.map((i) => i.text) });
+  }, [own.id, result, loadError, insights]);
+  useEffect(() => () => forgetFlagLive(own.id), [own.id]);
   const sqlPref = useSqlPref();
   const hasResult = result !== undefined;
   // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -6,11 +6,19 @@
 // listens stops without sending; with press and hold, letting go sends.
 
 import { type KeyboardEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { CircleAlert, LoaderCircle, Mic, MicOff, Sparkles, Square, SendHorizontal, SquarePen, Volume2, VolumeOff, X } from 'lucide-react';
+import { Check, CircleAlert, LoaderCircle, Mic, MicOff, Sparkles, Square, SendHorizontal, SquarePen, Volume2, VolumeOff, X } from 'lucide-react';
 import '../../vendor/binnacle/binnacle.js';
 import type { AiStatus } from '../lib/ai.ts';
-import { assistant, assistantOrbState, MAX_QUESTION, type PageOutline } from '../lib/assistant.ts';
-import { takePendingOpen } from '../lib/assistant-bus.ts';
+import { assistant, assistantOrbState, type AssistantMessage, type AssistantPage, MAX_QUESTION } from '../lib/assistant.ts';
+import { takePendingOpen, takePendingSuggest } from '../lib/assistant-bus.ts';
+import { builderOutline, leadershipOutline } from '../lib/assistant-context.ts';
+import { type AssistantEditor, describeProposal } from '../lib/assistant-actions.ts';
+import type { CatalogIndex } from '../../../src/core/catalog.ts';
+import type { FlagKind, Hoist } from '../../../src/core/hoist.ts';
+import { requestAsk } from '../lib/ask-bus.ts';
+import type { PlaybookEntry } from '../../../src/core/playbook.ts';
+import type { Snapshot } from '../../../src/core/snapshot.ts';
+import { whatChanged } from '../lib/briefing-package.ts';
 import { HOLD_MS, orbGesture, useOrbPrefs } from '../lib/orb-prefs.ts';
 import { voice } from '../lib/voice.ts';
 import { dictation } from '../lib/dictation.ts';
@@ -26,8 +34,49 @@ function useDictation() {
   return dictation;
 }
 
-/** What a transcript is sent with: the latest AI status and page outline (set by AssistantRoot). */
-const sendContext: { ai: AiStatus | null; on: boolean; page: PageOutline | null } = { ai: null, on: false, page: null };
+/** What the assistant can see: the builder's page, or the Leadership view's reviewed answers. */
+export type AssistantSource =
+  | { mode: 'builder'; hoist: Hoist; index: CatalogIndex }
+  | { mode: 'leadership'; entries: readonly PlaybookEntry[]; snapshots: readonly Snapshot[]; waiting: number; index: CatalogIndex };
+
+/** The page as it is now, built when a question is sent (lib/assistant-context.ts), so the numbers are current. */
+function pageOf(src: AssistantSource | null): AssistantPage | null {
+  if (!src) return null;
+  if (src.mode === 'builder') return { outline: builderOutline(src.hoist, src.index), context: { mode: 'builder', flags: src.hoist.flags, index: src.index } };
+  const changed = whatChanged(src.entries, src.snapshots, src.index).map((c) => `${c.title}: ${c.insight.text}`);
+  return { outline: leadershipOutline(src.entries, src.snapshots, changed, src.waiting, src.index), context: { mode: 'leadership', flags: [], index: src.index } };
+}
+
+/** The builder's own editing paths (app.tsx), so an accepted proposal goes through undo like any edit. */
+export interface AssistantEdits {
+  change: (fn: (h: Hoist) => Hoist) => void;
+  remove: (id: string) => void;
+  add: (title: string, brief: string, kind?: FlagKind) => void;
+  select: (id: string) => void;
+  redraft: (id: string) => void;
+  leadership: () => void;
+}
+
+/** What a transcript is sent with: the latest AI status, what the assistant can see and the page's editing paths (set by AssistantRoot). */
+const sendContext: { ai: AiStatus | null; on: boolean; source: AssistantSource | null; edits: AssistantEdits | null } = { ai: null, on: false, source: null, edits: null };
+
+/** Accepted proposals, applied to the page as it is at that moment (lib/assistant-actions.ts checks them again). */
+const editor: AssistantEditor = {
+  flags: () => (sendContext.source?.mode === 'builder' ? sendContext.source.hoist.flags : []),
+  index: () => sendContext.source?.index ?? null,
+  update: (id, patch) => sendContext.edits?.change((h) => ({ ...h, flags: h.flags.map((f) => (f.id === id ? { ...f, ...patch } : f)) })),
+  remove: (id) => sendContext.edits?.remove(id),
+  add: (kind, title, brief) => sendContext.edits?.add(title, brief, kind),
+  redraft: (id, brief) => {
+    if (brief) editor.update(id, { brief });
+    sendContext.edits?.select(id);
+    sendContext.edits?.redraft(id);
+  },
+  ask: (question) => {
+    requestAsk(question);
+    sendContext.edits?.leadership();
+  },
+};
 
 function focusInput(): void {
   requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-input"]')?.focus());
@@ -49,7 +98,7 @@ async function startTalking(): Promise<boolean> {
   const ok = await dictation.start({
     onText: (text) => assistant.setDraft(joinDraft(before, text)),
     onDone: () => {
-      if (voice.prefs.autoSend && assistant.draft.trim()) void assistant.send(assistant.draft, { status: sendContext.ai, on: sendContext.on }, sendContext.page);
+      if (voice.prefs.autoSend && assistant.draft.trim()) void assistant.send(assistant.draft, { status: sendContext.ai, on: sendContext.on }, pageOf(sendContext.source));
     },
   });
   if (!ok) focusInput();
@@ -79,6 +128,73 @@ declare global {
 }
 
 const SUGGESTIONS = ['How do I add a flag?', 'How do I compare with last year?', 'How do I export to Excel?', 'How do I pair with Lazarette?'];
+/** With Fairlead and the page included, the first suggestions are about the person's own flags. */
+const PAGE_SUGGESTIONS = { builder: ['Review the flags on this page', 'Which flags are broken or show nothing?'], leadership: ['What changed in the reviewed answers?'] };
+
+/** One proposed change, with what it changes and Accept / Dismiss. Nothing is applied before Accept. */
+function ProposalCards({ m, mode }: { m: AssistantMessage; mode: 'builder' | 'leadership' }) {
+  const a = useAssistant();
+  const flags = editor.flags();
+  const index = editor.index();
+  const canEdit = mode === 'leadership' || !!sendContext.edits;
+  if (!m.proposals?.length && !m.refusals?.length) return null;
+  return (
+    <div className="grid gap-2">
+      {m.proposals?.map((c) => {
+        const d = describeProposal(c.proposal, flags, index);
+        const isAsk = c.proposal.action === 'ask';
+        return (
+          <section key={c.id} data-testid="assistant-proposal" data-state={c.state} aria-label={`Proposal: ${d.heading}`} className="rounded-xl border border-line bg-panel p-3 text-[12.5px]">
+            <p className="font-semibold">{d.heading}</p>
+            {c.proposal.reason && <p className="mt-0.5 text-[11.5px] text-ink-2">{c.proposal.reason}</p>}
+            {(d.before !== undefined || (d.after !== undefined && !isAsk)) && (
+              <dl className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[12px]">
+                {d.before !== undefined && (
+                  <>
+                    <dt className="text-ink-2">Now</dt>
+                    <dd className="break-words text-ink-2 line-through">{d.before}</dd>
+                  </>
+                )}
+                {d.after !== undefined && (
+                  <>
+                    <dt className="text-ink-2">After</dt>
+                    <dd className="break-words">{d.after}</dd>
+                  </>
+                )}
+              </dl>
+            )}
+            {isAsk && <p className="mt-1 break-words">{d.after}</p>}
+            {c.state === 'open' ? (
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  disabled={!canEdit}
+                  onClick={() => a.accept(m.id, c.id, mode, editor)}
+                  data-testid="assistant-accept"
+                  className="inline-flex min-h-8 items-center gap-1 rounded-md bg-accent px-2.5 font-semibold text-[var(--fl-accent-ink)] disabled:opacity-40"
+                >
+                  <Check size={14} aria-hidden="true" /> {isAsk ? 'Ask' : 'Accept'}
+                </button>
+                <button type="button" onClick={() => a.dismiss(m.id, c.id)} data-testid="assistant-dismiss" className="inline-flex min-h-8 items-center rounded-md border border-[var(--fl-control-border)] px-2.5">
+                  Dismiss
+                </button>
+              </div>
+            ) : (
+              <p role="status" className={`mt-2 text-[11.5px] ${c.state === 'refused' ? 'text-bad' : 'text-ink-2'}`}>
+                {c.state === 'accepted' ? (isAsk ? 'Asked.' : 'Accepted. Ctrl+Z undoes it.') : c.state === 'dismissed' ? 'Dismissed.' : `Not applied: ${c.note ?? 'the page changed.'}`}
+              </p>
+            )}
+          </section>
+        );
+      })}
+      {m.refusals?.map((r, i) => (
+        <p key={i} data-testid="assistant-refusal" className="flex items-start gap-1 text-[11.5px] text-bad">
+          <CircleAlert size={12} aria-hidden="true" className="mt-0.5 shrink-0" /> {r}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 function useAssistant() {
   useSyncExternalStore(assistant.subscribe, assistant.snapshot, assistant.snapshot);
@@ -201,7 +317,7 @@ function Orb() {
   return null;
 }
 
-function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean; page: PageOutline | null; onClose: () => void }) {
+function Dock({ ai, aiOn, mode, onClose }: { ai: AiStatus | null; aiOn: boolean; mode: 'builder' | 'leadership'; onClose: () => void }) {
   const a = useAssistant();
   const v = useVoice();
   const d = useDictation();
@@ -215,7 +331,8 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
     input.current?.focus();
     void dictation.probe();
   }, []);
-  const send = (text = a.draft) => void a.send(text, { status: ai, on: aiOn }, page);
+  const send = (text = a.draft) => void a.send(text, { status: ai, on: aiOn }, pageOf(sendContext.source));
+  const suggest = () => void a.suggestAsks({ status: ai, on: aiOn }, pageOf(sendContext.source));
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -299,10 +416,21 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
             </div>
             <h3 className="text-[14px] font-semibold">Ask the Semaphore assistant</h3>
             <p className="mt-1 text-[12.5px] leading-5 text-ink-2">
-              {viaFairlead ? 'It answers from Semaphore\'s guide through Fairlead. It cannot see your data or change anything.' : 'Fairlead is not in use, so it answers from Semaphore\'s own guide, on this computer.'}
+              {viaFairlead
+                ? a.includePage
+                  ? mode === 'builder'
+                    ? 'It answers through Fairlead on this computer. It sees your flags and a summary of what each shows (never rows), and can propose changes for you to accept.'
+                    : 'It answers through Fairlead on this computer. It sees the reviewed answers and their saved numbers, and can suggest questions to ask.'
+                  : 'It answers from Semaphore\'s guide through Fairlead. Turn on "Include this page" below so it can see your flags.'
+                : 'Fairlead is not in use, so it answers from Semaphore\'s own guide, on this computer.'}
             </p>
             <div className="mt-4 grid gap-1.5">
-              {SUGGESTIONS.map((q) => (
+              {mode === 'leadership' && (
+                <button type="button" onClick={suggest} data-testid="assistant-suggest" className="min-h-8 rounded-lg border border-accent bg-accent-soft px-3 py-2 text-left text-[12.5px] hover:bg-panel-2">
+                  Suggest questions leadership could ask
+                </button>
+              )}
+              {[...(viaFairlead && a.includePage ? PAGE_SUGGESTIONS[mode] : []), ...SUGGESTIONS].map((q) => (
                 <button key={q} type="button" onClick={() => send(q)} className="min-h-8 rounded-lg border border-line bg-panel px-3 py-2 text-left text-[12.5px] hover:bg-panel-2">
                   {q}
                 </button>
@@ -326,6 +454,7 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
                     <CircleAlert size={12} aria-hidden="true" /> {m.error}
                   </p>
                 )}
+                {m.role === 'assistant' && <ProposalCards m={m} mode={mode} />}
               </article>
             ))}
           </div>
@@ -336,7 +465,7 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
         {viaFairlead && (
           <label className="mb-2 flex items-start gap-2 text-[11.5px] leading-4 text-ink-2">
             <input type="checkbox" className="mt-px size-4" checked={a.includePage} disabled={a.busy} onChange={(e) => a.setIncludePage(e.target.checked)} aria-label="Include this page" data-testid="assistant-page" />
-            <span>Include this page (its title, brief and flag titles and briefs; never data, sources or secrets). Off by default; it goes to Fairlead.</span>
+            <span>Include this page: {mode === 'builder' ? 'flag titles, briefs, measures, filters and a short summary of what each shows' : 'the reviewed answers and their saved headline numbers'}, plus catalog names. Never rows, sources or secrets. It goes to Fairlead on this computer.</span>
           </label>
         )}
         <div className="focus-frame rounded-xl border border-[var(--fl-control-border)] bg-panel">
@@ -384,26 +513,47 @@ function Dock({ ai, aiOn, page, onClose }: { ai: AiStatus | null; aiOn: boolean;
   );
 }
 
-export function AssistantRoot({ orb, ai, aiOn, page }: { orb: boolean; ai: AiStatus | null; aiOn: boolean; page: PageOutline | null }) {
+export interface AssistantRootProps {
+  orb: boolean;
+  ai: AiStatus | null;
+  aiOn: boolean;
+  /** What the assistant can see: the builder's page or the Leadership view. */
+  source: AssistantSource | null;
+  /** The builder's editing paths, for accepted proposals; null in the Leadership view, where it only asks. */
+  edits: AssistantEdits | null;
+}
+
+export function AssistantRoot({ orb, ai, aiOn, source, edits }: AssistantRootProps) {
   const a = useAssistant();
   sendContext.ai = ai;
   sendContext.on = aiOn;
-  sendContext.page = page;
+  sendContext.source = source;
+  sendContext.edits = edits;
   // The header button and Ctrl+K ask through lib/assistant-bus.ts, which works before this loaded.
   useEffect(() => {
+    const suggest = () => {
+      if (!takePendingSuggest()) return;
+      assistant.toggle(true);
+      void assistant.suggestAsks({ status: sendContext.ai, on: sendContext.on }, pageOf(sendContext.source));
+    };
     if (takePendingOpen()) assistant.toggle(true);
+    suggest();
     void dictation.probe(); // before the first click on the orb: is voice input on for this Semaphore?
     const open = () => {
       takePendingOpen();
       assistant.toggle();
     };
     window.addEventListener('semaphore:assistant', open);
-    return () => window.removeEventListener('semaphore:assistant', open);
+    window.addEventListener('semaphore:assistant-suggest', suggest);
+    return () => {
+      window.removeEventListener('semaphore:assistant', open);
+      window.removeEventListener('semaphore:assistant-suggest', suggest);
+    };
   }, []);
   return (
     <>
       {orb && <Orb />}
-      {a.open && <Dock ai={ai} aiOn={aiOn} page={page} onClose={() => assistant.toggle(false)} />}
+      {a.open && <Dock ai={ai} aiOn={aiOn} mode={source?.mode ?? 'builder'} onClose={() => assistant.toggle(false)} />}
     </>
   );
 }

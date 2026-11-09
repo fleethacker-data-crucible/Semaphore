@@ -1,6 +1,6 @@
 // Settings > AI drafting > Spoken answers and Voice input, as in Lazarette's Assistant settings
 // (PRs 140, 141, 142, 144). The address, the token, starting TalkForge and its folder are set up on
-// this computer (SEMAPHORE_VOICE_URL, the TALKFORGE_TOKEN share in Lazarette or SEMAPHORE_VOICE_TOKEN,
+// this computer (SEMAPHORE_VOICE_URL, SEMAPHORE_VOICE_TOKEN, TalkForge's local token or, last, the TALKFORGE_TOKEN share in Lazarette,
 // and "voice" in config\settings.json): the page shows where they come from and never sees the token.
 // The voice, the speed and the voice input switches are this person's, in this browser.
 
@@ -13,7 +13,7 @@ import { voice } from '../lib/voice.ts';
 interface VoiceStatus {
   url: string;
   problem: string;
-  tokenSource: 'environment' | 'lazarette';
+  tokenSource: 'environment' | 'local-token' | 'lazarette';
   tokenShare: string;
   autoStart: boolean;
   folder: string;
@@ -104,7 +104,9 @@ export function VoiceCard() {
             <span className="mt-0.5 block text-[12px] text-ink-2">
               {status?.tokenSource === 'environment'
                 ? 'From SEMAPHORE_VOICE_TOKEN on this computer.'
-                : `From Lazarette: share ${status?.tokenShare ?? 'TALKFORGE_TOKEN'} with Semaphore (Lazarette > Settings > Tools > Semaphore). Any random text of 16 or more characters; TalkForge is started with it.`}
+                : status?.tokenSource === 'local-token'
+                  ? "TalkForge's own local token for this Windows account (%LOCALAPPDATA%\\TalkForge\\local-token). Nothing to set up."
+                  : `TalkForge makes its own local token the first time it starts, and Semaphore uses it: nothing to set up. With an older TalkForge, share ${status?.tokenShare ?? 'TALKFORGE_TOKEN'} with Semaphore in Lazarette (Settings > Tools > Semaphore) instead.`}
             </span>
           </span>
           <span className="text-sm text-ink-2">Never shown</span>

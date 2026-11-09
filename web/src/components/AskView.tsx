@@ -4,7 +4,7 @@
 // analysts' queue. Above the answers, a briefing of what changed across the reviewed flags.
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, Bell, BellRing, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Gauge, Inbox, LayoutDashboard, Lightbulb, Mail, Settings2, Moon, Send, Sparkles, Sun, ThumbsUp, Wand2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, BadgeCheck, Bell, BellRing, CheckCircle2, Info, CalendarOff, Check, CircleCheck, CircleHelp, Clock, Gauge, Inbox, LayoutDashboard, Lightbulb, Mail, Settings2, Moon, Send, Sparkles, Sun, ThumbsUp, Trash2, Wand2, X } from 'lucide-react';
 import { type Alert, alertableMetrics, alertId, alertReading, alertTarget, newAlert, parseAlertRequest, primeAlert, redRule, ruleText, unseen } from '../../../src/core/alerts.ts';
 import { answerQuality, durationText } from '../../../src/core/answer-quality.ts';
 import { canAskForReview, dataAccessNote, draftOf, requestReview, reviewAsked, TRUST_LABELS } from '../../../src/core/review.ts';
@@ -23,6 +23,9 @@ import { answerFromSnapshots } from '../../../src/core/snapshot.ts';
 import { canReach, computeFlag, type DataContext, type FlagResult } from '../lib/data.ts';
 import type { PlaybookState } from '../lib/playbook.ts';
 import { readLocal, writeLocal } from '../lib/storage.ts';
+import { suggestAsksWithAssistant } from '../lib/assistant-bus.ts';
+import { takePendingAsk } from '../lib/ask-bus.ts';
+import { confirm } from '../lib/confirm.ts';
 import { EmptyState } from './EmptyState.tsx';
 import { FlagView } from './FlagView.tsx';
 
@@ -253,6 +256,54 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
 
   useEffect(() => input.current?.focus(), []);
 
+  // An "Ask this" card the assistant suggested (lib/assistant-bus.ts): asked here, as if typed.
+  const askRef = useRef(ask);
+  askRef.current = ask;
+  useEffect(() => {
+    const take = () => {
+      const q2 = takePendingAsk();
+      if (q2) void askRef.current(q2);
+    };
+    take();
+    window.addEventListener('semaphore:ask', take);
+    return () => window.removeEventListener('semaphore:ask', take);
+  }, []);
+
+  // This person's asks in the queue, newest first, for the history list (deletable).
+  const mine = playbook.questions
+    .filter((x) => x.askedBy === user || withAskers(x).askers.includes(user))
+    .sort((a, b) => b.updated.localeCompare(a.updated))
+    .slice(0, 20);
+  const [deleteNote, setDeleteNote] = useState<string | null>(null);
+
+  /** Deletes a question from the queue: only this person's own; one others asked too just loses this asker. */
+  const dropQuestion = async (x: QuestionItem): Promise<void> => {
+    const askers = withAskers(x).askers;
+    if (askers.length > 1 && askers.includes(user)) {
+      const rest = askers.filter((a) => a !== user);
+      await playbook.saveQuestion({ ...x, askers: rest, askedBy: x.askedBy === user ? rest[0]! : x.askedBy, updated: new Date().toISOString() });
+    } else await playbook.removeQuestion(x.id);
+  };
+  const hasAnswer = (x: QuestionItem) => x.status === 'answered' || !!x.draft;
+  const deleteQuestion = async (x: QuestionItem) => {
+    if (hasAnswer(x) && !(await confirm({ title: 'Delete this ask?', body: `"${x.title}" has ${x.status === 'answered' ? 'a reviewed answer' : 'a drafted answer'}. Deleting removes it from your list and the analysts' queue (it is moved to the trash folder, not erased).`, confirmLabel: 'Delete', destructive: true }))) return;
+    try {
+      await dropQuestion(x);
+      setDeleteNote(`Deleted: "${x.title}".`);
+    } catch {
+      setDeleteNote('Could not delete it. Try again.');
+    }
+  };
+  /** Removes an answer from this list; an empty one goes at once, one that shows numbers asks first. The queued question goes too. */
+  const deleteAnswer = async (a: Shown) => {
+    const empty = a.state !== 'ready' || !a.result || a.result.display.rows.length === 0;
+    if (!empty && !(await confirm({ title: 'Remove this answer?', body: `"${a.answer.question}" shows an answer. Remove it from this list?`, confirmLabel: 'Remove', destructive: true }))) return;
+    setAnswers((list) => list.filter((x) => x.key !== a.key));
+    const asked = normalizeQuestion(a.answer.question);
+    const queued = playbook.questions.find((x) => x.status === 'open' && !x.draft && normalizeQuestion(x.title) === asked && withAskers(x).askers.includes(user));
+    if (queued && empty) await dropQuestion(queued).catch(() => setDeleteNote('Removed here, but the question could not be taken out of the queue. Try again from Your asks.'));
+  };
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-panel px-5 py-2.5">
@@ -368,6 +419,20 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
             </button>
           </form>
 
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={suggestAsksWithAssistant} data-testid="suggest-questions" title="The assistant suggests questions the reviewed answers and the catalog can answer" className="flex min-h-8 items-center gap-1.5 rounded-full border border-accent bg-accent-soft px-3 text-sm text-ink hover:opacity-90">
+              <Sparkles size={14} className="text-accent" /> Suggest questions
+            </button>
+            {deleteNote && (
+              <span role="status" className="flex items-center gap-1 text-sm text-ink-2">
+                {deleteNote}
+                <button type="button" onClick={() => setDeleteNote(null)} aria-label="Dismiss" className="grid size-7 place-items-center rounded-md text-ink-3 hover:bg-panel">
+                  <X size={13} />
+                </button>
+              </span>
+            )}
+          </div>
+
           {popular.length > 0 && answers.length === 0 && (
             <div className="flex flex-wrap gap-2">
               {popular.map((p) => (
@@ -410,6 +475,7 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
               shown={a}
               index={index}
               onAsk={(x) => void ask(x)}
+              onDelete={() => void deleteAnswer(a)}
               onFlag={() =>
                 void queue(a.answer.question, 'drafted', ['Flagged for review from the Leadership view: a reviewed answer someone wants looked at again.']).then((queued) => setAnswers((list) => list.map((x) => (x.key === a.key ? { ...x, queued } : x))))
               }
@@ -454,6 +520,28 @@ export function AskView({ index, ctx, playbook, user, theme, themeKey, onTheme, 
                         <span className="text-xs text-ink-3">{b.title}</span>
                       </span>
                       <ArrowRight size={15} className="mt-1 text-ink-3 opacity-0 group-hover:opacity-100" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {mine.length > 0 && (
+            <section aria-label="Your asks" className="rounded-2xl border border-line bg-panel p-4">
+              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                <Inbox size={15} className="text-brass" /> Your asks
+                <span className="font-normal text-ink-3">in the analysts' queue</span>
+              </h2>
+              <ul className="divide-y divide-line">
+                {mine.map((x) => (
+                  <li key={x.id} data-testid="my-ask" className="flex items-center gap-2 py-1.5 text-sm">
+                    <button type="button" onClick={() => void ask(x.title)} className="min-w-0 flex-1 truncate text-left hover:underline" title="Ask it again">
+                      {x.title}
+                    </button>
+                    <span className="shrink-0 text-xs text-ink-3">{x.status === 'answered' ? 'Answered' : x.status === 'dismissed' ? 'Not accepted' : x.draft ? 'Draft waiting for review' : 'Waiting, nothing shown yet'}</span>
+                    <button type="button" onClick={() => void deleteQuestion(x)} aria-label={`Delete ask: ${x.title}`} title="Delete this ask" className="grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-panel-2 hover:text-bad">
+                      <Trash2 size={14} />
                     </button>
                   </li>
                 ))}
@@ -596,7 +684,7 @@ function BzButton({ given, give }: { given: boolean; give: () => Promise<boolean
   );
 }
 
-function AnswerCard({ shown, index, onAsk, onFlag, onReview, alert, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onFlag: () => void; onReview: () => Promise<boolean>; alert: { on: boolean; set: () => void; open: () => void } | null; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
+function AnswerCard({ shown, index, onAsk, onDelete, onFlag, onReview, alert, themeKey, bz }: { shown: Shown; index: CatalogIndex; onAsk: (q: string) => void; onDelete: () => void; onFlag: () => void; onReview: () => Promise<boolean>; alert: { on: boolean; set: () => void; open: () => void } | null; themeKey: string; bz: { given: boolean; give: () => Promise<boolean> } | null }) {
   const [why, setWhy] = useState(false);
   const [reviewFailed, setReviewFailed] = useState(false);
   const { answer, result } = shown;
@@ -614,8 +702,15 @@ function AnswerCard({ shown, index, onAsk, onFlag, onReview, alert, themeKey, bz
       aria-label={`Answer: ${answer.question}`}
       aria-describedby={`trust-${shown.key}`}
     >
-      <p className="text-xs text-ink-3">You asked</p>
-      <h2 className="text-lg font-semibold">{answer.question}</h2>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-ink-3">You asked</p>
+          <h2 className="text-lg font-semibold">{answer.question}</h2>
+        </div>
+        <button type="button" onClick={onDelete} aria-label={`Delete ask: ${answer.question}`} title="Remove this ask" data-testid="delete-answer" className="grid size-8 shrink-0 place-items-center rounded-md text-ink-3 hover:bg-panel-2 hover:text-bad">
+          <Trash2 size={15} />
+        </button>
+      </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span id={`trust-${shown.key}`} data-testid="trust-badge" className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${t.tone}`}>
           <Icon size={13} aria-hidden="true" /> {t.label}

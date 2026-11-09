@@ -202,6 +202,62 @@ $script:SemVaultStatusCache = $null
 
 function Clear-SemVaultStatusCache { $script:SemVaultStatusCache = $null }
 
+$script:SemVaultStatePath = '/peer/tools/v1/state'
+$script:SemVaultProbeName = 'SEMAPHORE_PAIRING_CHECK'
+
+function Get-SemVaultLiveState {
+    <#
+      Asks the running Lazarette whether it still knows Semaphore's pairing, so "paired" is Lazarette's answer and
+      not only that a pairing file exists. Returns 'ok' | 'not-paired' | 'expired' | 'locked' | 'not-running', or
+      throws a Lazarette.Client.ps1-style message. Uses Lazarette's state call (POST /peer/tools/v1/state, the
+      one-time HMAC proof and no names; an 'ok' or 'expired' answer carries Lazarette's MAC). A Lazarette without
+      that call (404) is asked for one name nobody shares instead (SEMAPHORE_PAIRING_CHECK): its answer, or its
+      refusal, says the same. No value is read either way.
+    #>
+    param([int]$Port = (Get-LzClientPort))
+    if (-not (Test-SemVaultPaired)) { return 'not-paired' }
+    $C = $script:LzClient
+    $pair = Get-LzClientPairing $script:SemVaultTool
+    $r = $null
+    try {
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $nb = New-Object byte[] 24; try { $rng.GetBytes($nb) } finally { $rng.Dispose() }
+        $nonce = ConvertTo-LzClientB64Url $nb
+        $time = [string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $msg = @($C.Label, 'POST', $script:SemVaultStatePath, $pair.Id, $time, $nonce) -join "`n"
+        $proof = ConvertTo-LzClientB64Url (Get-LzClientHmac -Key $pair.Secret -Data ([Text.Encoding]::UTF8.GetBytes($msg)))
+        $req = [ordered]@{ tool = $pair.Id; nonce = $nonce; time = [long]$time; proof = $proof } | ConvertTo-Json -Compress
+        try { $r = Invoke-LzClientPost -Port $Port -Path $script:SemVaultStatePath -Json $req }
+        catch { if ("$_" -like 'Lazarette is not running*') { return 'not-running' }; throw }
+        if ($r.Status -eq 200 -and $null -ne $r.Json) {
+            $state = [string]$r.Json.state
+            if ($state -eq 'ok' -or $state -eq 'expired') {
+                $want = @(($C.Label + ' state'), $pair.Id, $nonce, $state) -join "`n"
+                $mac = $null; try { $mac = ConvertFrom-LzClientB64Url ([string]$r.Json.mac) } catch { $mac = $null }
+                if ([string]$r.Json.nonce -ne $nonce -or -not (Test-LzClientBytesEqual (Get-LzClientHmac -Key $pair.Secret -Data ([Text.Encoding]::UTF8.GetBytes($want))) $mac)) { throw 'The answer did not come from Lazarette for this pairing (check failed).' }
+                return $state
+            }
+            if ($state -eq 'not-paired' -or $state -eq 'locked') { return $state }
+            throw "Lazarette answered the check with an unknown state '$state'."
+        }
+        if ($r.Status -eq 423) { return 'locked' }
+        if ($r.Status -eq 401) { return 'not-paired' }
+    } finally { [Array]::Clear($pair.Secret, 0, $pair.Secret.Length) }
+    # No state call in this Lazarette (404, or an older answer): one name nobody shares, with no value to read.
+    try {
+        $got = Get-LazaretteToolSecrets -Tool $script:SemVaultTool -Names @($script:SemVaultProbeName) -Purpose 'Semaphore pairing check' -Port $Port
+        $got = $null
+        return 'ok'
+    } catch {
+        $m = [string]$_.Exception.Message
+        if ($m -like 'Lazarette is not running*') { return 'not-running' }
+        if ($m -match '\(locked\)') { return 'locked' }
+        if ($m -match '\(not-paired\)') { return 'not-paired' }
+        if ($m -match '\(expired\)') { return 'expired' }
+        throw
+    }
+}
+
 function Get-SemVaultStatus {
     # paired / running / locked, which source reads which share, and which shares Lazarette has for Semaphore.
     # When paired and running it asks Lazarette once for every share the sources name; the values are dropped at
@@ -222,9 +278,28 @@ function Get-SemVaultStatus {
     $init = Initialize-SemVault
     $out = [ordered]@{ tool = $script:SemVaultTool; paired = [bool]$init.Paired; running = (Test-SemVaultRunning); locked = $null; problem = $init.Problem; sources = $sources.ToArray(); shared = @(); notShared = @() }
     if (-not $out.running) { $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.'; if (-not $out.paired) { $out.problem += ' ' + $init.Problem } }
-    if (-not $out.paired -or -not $out.running -or $names.Count -eq 0) { return $out }
+    if (-not $out.paired -or -not $out.running) { return $out }
     $cacheKey = ($names | ForEach-Object { $_.ToUpperInvariant() } | Sort-Object) -join ','
     $cache = $script:SemVaultStatusCache
+    if ($names.Count -eq 0) {
+        # No source reads a share: still ask Lazarette, so "paired" is its answer, not just a file on this computer.
+        if (-not $NoCache -and $null -ne $cache -and $cache.Key -eq '' -and ($Now - $cache.At).TotalSeconds -lt $script:SemVaultStatusCacheSec) {
+            $live = $cache.Live
+        } else {
+            try { $live = Get-SemVaultLiveState }
+            catch { $out.problem = (ConvertTo-SemVaultError -Message ([string]$_.Exception.Message)).Message; $out.checked = 'error'; return $out }
+            $script:SemVaultStatusCache = @{ Key = ''; At = $Now; Live = $live; Shared = @(); NotShared = @() }
+        }
+        $out.checked = $live
+        switch ($live) {
+            'ok' { $out.locked = $false; $out.problem = $null }
+            'locked' { $out.locked = $true; $out.problem = 'Lazarette is locked. Unlock Lazarette in its window and try again.' }
+            'expired' { $out.locked = $false; $out.problem = 'Lazarette asks you to allow Semaphore again: open Lazarette, Settings > Tools, and choose Allow for Semaphore.' }
+            'not-running' { $out.running = $false; $out.problem = 'Lazarette is not running on this computer. Start it and unlock it.' }
+            default { $out.paired = $false; $out.problem = "Lazarette does not know Semaphore's pairing (it was removed or paired again). In Lazarette open Settings > Tools, pair Semaphore again, then run Semaphore-CLI.bat vault pair." }
+        }
+        return $out
+    }
     if (-not $NoCache -and $null -ne $cache -and $cache.Key -eq $cacheKey -and ($Now - $cache.At).TotalSeconds -lt $script:SemVaultStatusCacheSec) {
         $out.locked = $false; $out.problem = $null
         $out.shared = @($cache.Shared); $out.notShared = @($cache.NotShared); $out.cachedAt = $cache.At.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')

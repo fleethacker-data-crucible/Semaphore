@@ -39,6 +39,11 @@
 //   a successful run; an export streams the table as CSV (or a small stand-in file for the other formats); saved
 //   scripts and pipelines are kept in memory, and a pipeline run finishes on the second status poll.
 //   POST /__mock/vault { state }                "unlocked" | "locked" | "down" for the next answers
+//   POST /__mock/ai { configured, reply, running }
+//                                               Fairlead as the next answers see it: configured (a key, keySource
+//                                               local-token), the assistant's reply text for every chat request, and
+//                                               whether something listens on its port (POST /api/ai/start makes it so,
+//                                               with a key). GET /__mock/state reports the last chat request as aiLast.
 //   POST /__mock/voice { talkforge, input, sttMissing, sttText }
 //                                               TalkForge as the next answers see it: "missing" (the
 //                                               default: not running and no folder to start it from),
@@ -710,14 +715,19 @@ function info() {
   // The built-in local database is always a source (Get-SemSources).
   return { tool: 'semaphore', version, pid: process.pid, port, home: homeDir, autoStop: presence.autoStop, stay, sources: [{ id: 'local', label: 'Local database', kind: 'local', provider: 'local', placeholders: 'question', vault: false }], user: process.env.USERNAME || process.env.USER || 'analyst', reviewer: '', view, skin: '', social: { signalBook: true, impact: true, teamLog: true, showAskers: true, bz: true } };
 }
+// Fairlead as POST /__mock/ai sets it (the default: no key, nothing running).
+const AI_DEFAULT = { configured: false, reply: '', running: false };
+let aiMock = { ...AI_DEFAULT };
+let aiLast = null;
 function aiStatus() {
   return {
-    configured: false,
+    configured: aiMock.configured,
+    running: aiMock.running,
     provider: 'fairlead',
     url: 'http://127.0.0.1:8786',
     model: 'local',
     privacyLocal: true,
-    keySource: 'none',
+    keySource: aiMock.configured ? 'local-token' : 'none',
     problem: null,
     setup: 'Open Fairlead > Clients and install a key for Semaphore (or run Set-SemaphoreAiKey.bat as a fallback). Until then, local rules draft every flag.',
   };
@@ -1353,6 +1363,22 @@ function apiRoute(req, res, p, query, json, body) {
   }
   if (p === '/api/ai') return m === 'GET' ? sendJson(res, 200, aiStatus()) : sendError(res, 405, 'method', 'Method not allowed.');
   // Invoke-SemAiRequest (server/Intelligence.ps1): with no key stored both AI routes answer the same 409.
+  if (p === '/api/ai/start') {
+    // Start-SemFairlead -Explicit: Fairlead starts and, on its first start, makes the local token.
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    const was = aiMock.running;
+    aiMock = { ...aiMock, running: true, configured: true };
+    return sendJson(res, 200, { state: was ? 'running' : 'starting', message: was ? '' : 'Fairlead is starting.' });
+  }
+  if (p === '/api/ai/v1/chat/completions' && aiMock.configured) {
+    // Test-SemAiChatBody: the configured model, 1 to 20 messages, no streaming; then the scripted reply.
+    if (m !== 'POST') return sendError(res, 405, 'method', 'Method not allowed.');
+    if (body.length > 262144) return sendError(res, 400, 'bad-request', 'The drafting request is larger than 256 KB.');
+    if (!json || json.model !== 'local') return sendError(res, 400, 'bad-request', 'The request must use the configured model "local".');
+    if (!Array.isArray(json.messages) || json.messages.length < 1 || json.messages.length > 20) return sendError(res, 400, 'bad-request', 'The request must carry 1 to 20 messages.');
+    aiLast = json;
+    return sendJson(res, 200, { choices: [{ message: { role: 'assistant', content: aiMock.reply || 'OK.' } }] });
+  }
   if (p === '/api/ai/check' || p === '/api/ai/v1/chat/completions') return m === 'POST' ? sendError(res, 409, 'ai-not-configured', 'No Fairlead client key is stored. Create one in Fairlead > Clients, then run Set-SemaphoreAiKey.bat.') : sendError(res, 405, 'method', 'Method not allowed.');
   const widget = /^\/api\/widgets(?:\/([^/]*))?$/.exec(p);
   if (widget) return widgetRoute(req, res, p === '/api/widgets' ? null : (widget[1] ?? ''), json);
@@ -1388,7 +1414,7 @@ function handle(req, res, body) {
     }
     if (p === '/__mock/state' && req.method === 'GET') {
       const now = Date.now();
-      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken });
+      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken, aiLast });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
       for (const k of [...KINDS, 'widgets', 'maps', 'alerts', 'mail']) {
@@ -1399,6 +1425,8 @@ function handle(req, res, body) {
       vaultState = vaultDefault;
       voiceMock = { ...VOICE_DEFAULT, readyAt: 0 };
       spoken.length = 0;
+      aiMock = { ...AI_DEFAULT };
+      aiLast = null;
       clientLog.length = 0;
       clientLogTimes.length = 0;
       saves = 0;
@@ -1410,6 +1438,18 @@ function handle(req, res, body) {
       mockRuns.clear();
       log('INFO', 'Reset by a test: documents, pairing, client log and counters cleared');
       return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/__mock/ai' && req.method === 'POST') {
+      let j = {};
+      try {
+        j = JSON.parse(body.toString('utf8') || '{}');
+      } catch {
+        return sendError(res, 400, 'bad-json', 'Not JSON.');
+      }
+      if (j.configured !== undefined) aiMock.configured = !!j.configured;
+      if (j.running !== undefined) aiMock.running = !!j.running;
+      if (typeof j.reply === 'string') aiMock.reply = j.reply;
+      return sendJson(res, 200, { ok: true, ai: aiMock });
     }
     if (p === '/__mock/voice' && req.method === 'POST') {
       let j = {};

@@ -17,9 +17,11 @@ export interface AiStatus {
   model: string;
   /** Requests carry X-Fairlead-Privacy: local, so prompts stay on this computer. */
   privacyLocal: boolean;
-  keySource: 'environment' | 'credential-manager' | 'file' | 'none';
+  keySource: 'environment' | 'credential-manager' | 'file' | 'local-token' | 'none';
   problem: string | null;
   setup: string;
+  /** Something accepts connections on Fairlead's port (GET /api/ai only; who it is, the id check decides). */
+  running?: boolean;
 }
 
 export interface AiCheck {
