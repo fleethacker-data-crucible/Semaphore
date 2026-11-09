@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Cleaner lineage lines** ("Where the numbers come from"): a line that skips a column (a field straight to a flag, a table straight to a count measure) now runs through the gaps between boxes instead of over them; formula measures built on other measures are arcs beside their column instead of lines looping back through it; each column is ordered to cross fewer lines and boxes sit level with what they connect to; lines leaving or entering one box fan out along its edge. Point at a box to light its connections, click to keep them lit. The layout is a pure module (src/core/lineage-layout.ts) with tests.
+
 ## 0.4.1 (2026-11-08)
 
 - **Fairlead starts when it is needed** (docs/INTELLIGENCE_PROVIDERS.md, "Started when needed"): drafting and the assistant no longer stop at "Fairlead is not running … Start it with Launch-Fairlead.bat". With a Fairlead key stored, Semaphore starts Fairlead in the background when it starts, and a draft, question or Check that finds nothing on Fairlead's port starts it and waits for it (up to 40 s). Fairlead runs detached and hidden with its tray icon, keeps running when Semaphore stops (other tools share it) and is never started twice; the key still goes only to a verified Fairlead. Settings `fairlead`: `autoStart` (on) and `folder` (or `SEMAPHORE_FAIRLEAD_FOLDER`; empty finds it from `fairleadPath`, next to Semaphore or in your Projects folder). `GET /api/ai` reports `autoStart`.
