@@ -1370,9 +1370,9 @@ export function App() {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <BriefLegend />
               {hoist.filters.length > 0 && (
-                <span className="text-[11px] text-ink-2">
-                  Page: {hoist.filters.map((f) => filterText(f, index)).join('; ')}
-                  <button type="button" onClick={() => change((h) => ({ ...h, filters: [] }))} className="ml-1 text-ink-3 hover:text-bad" aria-label="Remove page filters" title="Remove page filters">
+                <span className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-px text-[11px] text-ink-2">
+                  <span className="text-ink-3">Page filter</span> {hoist.filters.map((f) => filterText(f, index)).join('; ')}
+                  <button type="button" onClick={() => change((h) => ({ ...h, filters: [] }))} className="text-ink-3 hover:text-bad" aria-label="Remove page filters" title="Remove page filters">
                     <X size={11} className="inline" />
                   </button>
                 </span>

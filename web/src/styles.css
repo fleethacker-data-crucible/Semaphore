@@ -314,8 +314,8 @@ body {
   text-decoration-style: wavy;
   text-decoration-color: var(--bad);
 }
-/* A legend swatch: a short word-length sample of the tint and the underline. */
-.hl-swatch { display: inline-block; width: 18px; height: 12px; line-height: 8px; overflow: hidden; color: transparent; }
+/* A legend entry: the kind's own name, tinted and underlined as in the brief, in readable ink. */
+.hl-key { display: inline-block; padding: 0 4px 1px; line-height: 16px; color: var(--ink); text-underline-offset: 2px; }
 
 .grid-bg {
   background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);

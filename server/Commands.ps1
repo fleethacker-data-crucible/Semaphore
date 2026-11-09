@@ -6,7 +6,8 @@
 #
 # The CLI works in-process on the same files and functions the server uses (the document store, the source
 # list, the AI status): it needs no running server and no session token, which never leaves the server.
-# Only headless work is offered: documents, sources, AI status, the snapshot refresh and stopping a running copy.
+# Only headless work is offered: documents, sources, AI status, the snapshot refresh, the local database, scripts,
+# pipelines and stopping a running copy.
 # Routes that exist only for the browser session are listed in $script:SemUiOnlyRoutes with the reason; the parity
 # test (tests/server/Commands.Tests.ps1) fails when a route in Routes.ps1 or a /api path in the UI is in neither list.
 # =============================================================================

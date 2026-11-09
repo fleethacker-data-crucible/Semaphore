@@ -9,11 +9,11 @@
 
 **Download Semaphore:** get `Semaphore-<version>.zip` (prebuilt, ready to run) from the [latest release](https://github.com/fleethacker-data-crucible/Semaphore/releases/latest), not "Source code (zip)". Unblock it, Extract All, then double-click `Launch-Semaphore.bat`.
 
-**Reading offline?** The [standalone README](docs/README-standalone.html) and [illustrated analyst guide](docs/semaphore-for-analysts.html) embed their images. Use the file page's **Download raw file** button and open the HTML in your browser. Downloading `README.md` alone requires its image folders; both standalone guides describe this engineering preview.
+**Reading offline?** The [standalone README](docs/README-standalone.html) and [illustrated analyst guide](docs/semaphore-for-analysts.html) embed their images. Use the file page's **Download raw file** button and open the HTML in your browser. Downloading `README.md` alone requires its image folders; both standalone guides predate 0.4, so the local database, pipelines, scripts, model imports, calculated measures and the leadership Q&A below are described here only.
 
 Semaphore is an analyst workbench for building dashboards from plain-English briefs, CSV files and configured database sources. Analysts review each proposed chart and its SQL, accept useful work into a shared playbook, and publish summarized snapshots that leadership can question without opening a database. It targets Windows thin clients and Qlik-style analytical workflows.
 
-> **Engineering preview (0.3 development line).** This README describes the reconciled application in [PR #17](https://github.com/fleethacker-data-crucible/Semaphore/pull/17). It incorporates PR #10, the feature work formerly reviewed in PR #13, and the CI, license and documentation changes from PRs #11 and #18. Sample and CSV workflows are available here; database adapters and the Athena integration need validation against the intended services and target workstations.
+> **Engineering preview, version 0.4.0.** What changed in each release is in [CHANGELOG.md](CHANGELOG.md). Sample and CSV workflows are available here; database adapters and the Athena integration need validation against the intended services and target workstations.
 
 Part of the Data Crucible family alongside Lazarette, Halyard and Shellback, and built on the same [TechStack](TechStack).
 
@@ -91,13 +91,15 @@ Launcher options: `--ask` (the leadership view; `Ask-Semaphore.bat`), `--refresh
 | **Local database** | Big local files go into a database on this computer, using the SQLite engine built into Windows (nothing to install): CSV and TSV, Excel, SQLite, Parquet and Arrow, at ten million rows and more (CSV at about a million rows a second here). Files on network shares are read where they are, from hosts on an allowlist only. It is a source like any other, and exports tables to CSV, Parquet, Arrow, SQLite or Excel. See [docs/LOCAL-DATABASE.md](docs/LOCAL-DATABASE.md). |
 | **Data-prep pipelines** | Steps that rebuild tidy local tables: import a file, share path or S3 object, run a script, pull from a live source, then publish to the pages that use them. Update skips sources that have not changed; schedules run while Semaphore runs, or through Windows Task Scheduler with no admin rights. See [docs/PIPELINES.md](docs/PIPELINES.md). |
 | **Joins and drill paths** | Relationships let a flag on one table group or filter by another (Data > Links finds them for you). Flags set to drill go year → quarter → month → day, or along a drill path, down to the rows. |
-| **Messy data, cleaned with you** | Data > Clean finds stray spaces, the same label spelt different ways, numbers kept as text, mixed date formats, blanks and duplicate rows, and offers each fix as a sentence to accept or undo. The data itself is never changed. |
+| **Messy data, cleaned with you** | Data > Clean finds stray spaces, the same label spelt different ways, numbers kept as text, mixed date formats, blanks and duplicate rows, and offers each fix as a sentence to accept or undo. **Describe a fix** builds new fields or tables from a sentence: split a field, join fields, group a number into ranges or quartiles (equal values always share a group), or turn columns into rows. Each is previewed, works in all nine SQL dialects and in the page, and can be undone. The data itself is never changed. |
 | **Import a model** | From Qlik (paste a load script and chart expressions: tables, Qlik's field names, measures, mapping loads as cleaning and associations as joins), a dbt project (semantic models, metrics and pre-1.6 metrics) or a Power BI model (a .pbip TMDL folder or a model.bim: tables, DAX measures, relationships, hierarchies). Ratios and derived measures become calculated measures; everything else is listed with its original expression. See [docs/MODEL-IMPORTS.md](docs/MODEL-IMPORTS.md). |
 | **SQL desk** | Write your own SELECT against any source, the lake included, under the same guard and cost guard, in the SQL you know: pick your language (PostgreSQL, T-SQL, Oracle, Spark, MySQL, SQLite, Access, Synapse or ANSI-like) and Semaphore translates it to the source's dialect, showing what it runs. **Script mode** runs multi-statement scripts against the local database in one transaction, translating MERGE, PIVOT, TRY/CATCH, variables and loops; live sources stay read-only, but a script can pull their rows into local tables. See [docs/SQL-LANGUAGES.md](docs/SQL-LANGUAGES.md). |
 | **Page snapshots** | Save a named copy of a page, look at it again, and restore it; one is taken automatically before big changes, and restoring can be undone. |
 | **Assistant and voice** | An assistant panel and orb answer questions about using Semaphore (through Fairlead, or from a built-in guide without it). Answers can be read aloud through TalkForge, which Semaphore starts when needed or reuses if it is already running, with a voice picked from the ones installed. Voice input takes your question down as you speak, with speech recognition running in the page. See [docs/VOICE.md](docs/VOICE.md). |
 | **Themes** | Lazarette's ten presets, Surprise me and Make it yours (mode, accent, tint, shape, density, type, motion, pattern, contrast), with theme files that move between the two apps. |
 | **Regular reports and briefings** | A page you open every Monday keeps coming while you are away, for leadership to read; "Brief me" says what a page shows in a few sentences, each linked to its flag. |
+| **Calculated measures** | "cost per hull = labor cost / hulls": define a measure from other measures in words (Data > Measures, or in a brief) with `+ - * /` and brackets. Totals come from the inputs' totals, never by adding ratios, and the inputs can sit on different tables of one source (each table is read on its own and the rows lined up by the group values). See [docs/CALCULATED-MEASURES.md](docs/CALCULATED-MEASURES.md). |
+| **Leadership Q&A** | A question no reviewed answer covers is drafted live and marked *Drafted, not yet reviewed*; **Ask for review** sends it to an analyst, who accepts, edits or rejects it. **Alerts** fire once when a reviewed number with a red rule turns red ("tell me when labor cost goes red"). **Email this briefing** makes an unsent Outlook draft on this computer, or an .eml file, with the shared report attached, optionally every week; Semaphore never sends mail itself. **Answer quality** shows the share reviewed, the time to a reviewed answer and the open queue. See [docs/PLAYBOOK.md](docs/PLAYBOOK.md). |
 | **Combos and maps** | Bars with a line on its own scale; a US state tile map, your own region maps from a GeoJSON or TopoJSON file, and points from latitude and longitude, all drawn on this computer with no map service. See [docs/MAPS.md](docs/MAPS.md). |
 | **Page design and exports** | Restyle a page or one flag: palettes, gradients, glow, gauges, funnels, target lines, zoom and motion. Export to PDF, Excel with native charts, PowerPoint, Word, HTML, CSV or JSON. See [docs/DESIGN.md](docs/DESIGN.md). |
 | **Flag kits** | Save a set of flags as a kit and fly it on another catalog: each metric and field is matched by key, then label, then synonym, and anything that does not match arrives as an empty draft with a reason; a calculated measure travels with its formula and is made again over the matched inputs ([docs/FLAG_KITS.md](docs/FLAG_KITS.md)). |
@@ -145,7 +147,7 @@ Semaphore reads the shared names from the running, unlocked Lazarette over loopb
 - **Adding a lake table** reads the Glue catalog only: no scan, no cost.
 - **AWS keys never go in sources.json** (they are refused). Semaphore uses a session shared from Lazarette (`"vault": { "accessKeyId": "AWS_ACCESS_KEY_ID", "secretAccessKey": "AWS_SECRET_ACCESS_KEY", "sessionToken": "AWS_SESSION_TOKEN" }`), or else a short session from the environment that starts it (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`).
 
-The lake engine and the SQL desk are implemented on this development branch. Live AWS access needs valid session credentials, service permissions and a configured Athena workgroup; it is not part of the offline sample demo.
+The lake engine and the SQL desk are part of 0.4. Live AWS access needs valid session credentials, service permissions and a configured Athena workgroup; it is not part of the offline sample demo.
 
 ## Privacy and security in short
 
@@ -154,11 +156,27 @@ The lake engine and the SQL desk are implemented on this development branch. Liv
 - Custom chart widgets run in a sandboxed frame with an opaque origin and its own policy (no network, no eval: the code is loaded as a script made inside the frame). It cannot read the page, its storage, cookies or session token, and data reaches it only through checked messages. A widget could still send away the data it is given by navigating its own frame, so use library widgets only from people you trust with that data.
 - The local database's query path is read-only: the database is opened read-only, an authorizer allows only reads, and attaching other database files is refused. Scripts and imports use a separate connection, refuse attaching files, extensions and writes to Semaphore's own tables, and run in a transaction that rolls back on any error.
 - When Semaphore starts TalkForge, the token goes only into that process's environment, never onto its command line; Semaphore reuses a TalkForge that is already running and stops only the one it started.
+- Voice input's Whisper model files are served read-only from fixed `/stt/` paths without the session token (they are public model files, never data), and only the Whisper worker's own script may compile WebAssembly (`'wasm-unsafe-eval'`); the page's policy is unchanged.
+- Briefing email is drafts only: an unsent Outlook draft over COM on this computer, or an .eml file. There is no SMTP, Microsoft Graph or webhook code, and nothing is sent. Alerts, saved recipients, the saved briefing and drafts are plain files in the `alerts` and `mail` folders of your Semaphore folder.
 - CSV files are parsed in the browser. Database/lake queries connect to their configured services. Shared playbooks, frozen report editions and exported HTML can contain result data; treat them as data-bearing files.
 - AI payloads depend on the feature: drafting sends briefs and summarized catalog metadata; cleaning assistance sends up to 300 distinct values with counts; Qlik assistance sends the selected expression and field metadata; briefings send computed facts and chart titles. These are not full-table uploads, but can still contain business data. Fairlead's `local` route and privacy header are the default; explicitly changing the route/privacy settings can permit remote model processing.
-- No passwords in connection strings: use a DSN, Windows authentication, or a password shared from Lazarette. SQL is generated by Semaphore with bound, typed parameters, and the server refuses anything but a single `SELECT`.
+- No passwords in connection strings: use a DSN, Windows authentication, or a password shared from Lazarette. SQL is generated by Semaphore with bound, typed parameters, and the query path refuses anything but a single `SELECT`; only local-database scripts write, on their own guarded connection (above).
 - Hoists and the catalog are JSON files in your Semaphore folder. Saves are atomic, and a save over a copy someone else changed since you opened it is refused instead of overwriting their work.
 - The Fairlead key goes only to the process that really holds Fairlead's port (its PID is checked), never to a program that merely claims to be Fairlead.
+
+## Command line
+
+`Semaphore-CLI.bat <noun> <verb>` runs the headless work without the page or a running server, for scripts and Windows Task Scheduler (no admin rights). For example:
+
+```shell
+Semaphore-CLI.bat commands --json
+Semaphore-CLI.bat local import --file D:\data\work-orders.parquet
+Semaphore-CLI.bat pipeline run --id nightly-maintenance
+Semaphore-CLI.bat local export --id work_orders --format xlsx --file C:\out\work-orders.xlsx
+Semaphore-CLI.bat refresh run
+```
+
+The browser's own routes cannot be scripted: every `/api` call needs the session token only the page gets. Running a page's flags, profiling a table, model imports, page exports, S3 and alerts are in the page only for now. Every command and option: [docs/CLI.md](docs/CLI.md).
 
 ## Build and test
 
@@ -197,6 +215,15 @@ Server tests are Pester 5 (`Invoke-Pester tests\server`) under Windows PowerShel
 - [docs/FLAG_SPEC.md](docs/FLAG_SPEC.md): the catalog, hoist and flag formats
 - [docs/MAPS.md](docs/MAPS.md): combo charts, the US state tile map, region maps from GeoJSON or TopoJSON, and points
 - [docs/INTELLIGENCE_PROVIDERS.md](docs/INTELLIGENCE_PROVIDERS.md): what local rules understand, AI providers, and the contract
+- [docs/CALCULATED-MEASURES.md](docs/CALCULATED-MEASURES.md): calculated measures, their grammar, totals, and inputs on different tables
+- [docs/ONE_TO_MANY_JOINS.md](docs/ONE_TO_MANY_JOINS.md): splitting by the many side without double counting, and made fields there
+- [docs/DRILL_COMPARISONS.md](docs/DRILL_COMPARISONS.md): comparisons that follow a drill
+- [docs/FLAG_KITS.md](docs/FLAG_KITS.md): saving and flying flag kits, calculated measures included
+- [docs/DESIGN.md](docs/DESIGN.md) and [docs/SKINS.md](docs/SKINS.md): page design, looks and how the Fleet UI is applied
+- [docs/DATABRICKS.md](docs/DATABRICKS.md): Databricks SQL warehouses as a source
+- [docs/ARCHITECTURE-DIAGRAMS.md](docs/ARCHITECTURE-DIAGRAMS.md): diagrams of the layers and data paths
+- [docs/TECH-TEST-PROCEDURE.md](docs/TECH-TEST-PROCEDURE.md): a step-by-step test of a release on one workstation
+- [docs/README-STANDARD.md](docs/README-STANDARD.md): how this README is written
 - [docs/ROADMAP.md](docs/ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md)
 - [examples/fleet-maintenance/](examples/fleet-maintenance/): the sample catalog and hoist (synthetic)
 
