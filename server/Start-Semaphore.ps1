@@ -348,6 +348,9 @@ $script:Sem.AwsSettings = @{ S3 = $settings.s3; Aws = $settings.aws }
 if (-not $Refresh) { $script:Sem.PipelineScheduler = $true }
 # Voice input (settings voice.input): the microphone header and the /stt/ files follow it until the next start.
 $script:Sem.VoiceInput = [bool](Get-SemTalkForgeSettings -Root $root -Settings $settings).Input
+# Fairlead (settings fairlead.autoStart): started now in the background when a key is stored and it is not running,
+# so the first draft or question does not wait. A --refresh run does not start it.
+if (-not $Refresh) { [void](Start-SemFairleadAtLaunch -Root $root) }
 # Each link carries a fresh single-use launch code, never the session token (Http.ps1, Launch codes):
 # browser command lines and console transcripts are recorded on the workstation.
 function New-SemSessionLink {
