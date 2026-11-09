@@ -289,7 +289,7 @@ Context 'Port owner check (the key goes only to the process that holds the port)
         Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; ScriptPath = $script:FairleadPath } }
     }
 
-    It 'does not send the key when the id answer names no path' {
+    It 'does not send the key when the id answer names no path and the port owner does not run Fairlead''s start script' {
         $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }, @{ Status = 200; Body = '{}' })
         try {
             $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
@@ -297,8 +297,19 @@ Context 'Port owner check (the key goes only to the process that holds the port)
             $r.Status | Should -Be 502
             $j = $r.Body | ConvertFrom-Json
             $j.code | Should -Be 'ai-not-fairlead'
-            $j.error | Should -Match 'does not say which script it runs'
+            $j.error | Should -Match 'does not run Fairlead''s start script'
             $fake.Seen.Requests.Count | Should -Be 1
+        } finally { Stop-FakeFairlead $fake }
+    }
+
+    It 'sends the key to a Fairlead 0.1 that names no path when the port owner runs scripts\Start-Fairlead.ps1' {
+        Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; ScriptPath = 'C:\Fleet\Fairlead\scripts\Start-Fairlead.ps1' } }
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"tool":"fairlead","version":"0.1.0","pid":4168}' }, @{ Status = 200; Body = '{"choices":[{"message":{"content":"ok"}}]}' })
+        try {
+            $env:SEMAPHORE_AI_URL = $fake.Url; $env:SEMAPHORE_AI_KEY = $script:Key
+            $r = Invoke-Route -Path '/api/ai/v1/chat/completions' -Json $script:Chat -Root $script:Root
+            $r.Status | Should -Be 200
+            $fake.Seen.Requests.Count | Should -Be 2
         } finally { Stop-FakeFairlead $fake }
     }
 

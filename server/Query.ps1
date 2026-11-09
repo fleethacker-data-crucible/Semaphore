@@ -839,6 +839,7 @@ $script:Sem.Port = $Ctx.Port
 $script:SemJsonMode = $Ctx.JsonMode
 $script:Sem.VoiceInput = $Ctx.VoiceInput
 if ($null -ne $Ctx.TalkForge) { $script:SemTalkForge = $Ctx.TalkForge }   # the one TalkForge child, shared with the main loop
+if ($null -ne $Ctx.Fairlead) { $script:SemFairlead = $Ctx.Fairlead }     # when Fairlead was last started, shared so it is started once
 $script:Sem.Responded = $false
 try {
     $Client.SendTimeout = 30000
@@ -875,7 +876,7 @@ function Initialize-SemWorkers {
         RoutesPath = (Join-Path $here 'Routes.ps1'); QueryPath = (Join-Path $here 'Query.ps1')
         IntelligencePath = (Join-Path $here 'Intelligence.ps1'); LakePath = (Join-Path $here 'Lake.ps1'); VaultPath = (Join-Path $here 'Vault.ps1'); ConnectorsPath = (Join-Path $here 'Connectors.ps1'); LocalDbPath = (Join-Path $here 'LocalDb.ps1'); S3Path = (Join-Path $here 'S3.ps1'); Root = (Split-Path -Parent $here)
         Home = $script:Sem.Home; LogPath = $script:SemLogPath; Version = $script:Sem.Version; JsonMode = $script:SemJsonMode
-        Port = 0; AwsSettings = $script:Sem.AwsSettings; VoiceInput = $script:Sem.VoiceInput; TalkForge = $script:SemTalkForge
+        Port = 0; AwsSettings = $script:Sem.AwsSettings; VoiceInput = $script:Sem.VoiceInput; TalkForge = $script:SemTalkForge; Fairlead = $script:SemFairlead
     }
 }
 

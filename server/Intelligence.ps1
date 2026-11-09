@@ -143,6 +143,7 @@ function Get-SemAiStatus {
         keySource    = $Settings.KeySource
         expectedPath = [string]$Settings.ExpectedPath
         problem      = $problem
+        autoStart    = [bool](Get-SemFairleadSettings).AutoStart
         setup        = 'Open Fairlead > Clients and install a key for Semaphore (or run Set-SemaphoreAiKey.bat as a fallback). Until then, local rules draft every flag.'
     }
 }
@@ -369,6 +370,18 @@ function Test-SemAiProcessPath {
     return $false
 }
 
+function Get-SemFairleadProcessPath {
+    # For a Fairlead whose id answer has no "path": the process's -File script when it is ...\scripts\Start-Fairlead.ps1,
+    # else its executable when that is named Fairlead*.exe, else ''. Read from Win32_Process, never from the program's word.
+    param([int]$ProcessId)
+    $paths = Get-SemAiProcessPaths -ProcessId $ProcessId
+    $script = ConvertTo-SemAiNormalPath $paths.ScriptPath
+    if ($script -and $script -match '(?i)\\scripts\\Start-Fairlead\.ps1\z') { return $script }
+    $exe = ConvertTo-SemAiNormalPath $paths.ExecutablePath
+    if ($exe -and [IO.Path]::GetFileName($exe) -match '(?i)\Afairlead[\w.-]*\.exe\z') { return $exe }
+    return ''
+}
+
 function Test-SemAiIdentity {
     <#
       Port authority (edge-ops PORTS.md; the rule FleetPort.psm1 applies before it stops a process): before the key is sent,
@@ -422,8 +435,14 @@ function Test-SemAiIdentity {
         }
         $reported = Get-SemJsonProp $id 'path'
         if ($reported -isnot [string] -or -not $reported) {
-            Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead but reports no path' -f $u.Port)
-            return @{ Code = 'ai-not-fairlead'; Error = ('The program on port ' + $u.Port + ' says it is Fairlead but does not say which script it runs, so the Fairlead key was not sent. Update Fairlead.') }
+            # Fairlead 0.1 answers the id without "path" (edge-ops PORTS.md makes it optional). Then the path is read
+            # from the listening process itself and must be Fairlead's own start script (scripts\Start-Fairlead.ps1)
+            # or a Fairlead executable; a pinned fairleadPath still has to match it below.
+            $reported = Get-SemFairleadProcessPath -ProcessId $owner
+            if (-not $reported) {
+                Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead but reports no path, and it does not run Fairlead''s start script' -f $u.Port)
+                return @{ Code = 'ai-not-fairlead'; Error = ('The program on port ' + $u.Port + ' says it is Fairlead but does not run Fairlead''s start script, so the Fairlead key was not sent. Start Fairlead with Launch-Fairlead.bat.') }
+            }
         }
         if (-not (Test-SemAiProcessPath -ProcessId $owner -Path $reported)) {
             Write-SemLog 'WARN' ('AI: the program on port {0} (PID {1}) reports a path that is not what that process runs' -f $u.Port, $owner)
@@ -474,6 +493,8 @@ function Invoke-SemAiRequest {
         if ($why) { Send-SemError 400 'bad-request' $why; return }
     }
     $notFairlead = Test-SemAiIdentity -Settings $s
+    # Nothing on Fairlead's port: start it (Start-SemFairlead) and wait for it rather than send the person off to start it.
+    if ($notFairlead -and $notFairlead.Code -eq 'ai-down') { $notFairlead = Wait-SemFairleadIdentity -Settings $s -Root $Root }
     if ($notFairlead) {
         Write-SemLog 'WARN' ('AI request not sent: ' + $notFairlead.Code)
         if ($Req.Path -eq '/api/ai/check') { Send-SemJson 200 ([ordered]@{ ok = $false; code = $notFairlead.Code; detail = $notFairlead.Error }); return }
@@ -519,6 +540,109 @@ function Invoke-SemAiRequest {
     $extra = @(); if ($target) { $extra += 'X-Fairlead-Target: ' + $target }
     if ($fallback) { $extra += 'X-Fairlead-Fallback: ' + $fallback }
     Send-SemBytes -Status 200 -ContentType 'application/json; charset=utf-8' -Bytes $r.Bytes -ExtraHeaders $extra
+}
+
+# ---- Starting Fairlead when it is needed -----------------------------------------------------------
+# Drafting and the assistant need Fairlead, so Semaphore starts it rather than telling the person to run
+# Launch-Fairlead.bat: once when Semaphore starts with a Fairlead key stored, and again when a request finds
+# nothing on Fairlead's port (the request then waits for it, up to $script:SemFairleadWaitSeconds). Fairlead is
+# a shared tray app that other Fleet tools use too, so it is started detached through the shell (no handles or
+# console inherited), hidden, with its tray icon and without opening the browser, and it is never stopped when
+# Semaphore stops. Its own single-instance check means a second start only reuses the one running. Nothing
+# secret is passed: Fairlead reads its own config. The key still goes only to a verified Fairlead
+# (Test-SemAiIdentity), so starting it changes nothing about who may receive the key. settings "fairlead"
+# (Get-SemFairleadSettings) turns it off or names the folder.
+if ($null -eq $script:SemFairlead) { $script:SemFairlead = [hashtable]::Synchronized(@{ StartedAt = [datetime]::MinValue; Message = '' }) }
+$script:SemFairleadStartSeconds = 60     # a start this recent is still "starting": never start twice
+$script:SemFairleadWaitSeconds = 40      # how long a request waits for a Fairlead it just started
+
+function Test-SemFairleadListening {
+    # $true when something accepts a connection on Fairlead's loopback port (who it is, Test-SemAiIdentity decides).
+    param([string]$Url, [int]$TimeoutMs = 400)
+    try { $u = [Uri]$Url } catch { return $false }
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect('127.0.0.1', $u.Port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        $c.EndConnect($ar)
+        return $true
+    } catch { return $false } finally { $c.Close() }
+}
+
+function New-SemFairleadStartInfo {
+    # Windows PowerShell running Fairlead's own start script, hidden, through the shell so the long-lived
+    # Fairlead inherits no handle of this server. Separate so the tests can check exactly what would run.
+    param([string]$Folder)
+    $si = New-Object Diagnostics.ProcessStartInfo
+    $si.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $si.Arguments = ('-STA -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" --no-browser' -f (Join-Path $Folder 'scripts\Start-Fairlead.ps1'))
+    $si.WorkingDirectory = $Folder
+    $si.UseShellExecute = $true
+    $si.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    return $si
+}
+
+function Start-SemFairlead {
+    # Starts Fairlead unless it answers on its port or was started in the last minute. Returns
+    # @{ State = 'running' | 'starting' | 'unavailable'; Message }.
+    param([string]$Root = (Get-SemRoot), $Settings = $null)
+    if ($null -eq $Settings) { $Settings = Get-SemAiSettings -Root $Root }
+    $f = $script:SemFairlead
+    [Threading.Monitor]::Enter($f.SyncRoot)
+    try {
+        if (Test-SemFairleadListening -Url $Settings.Url) { return @{ State = 'running'; Message = '' } }
+        if (((Get-Date) - $f.StartedAt).TotalSeconds -lt $script:SemFairleadStartSeconds) { return @{ State = 'starting'; Message = 'Fairlead is starting.' } }
+        $fs = Get-SemFairleadSettings -Root $Root
+        $no = { param($m) $f.Message = $m; return @{ State = 'unavailable'; Message = $m } }
+        if (-not $fs.AutoStart) { return (& $no ('Fairlead is not running at ' + $Settings.Url + ', and starting it automatically is off (fairlead.autoStart in config\settings.json). Start it with Launch-Fairlead.bat.')) }
+        try { $u = [Uri]$Settings.Url } catch { $u = $null }
+        if ($null -eq $u -or $u.Port -ne 8776) { return (& $no ('Fairlead is not running at ' + $Settings.Url + '. Semaphore starts Fairlead only on its own address (port 8776); start it with Launch-Fairlead.bat.')) }
+        if ($fs.FolderProblem) { return (& $no $fs.FolderProblem) }
+        if (-not $fs.Folder) {
+            if ($fs.FolderSetting) { return (& $no ('Fairlead was not found in {0} (no scripts\Start-Fairlead.ps1 there). Fix fairlead.folder in config\settings.json or SEMAPHORE_FAIRLEAD_FOLDER, or start it with Launch-Fairlead.bat.' -f $fs.FolderSetting)) }
+            return (& $no 'Fairlead is not running, and it was not found next to the Semaphore folder or in your Projects folder. Set fairlead.folder in config\settings.json (or SEMAPHORE_FAIRLEAD_FOLDER), or start it with Launch-Fairlead.bat.')
+        }
+        try {
+            $p = [Diagnostics.Process]::Start((New-SemFairleadStartInfo -Folder $fs.Folder))
+            if ($p) { $p.Dispose() }
+            $f.StartedAt = Get-Date; $f.Message = ''
+            Write-SemLog 'INFO' ('Starting Fairlead from ' + $fs.Folder)
+            return @{ State = 'starting'; Message = 'Fairlead is starting.' }
+        } catch {
+            Write-SemLog 'WARN' ('Fairlead could not be started: ' + $_.Exception.GetType().Name)
+            return (& $no ('Fairlead could not be started (' + $_.Exception.GetType().Name + '). Start it with Launch-Fairlead.bat to see why.'))
+        }
+    } finally { [Threading.Monitor]::Exit($f.SyncRoot) }
+}
+
+function Start-SemFairleadAtLaunch {
+    # When Semaphore starts: start Fairlead in the background if a key is stored and nothing is on its port,
+    # so the first draft or question does not wait. Never throws; never waits.
+    param([string]$Root = (Get-SemRoot))
+    try {
+        $s = Get-SemAiSettings -Root $Root
+        if ($s.Problem -or -not $s.Key) { return $null }
+        $r = Start-SemFairlead -Root $Root -Settings $s
+        if ($r.State -eq 'unavailable') { Write-SemLog 'INFO' ('Fairlead not started: ' + $r.Message) }
+        return $r
+    } catch { Write-SemLog 'WARN' ('Fairlead start check failed: ' + $_.Exception.GetType().Name); return $null }
+}
+
+function Wait-SemFairleadIdentity {
+    # After nothing was on Fairlead's port: start it and wait until it is verified. Returns what
+    # Test-SemAiIdentity returns at the end ($null when Fairlead is ready), with the start's reason when it could not start.
+    param($Settings, [string]$Root = (Get-SemRoot), [int]$Seconds = $script:SemFairleadWaitSeconds)
+    $start = Start-SemFairlead -Root $Root -Settings $Settings
+    if ($start.State -eq 'unavailable') { return @{ Code = 'ai-down'; Error = $start.Message } }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $last = $null
+    do {
+        $last = Test-SemAiIdentity -Settings $Settings
+        # While it boots its port can answer before its id does: keep waiting unless the port check itself is missing.
+        if ($null -eq $last -or $last.Code -eq 'ai-port-check') { return $last }
+        Start-Sleep -Milliseconds 500
+    } while ($clock.Elapsed.TotalSeconds -lt $Seconds)
+    return @{ Code = 'ai-down'; Error = ('Fairlead was started but did not answer at ' + $Settings.Url + ' within ' + $Seconds + ' s. Open Fairlead from its tray icon to see why.') }
 }
 
 # ---- Spoken answers (TalkForge) ---------------------------------------------------------------

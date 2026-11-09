@@ -72,6 +72,8 @@ function Get-SemDefaultSettings {
         s3 = $null; aws = $null
         # TalkForge for spoken answers and voice input (Get-SemTalkForgeSettings): autoStart, folder, input.
         voice = $null
+        # Fairlead started when it is needed (Get-SemFairleadSettings): autoStart, folder.
+        fairlead = $null
     }
 }
 
@@ -101,7 +103,7 @@ function Merge-SemSettingsFile {
     if ($names -contains 'skin' -and $null -ne $j.skin -and ([string]$j.skin) -cmatch '\A([a-z0-9-]{1,32})?\z') { $Settings.skin = [string]$j.skin }
     if ($names -contains 'playbookReviewer' -and $null -ne $j.playbookReviewer) { $Settings.playbookReviewer = ([string]$j.playbookReviewer).Trim() -replace '[^\w .@-]', '' }
     if ($names -contains 'fairleadPath' -and $null -ne $j.fairleadPath) { $Settings.fairleadPath = ([string]$j.fairleadPath).Trim() }
-    foreach ($k in @('s3', 'aws', 'voice')) { if ($names -contains $k -and $j.$k -is [Management.Automation.PSCustomObject]) { $Settings[$k] = $j.$k } }
+    foreach ($k in @('s3', 'aws', 'voice', 'fairlead')) { if ($names -contains $k -and $j.$k -is [Management.Automation.PSCustomObject]) { $Settings[$k] = $j.$k } }
     foreach ($k in @('heartbeatTimeoutSec', 'leavingGraceSec', 'firstHeartbeatSec', 'queryWorkers', 'refreshTimeoutMin')) {
         if ($names -contains $k -and $null -ne $j.$k) {
             $n = 0
@@ -179,6 +181,61 @@ function Get-SemTalkForgeSettings {
     $problem = ''
     if ($folder) { $problem = Test-SemTalkForgeFolderText $folder }
     return @{ AutoStart = $autoStart; Input = $voiceInput; FolderSetting = $folder; FolderSource = $source; FolderProblem = $problem; Folder = (Find-SemTalkForge -Configured $folder -SemaphoreRoot $Root) }
+}
+
+# Fairlead (AI drafting and the assistant), started when it is needed, as TalkForge is:
+# settings "fairlead": { "autoStart": true, "folder": "" }.
+#   autoStart  start Fairlead (hidden, with its tray icon) when Semaphore starts with a Fairlead key stored,
+#              and when a drafting or assistant request finds nothing on Fairlead's port.
+#   folder     the Fairlead folder (it has scripts\Start-Fairlead.ps1). Empty: the folder of settings
+#              "fairleadPath" when that is Fairlead's Start-Fairlead.ps1, else a Fairlead folder next to the
+#              Semaphore folder or in %USERPROFILE%\Projects. SEMAPHORE_FAIRLEAD_FOLDER overrides it.
+function Test-SemFairleadFolderText {
+    # '' when a configured Fairlead folder is a full local path, else the reason.
+    param([string]$Path)
+    if ($Path -notmatch '\A[A-Za-z]:\\' -or $Path -match '[\r\n"<>|?*]' -or $Path -match '(\A|\\)\.\.(\\|\z)') { return 'The Fairlead folder must be a full path such as C:\Users\you\Projects\Fairlead.' }
+    return ''
+}
+
+function Find-SemFairlead {
+    # The Fairlead folder: the configured one (no fallback when it is set), else the folder of a pinned
+    # fairleadPath, else a Fairlead folder next to the Semaphore folder or in %USERPROFILE%\Projects.
+    # A folder counts when it has scripts\Start-Fairlead.ps1.
+    param([string]$Configured = '', [string]$PinnedPath = '', [string]$SemaphoreRoot = (Get-SemRoot))
+    $candidates = @()
+    if ($Configured) {
+        if (Test-SemFairleadFolderText $Configured) { return '' }
+        $candidates = @($Configured.TrimEnd('\'))
+    } else {
+        if ($PinnedPath -and $PinnedPath -match '(?i)\\scripts\\Start-Fairlead\.ps1\z') { $candidates += (Split-Path -Parent (Split-Path -Parent $PinnedPath)) }
+        if ($SemaphoreRoot) { $candidates += (Join-Path (Split-Path -Parent $SemaphoreRoot) 'Fairlead') }
+        if ($env:USERPROFILE) { $candidates += (Join-Path $env:USERPROFILE 'Projects\Fairlead') }
+    }
+    foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath (Join-Path $c 'scripts\Start-Fairlead.ps1') -PathType Leaf)) { return $c } }
+    return ''
+}
+
+function Get-SemFairleadSettings {
+    # AutoStart, FolderSetting (as configured), FolderSource (environment | settings | ''), FolderProblem, Folder (found, or '').
+    param([string]$Root = (Get-SemRoot), $Settings = $null)
+    if (-not $Root) { $Root = Get-SemRoot }
+    if ($null -eq $Settings) { try { $Settings = Read-SemSettings -Root $Root } catch { $Settings = Get-SemDefaultSettings } }
+    $autoStart = $true; $folder = ''
+    $f = $Settings.fairlead
+    if ($f -is [Management.Automation.PSCustomObject]) {
+        $p = $f.PSObject.Properties
+        if ($null -ne $p['autoStart'] -and $p['autoStart'].Value -is [bool]) { $autoStart = [bool]$p['autoStart'].Value }
+        if ($null -ne $p['folder'] -and $null -ne $p['folder'].Value) { $folder = ([string]$p['folder'].Value).Trim() }
+    }
+    $source = ''
+    $fromEnv = Get-SemEnvValue -Name 'SEMAPHORE_FAIRLEAD_FOLDER' -Root $Root
+    if ($fromEnv) { $folder = ([string]$fromEnv).Trim(); $source = 'environment' }
+    elseif ($folder) { $source = 'settings' }
+    $problem = ''
+    if ($folder) { $problem = Test-SemFairleadFolderText $folder }
+    $pinned = ''
+    try { $pinned = [string]$Settings.fairleadPath } catch { $pinned = '' }
+    return @{ AutoStart = $autoStart; FolderSetting = $folder; FolderSource = $source; FolderProblem = $problem; Folder = (Find-SemFairlead -Configured $folder -PinnedPath $pinned -SemaphoreRoot $Root) }
 }
 
 # ---------------------------------------------------------------------------
