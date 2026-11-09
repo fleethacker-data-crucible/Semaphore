@@ -156,6 +156,12 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The busy line, and the guard that keeps a second draft or import from starting during one (#91).
   const { busy, run: runBusy, say: sayBusy } = useBusy();
+  const viewRef = useRef<View>('builder');
+  const heldNotes = useRef<Array<[string, Parameters<typeof notify>[1]]>>([]);
+  const notifyBuilder = useCallback((text: string, opts?: Parameters<typeof notify>[1]) => {
+    if (viewRef.current === 'builder') notify(text, opts);
+    else heldNotes.current.push([text, opts]);
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -451,8 +457,8 @@ export function App() {
       const by = outcome.draft.answeredBy;
       const credit = by ? `Drafted by ${by}, Fairlead's local fallback: ${ai?.model ?? 'the model asked for'} did not answer.` : `Drafted by ${provider.label}.`;
       const draft = provider.local || outcome.fallbackReason ? outcome.draft : { ...outcome.draft, notes: [credit, ...outcome.draft.notes] };
-      if (outcome.fallbackReason) notify(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
-      else if (by) notify(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
+      if (outcome.fallbackReason) notifyBuilder(`${provider.label} could not draft this flag: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
+      else if (by) notifyBuilder(`${ai?.model ?? 'The model asked for'} did not answer, so Fairlead's local fallback (${by}) drafted this flag.`);
       const next = applyFlagDraft(selected, draft);
       // A fresh draft takes the drafted title, and so does a redraft whose title is still the one the
       // last draft gave it; a title the analyst typed is kept.
@@ -471,8 +477,8 @@ export function App() {
       // No measure found: the "Why it didn't draft" card says what was understood and what to do next.
       if (!draft.binding) setDraftMiss({ flagId: selected.id, brief: next.brief, note: draft.notes[draft.notes.length - 1] ?? 'Nothing in the brief matched the catalog.' });
       else setDraftMiss((m) => (m?.flagId === selected.id ? null : m));
-    }).catch((e: unknown) => notify(`Could not draft this flag. ${describeError(e)}`, { tone: 'error' }));
-  }, [selected, index, hoist, autoKinds, change, ai, useAi, teamStyle, aiExamples, runBusy]);
+    }).catch((e: unknown) => notifyBuilder(`Could not draft this flag. ${describeError(e)}`, { tone: 'error' }));
+  }, [selected, index, hoist, autoKinds, change, ai, useAi, teamStyle, aiExamples, runBusy, notifyBuilder]);
 
   // "Use <measure>" on the draft-miss card: draft again once the new brief is in the hoist.
   const [redraftFor, setRedraftFor] = useState<string | null>(null);
@@ -494,11 +500,11 @@ export function App() {
         change(next);
         setSelections({});
         setSelectedId(null);
-        if (outcome?.fallbackReason) notify(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
-        else if (draft.notes.length) notify(draft.notes[0]!);
-      }).catch((e: unknown) => notify(`Could not draft the page. ${describeError(e)}`, { tone: 'error' }));
+        if (outcome?.fallbackReason) notifyBuilder(`${provider.label} could not draft the page: ${outcome.fallbackReason} Local rules drafted it instead.`, { tone: 'error' });
+        else if (draft.notes.length) notifyBuilder(draft.notes[0]!);
+      }).catch((e: unknown) => notifyBuilder(`Could not draft the page. ${describeError(e)}`, { tone: 'error' }));
     },
-    [hoist, index, change, ai, useAi, teamStyle, aiExamples, runBusy],
+    [hoist, index, change, ai, useAi, teamStyle, aiExamples, runBusy, notifyBuilder],
   );
 
   const toggleExamples = useCallback(() => {
@@ -861,9 +867,17 @@ export function App() {
   // (usePlaybook, user and the team style are set up near the top: the draft handlers use them.)
   const currentView: View = view ?? 'builder';
   const setView = useCallback((v: 'builder' | 'ask') => {
+    viewRef.current = v;
     setViewState(v);
     writeLocal(K.view, v);
   }, []);
+  // A draft started in the builder can finish after the analyst has gone to the leadership view: its
+  // messages wait for the builder instead of appearing over the leadership view.
+  useEffect(() => {
+    viewRef.current = currentView;
+    if (currentView !== 'builder' || !heldNotes.current.length) return;
+    for (const [text, opts] of heldNotes.current.splice(0)) notify(text, opts);
+  }, [currentView]);
 
   useEffect(() => {
     if (!playbook.loaded || currentView !== 'builder') return;
@@ -1219,7 +1233,8 @@ export function App() {
       )}
       <SessionScreen session={session} view={currentView === 'ask' ? 'ask' : 'builder'} onRetry={session.retry} />
       <ConfirmHost />
-      <Toasts busy={busy} />
+      {/* The busy line belongs to the builder's own work (a draft in flight), not the leadership view. */}
+      <Toasts busy={currentView === 'builder' ? busy : null} />
     </>
   );
 
