@@ -211,7 +211,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
   const [tab, setTab] = useState<TabId>('appearance');
   const tabs: Array<{ id: TabId; label: string }> = [
     { id: 'appearance', label: 'Appearance' },
-    ...(p.hasServer ? [{ id: 'connections' as const, label: 'Connections' }, { id: 'lazarette' as const, label: 'Lazarette' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
+    ...(p.hasServer ? [{ id: 'lazarette' as const, label: 'Lazarette' }, { id: 'connections' as const, label: 'Connections' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
     { id: 'sql', label: 'SQL' },
     ...(p.hasServer ? [{ id: 'maps' as const, label: 'Maps' }] : []),
     { id: 'features', label: 'Features' },
