@@ -277,13 +277,15 @@ export function BriefHints({ value, index, onChange, briefId }: { value: string;
 
 export function BriefLegend() {
   return (
-    <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-ink-2" aria-label="Highlight key">
+    // Each kind is shown as its own name, highlighted exactly as it is in the brief (tint and underline).
+    <ul className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]" aria-label="Highlight key">
+      <li className="text-ink-3" aria-hidden="true">
+        Key
+      </li>
       {LEGEND.map(([cls, text, how]) => (
-        <li key={cls} className="flex items-center gap-1" title={`${text}: tinted, with a ${how}`}>
-          <span className={`hl ${cls} hl-swatch`} aria-hidden="true">
-            abc
-          </span>
-          {text}
+        <li key={cls} title={`${text}: tinted, with a ${how}`}>
+          <span className={`hl ${cls} hl-key`}>{text}</span>
+          <span className="sr-only">, {how}</span>
         </li>
       ))}
     </ul>

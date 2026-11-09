@@ -69,6 +69,39 @@ test('the guide finds the right topic and the system prompt marks untrusted part
   assert.equal(guideAnswer('how do I pair with lazarette')[0]!.topic, 'Lazarette pairing');
   assert.equal(guideAnswer('compare with last year')[0]!.topic, 'Compare periods');
   assert.deepEqual(guideAnswer('?!'), []);
+  assert.deepEqual(guideAnswer('how do I do this'), [], 'filler words alone pick nothing');
+});
+
+test('the guide answers what Semaphore does, forgives typos and word endings, and covers the newer features', () => {
+  for (const q of ['what does semaphor do?', 'What is Semaphore', 'what can you do', 'give me an overview']) assert.equal(guideAnswer(q)[0]!.topic, 'What Semaphore does', q);
+  const cases: Array<[string, string]> = [
+    ['how do I set up a pipline', 'Pipelines'],
+    ['exporting to powerpoint', 'Export and share'],
+    ['can I load a parquet file with 20 million rows', 'Local database and big files'],
+    ['connect to an s3 bucket', 'Amazon RDS and S3'],
+    ['import my power bi model', 'Import a model'],
+    ['make a calculated measure for cost per hull', 'Calculated measures'],
+    ['split a column into two', 'Cleaning data'],
+    ['tell me when labor cost goes red', 'Alerts'],
+    ['email the briefing through outlook', 'Briefing email'],
+    ['how do I move flags around freely', 'Layout'],
+    ['restore an older version of the page', 'Page snapshots'],
+    ['show cost on a map by state', 'More charts and maps'],
+    ['run a sql script', 'SQL desk and scripts'],
+    ['forecast next quarter', 'Predictions'],
+    ['talk to it with my microphone', 'Voice'],
+    ['is there a command line', 'Command line'],
+  ];
+  for (const [q, topic] of cases) assert.equal(guideAnswer(q)[0]?.topic, topic, q);
+});
+
+test('when nothing fits, the reply lists what the guide covers', async () => {
+  const a = new Assistant(async () => ({}));
+  await a.send('zzz qqq', { status: null, on: true }, null);
+  assert.match(a.messages.at(-1)!.content, /I can tell you about: what semaphore does, draft a flag/);
+});
+
+test('the system prompt carries every guide topic', () => {
   const sys = systemPrompt(page);
   assert.match(sys, /untrusted/);
   for (const g2 of GUIDE) assert.ok(sys.includes(g2.topic));
