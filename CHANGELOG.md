@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 (2026-11-08)
 
 - **Fairlead starts when it is needed** (docs/INTELLIGENCE_PROVIDERS.md, "Started when needed"): drafting and the assistant no longer stop at "Fairlead is not running … Start it with Launch-Fairlead.bat". With a Fairlead key stored, Semaphore starts Fairlead in the background when it starts, and a draft, question or Check that finds nothing on Fairlead's port starts it and waits for it (up to 40 s). Fairlead runs detached and hidden with its tray icon, keeps running when Semaphore stops (other tools share it) and is never started twice; the key still goes only to a verified Fairlead. Settings `fairlead`: `autoStart` (on) and `folder` (or `SEMAPHORE_FAIRLEAD_FOLDER`; empty finds it from `fairleadPath`, next to Semaphore or in your Projects folder). `GET /api/ai` reports `autoStart`.
 
