@@ -101,7 +101,9 @@ Describe 'Starting Fairlead' {
         (Start-SemFairlead -Root $root -Settings @{ Url = "http://127.0.0.1:$port/v1" }).Message | Should -Match 'port 8776'
     }
 
-    It 'starts the found Fairlead once, and a second ask within a minute only says it is starting' -Skip:(Test-SemFairleadListening -Url 'http://127.0.0.1:8776/v1') {
+    It 'starts the found Fairlead once, and a second ask within a minute only says it is starting' {
+        # Decided at run time: the server functions are loaded in BeforeAll, after discovery.
+        if (Test-SemFairleadListening -Url 'http://127.0.0.1:8776/v1') { Set-ItResult -Skipped -Because 'a real Fairlead holds port 8776 on this computer'; return }
         $root = New-SemRoot
         $fl = New-FakeFairlead (Join-Path (Split-Path -Parent $root) 'Fairlead')
         $s = @{ Url = 'http://127.0.0.1:8776/v1' }
