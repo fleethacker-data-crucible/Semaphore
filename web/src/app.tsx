@@ -739,14 +739,15 @@ export function App() {
 
   // A Qlik expression Semaphore could not read becomes a flag with it in the brief, to draft.
   const addBriefFlag = useCallback(
-    (title: string, brief: string) => {
+    (title: string, brief: string, kind?: FlagKind) => {
       const id = newId();
+      const size = kind ? DEFAULT_SIZE[kind] : { w: 4, h: 4 };
       change((h) => {
         const items = h.flags.map((f) => ({ id: f.id, layout: f.layout }));
-        const flag: Flag = { id, kind: 'bar', title, brief, layout: findSlot(items, 4, 4, h.grid.cols), binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
+        const flag: Flag = { id, kind: kind ?? 'bar', title, brief, layout: findSlot(items, size.w, size.h, h.grid.cols), binding: null, behavior: emptyBehavior(), status: 'empty', notes: [] };
         return { ...h, flags: [...h.flags, flag] };
       });
-      setAutoKinds((x) => ({ ...x, [id]: true }));
+      setAutoKinds((x) => ({ ...x, [id]: !kind }));
       setSelectedId(id);
       notify(`Added "${title}" as a flag: select Draft to let Semaphore work it out.`);
     },
@@ -1231,6 +1232,17 @@ export function App() {
           </Suspense>
         </PanelBoundary>
         <ShakedownAskMark />
+        {(assistantOrb || assistantWanted) && (
+          <Suspense fallback={null}>
+            <AssistantRoot
+              orb={assistantOrb}
+              ai={ai}
+              aiOn={!!ai?.configured && useAi}
+              source={{ mode: 'leadership', entries: playbook.entries, snapshots: playbook.snapshots, waiting: playbook.questions.filter((x) => x.status === 'open').length, index }}
+              edits={null}
+            />
+          </Suspense>
+        )}
         {overlays}
       </>
     );
@@ -1716,12 +1728,7 @@ export function App() {
       )}
       {(assistantOrb || assistantWanted) && (
         <Suspense fallback={null}>
-          <AssistantRoot
-            orb={assistantOrb}
-            ai={ai}
-            aiOn={!!ai?.configured && useAi}
-            page={{ title: hoist.title, brief: hoist.brief, flags: hoist.flags.map((f) => ({ title: f.title, kind: f.kind, brief: f.brief })) }}
-          />
+          <AssistantRoot orb={assistantOrb} ai={ai} aiOn={!!ai?.configured && useAi} source={{ mode: 'builder', hoist, index }} edits={{ change, remove: removeFlag, add: addBriefFlag, select: setSelectedId, redraft: setRedraftFor, leadership: () => setView('ask') }} />
         </Suspense>
       )}
 

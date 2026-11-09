@@ -35,7 +35,7 @@ BeforeAll {
     function script:Start-FakeLazarette {
         # POST /peer/tools/v1/secrets as Lazarette answers it. $S.Mode: ok | locked | not-paired | other-program | rate-limited | bad-seal.
         $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start()
-        $state = [hashtable]::Synchronized(@{ Mode = 'ok'; ToolId = $script:ToolId; Secret = $script:Secret; Shares = @{}; Heads = (New-Object Collections.ArrayList); Requests = (New-Object Collections.ArrayList); Proofs = (New-Object Collections.ArrayList) })
+        $state = [hashtable]::Synchronized(@{ Mode = 'ok'; StateCall = $false; ToolId = $script:ToolId; Secret = $script:Secret; Shares = @{}; Heads = (New-Object Collections.ArrayList); Requests = (New-Object Collections.ArrayList); Proofs = (New-Object Collections.ArrayList) })
         $ps = [powershell]::Create()
         [void]$ps.AddScript({
             param($L, $S)
@@ -56,6 +56,18 @@ BeforeAll {
             function Invoke-Answer($St, [string]$Head, $J) {
                 if ($Head -notmatch '(?m)^X-Fleet-Peer: lazarette-tool/1\r?$') { Send-State $St 400 'peer-header' 'Send X-Fleet-Peer: lazarette-tool/1.'; return }
                 if ($Head -match '(?mi)^Origin:') { Send-State $St 403 'origin' 'Browser requests are refused.'; return }
+                if ($Head -match '^POST /peer/tools/v1/state ') {
+                    # The live state call (Lazarette pair-from-tool): an older Lazarette has none and answers 404.
+                    if (-not $S.StateCall) { Send-J $St 404 ([ordered]@{ error = 'not-found'; message = 'Unknown route.' }); return }
+                    if ($S.Mode -eq 'locked') { Send-J $St 200 ([ordered]@{ state = 'locked' }); return }
+                    $smsg = ('lazarette-tools-v1', 'POST', '/peer/tools/v1/state', [string]$J.tool, [string]$J.time, [string]$J.nonce) -join "`n"
+                    $sexpect = Get-B (Get-H $S.Secret ([Text.Encoding]::UTF8.GetBytes($smsg)))
+                    if ($S.Mode -eq 'not-paired' -or [string]$J.tool -ne $S.ToolId -or $sexpect -ne [string]$J.proof) { Send-J $St 200 ([ordered]@{ state = 'not-paired' }); return }
+                    $sstate = 'ok'; if ($S.Mode -eq 'expired') { $sstate = 'expired' }
+                    $smac = Get-B (Get-H $S.Secret ([Text.Encoding]::UTF8.GetBytes((('lazarette-tools-v1 state', $S.ToolId, [string]$J.nonce, $sstate) -join "`n"))))
+                    if ($S.Mode -eq 'bad-seal') { $smac = Get-B (New-Object byte[] 32) }
+                    Send-J $St 200 ([ordered]@{ state = $sstate; nonce = [string]$J.nonce; mac = $smac }); return
+                }
                 if ($S.Mode -eq 'locked') { Send-State $St 423 'locked' 'Lazarette is locked. Unlock it in the browser.'; return }
                 if ($S.Mode -eq 'rate-limited') { Send-State $St 429 'rate-limited' 'Too many failed requests. Try again in 60 seconds.'; return }
                 $names = @($J.names | ForEach-Object { [string]$_ })
@@ -438,6 +450,63 @@ Describe 'Status: names and states only' {
         $st = Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(1)
         $script:Fake.State.Requests.Count | Should -Be ($n + 1)
         $st.notShared[0].name | Should -Be 'OTHER_PASSWORD'
+    }
+}
+
+Describe 'Status asks Lazarette even when no source reads a share' {
+    BeforeAll { Set-Pairing }
+    BeforeEach {
+        Clear-SemVaultStatusCache
+        $script:Fake.State.Mode = 'ok'
+        $script:Fake.State.StateCall = $false
+        $script:Fake.State.Shares = @{}
+        $env:LAZARETTE_PORT = [string]$script:Fake.Port
+        $script:StatusHome = Join-Path $TestDrive ('st0-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $script:StatusHome | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:StatusHome 'sources.json') -Encoding UTF8 -Value '[{"id":"plain","provider":"odbc","connection":"DSN=y"}]'
+    }
+    AfterAll { $script:Fake.State.StateCall = $false; $script:Fake.State.Mode = 'ok' }
+    It 'uses the state call when Lazarette has it: <Mode> -> <Checked>' -TestCases @(
+        @{ Mode = 'ok'; Checked = 'ok'; Paired = $true; Problem = '' }
+        @{ Mode = 'expired'; Checked = 'expired'; Paired = $true; Problem = '*Allow*' }
+        @{ Mode = 'not-paired'; Checked = 'not-paired'; Paired = $false; Problem = '*pair Semaphore again*' }
+        @{ Mode = 'locked'; Checked = 'locked'; Paired = $true; Problem = '*locked*' }
+    ) {
+        $script:Fake.State.StateCall = $true
+        $script:Fake.State.Mode = $Mode
+        $script:Fake.State.Heads.Clear()
+        $st = Get-SemVaultStatus -HomeDir $script:StatusHome -NoCache
+        $st.checked | Should -Be $Checked
+        $st.paired | Should -Be $Paired
+        if ($Problem) { $st.problem | Should -BeLike $Problem } else { $st.problem | Should -BeNullOrEmpty }
+        @($script:Fake.State.Heads | Where-Object { $_ -match '^POST /peer/tools/v1/state ' }).Count | Should -Be 1
+        @($script:Fake.State.Heads | Where-Object { $_ -match '^POST /peer/tools/v1/secrets ' }).Count | Should -Be 0
+    }
+    It 'refuses a state answer that is not signed for this pairing' {
+        $script:Fake.State.StateCall = $true
+        $script:Fake.State.Mode = 'bad-seal'
+        $st = Get-SemVaultStatus -HomeDir $script:StatusHome -NoCache
+        $st.checked | Should -Be 'error'
+        $st.problem | Should -Not -BeNullOrEmpty
+    }
+    It 'falls back to one unshared name when Lazarette has no state call, and reads no value' {
+        $script:Fake.State.Requests.Clear()
+        $st = Get-SemVaultStatus -HomeDir $script:StatusHome -NoCache
+        $st.checked | Should -Be 'ok'
+        $st.paired | Should -BeTrue
+        $st.locked | Should -BeFalse
+        $last = $script:Fake.State.Requests[$script:Fake.State.Requests.Count - 1]
+        @($last.Names) | Should -Be @('SEMAPHORE_PAIRING_CHECK')
+        $script:Fake.State.Mode = 'not-paired'
+        $st = Get-SemVaultStatus -HomeDir $script:StatusHome -NoCache
+        $st.checked | Should -Be 'not-paired'
+        $st.paired | Should -BeFalse
+    }
+    It 'keeps the answer for a minute' {
+        $t0 = Get-Date
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0)
+        $n = $script:Fake.State.Heads.Count
+        [void](Get-SemVaultStatus -HomeDir $script:StatusHome -Now $t0.AddSeconds(20))
+        $script:Fake.State.Heads.Count | Should -Be $n
     }
 }
 

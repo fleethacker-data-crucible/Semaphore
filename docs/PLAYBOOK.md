@@ -48,6 +48,10 @@ See [Drafted answers, alerts and the briefing email](#drafted-answers-alerts-and
 
 Each answer offers follow-up chips ("by region", "vs last year", "top 10"), the plain-English readback that is already on the back of every flag, and its "worth a look" insights.
 
+**Deleting asks.** Each answer card has a delete button: one that shows nothing (no answer yet, or no rows) goes at once, one that shows an answer asks first. Deleting an empty one also takes its question out of the analysts' queue. **Your asks** lists the person's own questions in the queue (waiting, drafted, answered, not accepted), each with a delete button that asks first when it has a drafted or reviewed answer. A question is moved to `questions\.trash` (`DELETE /api/questions/<id>`, `Semaphore-CLI.bat question delete --id <id>`); a question others asked too only loses this asker.
+
+**The assistant here** (the orb, or **Suggest questions**) sees the reviewed answers and their saved headline numbers when *Include this page* is on (docs/INTELLIGENCE_PROVIDERS.md), answers from them, and suggests questions leadership could ask, built from the reviewed answers and the catalog's measures and fields; clicking **Ask** on one asks it here. Without Fairlead the suggestions are worked out on this computer.
+
 ## Standing in for an absent analyst
 
 - **Briefing.** Reruns every accepted flag and reports what changed: values breaking a red rule, the biggest moves against the previous period, new outliers. Built from the existing insights (`src/core/insights.ts`), so no new judgement is invented.

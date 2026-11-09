@@ -7,11 +7,17 @@ const g = globalThis as Record<string, unknown>;
 g.sessionStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
 g.localStorage = g.sessionStorage;
 
-const { Assistant, assistantOrbState, GUIDE, guideAnswer, replyText, systemPrompt } = await import('../web/src/lib/assistant.ts');
+const { Assistant, assistantOrbState, GUIDE, guideAnswer, localSuggestions, replyText, systemPrompt } = await import('../web/src/lib/assistant.ts');
+const { builderOutline, leadershipOutline, summarizeFlag, MAX_VALUES } = await import('../web/src/lib/assistant-context.ts');
+const { applyProposal, checkProposal, readProposals, describeProposal } = await import('../web/src/lib/assistant-actions.ts');
+const { noteFlagLive, forgetFlagLive } = await import('../web/src/lib/flag-live.ts');
+const { loadHoist, loadIndex } = await import('./fixtures.ts');
 const { ApiError } = await import('../web/src/lib/api.ts');
 
 const configured = { configured: true, model: 'semaphore-draft', label: 'Fairlead' } as never;
-const page = { title: 'Fleet maintenance', brief: 'Cost and backlog', flags: [{ title: 'Labor cost', kind: 'kpi', brief: 'total labor cost, red over $5M' }] };
+const index = loadIndex();
+const hoist = loadHoist();
+const page = { outline: builderOutline(hoist, index), context: { mode: 'builder' as const, flags: hoist.flags, index } };
 
 test('without Fairlead the assistant answers from the guide, on this computer', async () => {
   let sent = 0;
@@ -36,6 +42,7 @@ test('with Fairlead the question goes to the relay with the configured model, an
     bodies.push(body as never);
     return { choices: [{ message: { content: ' Drag a kind onto the page. ' } }] };
   });
+  a.setIncludePage(false);
   await a.send('How do I add a flag?', { status: configured, on: true }, page);
   assert.equal(bodies[0]!.model, 'semaphore-draft');
   assert.equal(bodies[0]!.messages[0]!.role, 'system');
@@ -102,7 +109,7 @@ test('when nothing fits, the reply lists what the guide covers', async () => {
 });
 
 test('the system prompt carries every guide topic', () => {
-  const sys = systemPrompt(page);
+  const sys = systemPrompt(page.outline);
   assert.match(sys, /untrusted/);
   for (const g2 of GUIDE) assert.ok(sys.includes(g2.topic));
 });
@@ -200,4 +207,155 @@ test('getting the voice ready: TalkForge is started, the page waits while it sta
   await Promise.all([v.ensureReady(), v.ensureReady(), v.ensureReady()]);
   assert.deepEqual(calls, ['status']);
   assert.equal(fetched, 0);
+});
+
+// ---- Turnkey assistant: page context on by default, flag summaries, proposals with Accept ----
+
+test('"Include this page" is on by default and the choice is remembered per browser', () => {
+  store.delete('semaphore.assistant.includePage');
+  assert.equal(new Assistant(async () => ({})).includePage, true);
+  const a = new Assistant(async () => ({}));
+  a.setIncludePage(false);
+  assert.equal(new Assistant(async () => ({})).includePage, false, 'a new assistant reads the choice back');
+  a.setIncludePage(true);
+  assert.equal(new Assistant(async () => ({})).includePage, true);
+});
+
+test('the page outline names each flag with its readback, measures and a summary of what it shows, never raw rows', () => {
+  const bar = hoist.flags.find((f) => f.id === 'bar-region')!;
+  const rows = Array.from({ length: 14 }, (_, i) => ({ dims: { 'jobs.region': `Region ${i}` }, values: { [bar.binding!.metrics[0]!]: 1000 * (14 - i) } }));
+  noteFlagLive('bar-region', { result: { plan: {} as never, sql: null, display: { rows, applied: [], live: [], truncated: false, totals: { [bar.binding!.metrics[0]!]: 105000 } }, origin: 'page', ms: 1, requeried: [], raw: [{ secret_column: 'RAW-ROW-VALUE' }] }, insights: ['Region 0 stands out.'] });
+  noteFlagLive('kpi-orders', { error: 'The source did not answer.', insights: [] });
+  try {
+    const o = builderOutline(hoist, index);
+    const f = o.flags.find((x) => x.id === 'bar-region')!;
+    assert.equal(f.kind, 'bar');
+    assert.ok(f.readback.length > 0);
+    assert.ok(f.measures.length > 0);
+    assert.match(f.shows, /14 rows/);
+    assert.match(f.shows, /Region 0/);
+    assert.doesNotMatch(f.shows, /Region 10/, `at most ${MAX_VALUES} values`);
+    assert.match(f.shows, /total/);
+    assert.match(f.shows, /stands out/);
+    assert.match(o.flags.find((x) => x.id === 'kpi-orders')!.shows, /could not compute/);
+    assert.match(o.flags.find((x) => x.id === 'empty-1')!.shows, /shows nothing/);
+    const sys = systemPrompt(o);
+    assert.match(sys, /untrusted/);
+    assert.match(sys, /Flag bar-region/);
+    assert.match(sys, /semaphore-action/);
+    assert.match(sys, /CATALOG: tables/);
+    assert.doesNotMatch(sys, /RAW-ROW-VALUE/, 'the raw rows never go');
+  } finally {
+    forgetFlagLive('bar-region');
+    forgetFlagLive('kpi-orders');
+  }
+  noteFlagLive('bar-region', { result: { plan: {} as never, sql: null, display: { rows: [], applied: [], live: [], truncated: false, totals: {} }, origin: 'page', ms: 1, requeried: [] }, insights: [] });
+  assert.match(summarizeFlag(hoist.flags.find((x) => x.id === 'bar-region')!, { result: undefined, insights: [] }, index), /not computed/);
+  forgetFlagLive('bar-region');
+});
+
+test('proposals are read from semaphore-action blocks and checked strictly', () => {
+  const ctx = { mode: 'builder' as const, flags: hoist.flags, index };
+  const text = [
+    'The region chart is fine, but the empty table shows nothing.',
+    '```semaphore-action',
+    '{"action":"set-title","flag":"bar-region","title":"Labor cost by region, this year","reason":"clearer"}',
+    '```',
+    '```semaphore-action',
+    '[{"action":"delete","flag":"empty-1"},{"action":"delete","flag":"bar-region"},{"action":"set-kind","flag":"bar-region","kind":"custom"},{"action":"set-title","flag":"nope","title":"x"},{"action":"set-filter","flag":"bar-region","filter":{"field":"jobs.no_such","op":"in","values":["a"]}},{"action":"rm -rf"}]',
+    '```',
+    '```semaphore-action',
+    'not json',
+    '```',
+  ].join('\n');
+  const r = readProposals(text, ctx);
+  assert.equal(r.text, 'The region chart is fine, but the empty table shows nothing.');
+  assert.deepEqual(r.proposals.map((p) => p.action), ['set-title', 'delete']);
+  assert.equal(r.refusals.length, 6);
+  assert.match(r.refusals.join(' '), /only deletes flags that show nothing/);
+  assert.match(r.refusals.join(' '), /not on this page/);
+  assert.match(r.refusals.join(' '), /no field "jobs.no_such"/);
+  assert.match(r.refusals.join(' '), /not valid JSON/);
+  // Filters: known fields, known operators, the right number of values; "last" needs a date field and a unit.
+  assert.equal(checkProposal({ action: 'set-filter', flag: 'bar-region', filter: { field: 'jobs.opened', op: 'last', values: [6], unit: 'month' } }, ctx).ok, true);
+  assert.equal(checkProposal({ action: 'set-filter', flag: 'bar-region', filter: { field: 'jobs.region', op: 'last', values: [6], unit: 'month' } }, ctx).ok, false);
+  assert.equal(checkProposal({ action: 'set-filter', flag: 'bar-region', filter: { field: 'parts.item', op: 'in', values: ['x'] } }, ctx).ok, false, 'another source');
+  assert.equal(checkProposal({ action: 'add', kind: 'model', title: 'x', brief: 'y' }, ctx).ok, false);
+  assert.equal(checkProposal({ action: 'ask', question: 'Which region costs most?' }, { mode: 'leadership', flags: [], index }).ok, true);
+  assert.equal(checkProposal({ action: 'set-title', flag: 'bar-region', title: 'x' }, { mode: 'leadership', flags: hoist.flags, index }).ok, false, 'the Leadership view only suggests questions');
+  const d = describeProposal(r.proposals[0]!, hoist.flags, index);
+  assert.equal(d.before, 'Labor cost by region');
+  assert.equal(d.after, 'Labor cost by region, this year');
+});
+
+test('a proposal is applied only on Accept, through the editing paths, and checked again then', async () => {
+  let flags = hoist.flags.map((f) => ({ ...f }));
+  const calls: string[] = [];
+  const editor = {
+    flags: () => flags,
+    index: () => index,
+    update: (id: string, patch: Record<string, unknown>) => {
+      calls.push(`update ${id} ${Object.keys(patch).join(',')}`);
+      flags = flags.map((f) => (f.id === id ? { ...f, ...patch } : f));
+    },
+    remove: (id: string) => {
+      calls.push(`remove ${id}`);
+      flags = flags.filter((f) => f.id !== id);
+    },
+    add: (kind: string, title: string) => void calls.push(`add ${kind} ${title}`),
+    redraft: (id: string) => void calls.push(`redraft ${id}`),
+    ask: (q: string) => void calls.push(`ask ${q}`),
+  };
+  const a = new Assistant(async () => ({ choices: [{ message: { content: 'Rename it.\n```semaphore-action\n{"action":"set-title","flag":"bar-region","title":"Cost by region"}\n```\n```semaphore-action\n{"action":"set-filter","flag":"bar-region","filter":{"field":"jobs.status","op":"in","values":["Open"]}}\n```' } }] }));
+  a.setIncludePage(true);
+  await a.send('Review my flags', { status: configured, on: true }, { outline: builderOutline(hoist, index), context: { mode: 'builder', flags, index } });
+  const m = a.messages.at(-1)!;
+  assert.equal(m.content, 'Rename it.');
+  assert.equal(m.proposals!.length, 2);
+  assert.equal(calls.length, 0, 'nothing is applied before Accept');
+  a.accept(m.id, m.proposals![0]!.id, 'builder', editor as never);
+  assert.equal(flags.find((f) => f.id === 'bar-region')!.title, 'Cost by region');
+  a.accept(m.id, m.proposals![1]!.id, 'builder', editor as never);
+  assert.deepEqual(flags.find((f) => f.id === 'bar-region')!.binding!.filters.map((f) => f.field), [...hoist.flags.find((f) => f.id === 'bar-region')!.binding!.filters.map((f) => f.field).filter((x) => x !== 'jobs.status'), 'jobs.status']);
+  const after = a.messages.at(-1)!;
+  assert.deepEqual(after.proposals!.map((c) => c.state), ['accepted', 'accepted']);
+  // A flag deleted in the meantime: Accept refuses in words and changes nothing.
+  assert.equal(applyProposal({ action: 'set-title', flag: 'gone', title: 'x' }, 'builder', editor as never)?.includes('not on this page'), true);
+  // Dismiss leaves the page alone.
+  const b = new Assistant(async () => ({ choices: [{ message: { content: '```semaphore-action\n{"action":"delete","flag":"empty-1"}\n```' } }] }));
+  b.setIncludePage(true);
+  await b.send('Tidy up', { status: configured, on: true }, { outline: builderOutline(hoist, index), context: { mode: 'builder', flags, index } });
+  const bm = b.messages.at(-1)!;
+  b.dismiss(bm.id, bm.proposals![0]!.id);
+  assert.equal(b.messages.at(-1)!.proposals![0]!.state, 'dismissed');
+  assert.ok(!calls.some((c) => c.startsWith('remove')));
+});
+
+test('proposals are ignored when the page did not go with the question', async () => {
+  const a = new Assistant(async () => ({ choices: [{ message: { content: 'Sure.\n```semaphore-action\n{"action":"delete","flag":"empty-1"}\n```' } }] }));
+  a.setIncludePage(false);
+  await a.send('Tidy up', { status: configured, on: true }, page);
+  assert.equal(a.messages.at(-1)!.proposals, undefined);
+  a.setIncludePage(true);
+});
+
+test('Suggest questions works without Fairlead, from the reviewed answers and the catalog', async () => {
+  const o = leadershipOutline([], [], [], 0, index);
+  const list = localSuggestions(o);
+  assert.ok(list.length > 0);
+  assert.ok(list.every((q) => q.endsWith('?')));
+  let sent = 0;
+  const a = new Assistant(async () => {
+    sent++;
+    return {};
+  });
+  await a.suggestAsks({ status: null, on: false }, { outline: o, context: { mode: 'leadership', flags: [], index } });
+  assert.equal(sent, 0);
+  const m = a.messages.at(-1)!;
+  assert.ok(m.proposals!.length > 0);
+  assert.ok(m.proposals!.every((c) => c.proposal.action === 'ask'));
+  const asked: string[] = [];
+  a.accept(m.id, m.proposals![0]!.id, 'leadership', { flags: () => [], index: () => index, update: () => undefined, remove: () => undefined, add: () => undefined, redraft: () => undefined, ask: (q: string) => void asked.push(q) });
+  assert.equal(asked.length, 1);
+  assert.match(systemPrompt(o), /Leadership view/);
 });

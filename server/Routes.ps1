@@ -37,6 +37,7 @@
 #   GET    /api/ai                        AI status, never the key            (Intelligence.ps1)
 #   POST   /api/ai/check                  is Fairlead reachable with the key  (Intelligence.ps1, worker pool)
 #   POST   /api/ai/v1/chat/completions    drafting request passed to Fairlead (Intelligence.ps1, worker pool)
+#   POST   /api/ai/start                  starts Fairlead now (the Connections card's Fix)   (Intelligence.ps1, worker pool)
 #   The local database (LocalDb.ps1, docs/LOCAL-DATABASE.md):
 #   GET    /api/local/tables                         { tables: [{ name, rows, columns, bytes, source, importedAt }], ... }
 #   POST   /api/local/import          raw file body  X-File-Name (percent-encoded), X-Table?, X-Sheet?, X-Replace: 1?
@@ -1002,9 +1003,11 @@ function Invoke-SemRoute {
     }
     if ($p -eq '/api/ai') {
         if ($m -ne 'GET') { Send-SemError 405 'method' 'Method not allowed.'; return }
-        Send-SemJson 200 (Get-SemAiStatus); return
+        # running: something accepts a connection on Fairlead's port (who it is, the id check decides before a key is sent).
+        $st = Get-SemAiStatus; $st['running'] = [bool](Test-SemFairleadListening -Url $st.url)
+        Send-SemJson 200 $st; return
     }
-    if ($p -eq '/api/ai/check' -or $p -eq '/api/ai/v1/chat/completions') {
+    if ($p -eq '/api/ai/check' -or $p -eq '/api/ai/v1/chat/completions' -or $p -eq '/api/ai/start') {
         # Intelligence.ps1, on the worker pool: a model can take a minute and must not block heartbeats.
         if ($m -ne 'POST') { Send-SemError 405 'method' 'Method not allowed.'; return }
         Start-SemWorkerRequest -Req $Req

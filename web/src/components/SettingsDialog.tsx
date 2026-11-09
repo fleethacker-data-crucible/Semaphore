@@ -4,7 +4,7 @@
 // The pairing code goes from this box to the local server once. It is held in a password field, sent
 // in the request body, cleared at once and never shown, logged or kept here.
 
-import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, lazy, type ReactNode, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CheckCircle2, CircleAlert, Link2, Power, RefreshCw, Unlink, X } from 'lucide-react';
 import { api, describeError } from '../lib/api.ts';
 import type { AiStatus } from '../lib/ai.ts';
@@ -16,6 +16,9 @@ import { ThemeCards } from './ThemeCards.tsx';
 import { VoiceCard, VoiceInputCard } from './VoiceCard.tsx';
 import { SqlLanguageCard } from './SqlLanguageCard.tsx';
 import { MapsCard } from './MapsCard.tsx';
+
+// Lazarette, Fairlead and the voice at a glance, loaded only when its tab opens.
+const ConnectionsCard = lazy(() => import('./ConnectionsCard.tsx').then((m) => ({ default: m.ConnectionsCard })));
 
 export interface VaultStatus {
   paired: boolean;
@@ -48,7 +51,7 @@ export interface SettingsDialogProps {
   onEnd: () => void;
 }
 
-type TabId = 'appearance' | 'lazarette' | 'ai' | 'sql' | 'maps' | 'features' | 'session';
+type TabId = 'appearance' | 'connections' | 'lazarette' | 'ai' | 'sql' | 'maps' | 'features' | 'session';
 
 const btn = 'inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[var(--fl-control-border)] px-2.5 text-sm hover:border-accent disabled:opacity-40';
 
@@ -208,7 +211,7 @@ export function SettingsDialog(p: SettingsDialogProps) {
   const [tab, setTab] = useState<TabId>('appearance');
   const tabs: Array<{ id: TabId; label: string }> = [
     { id: 'appearance', label: 'Appearance' },
-    ...(p.hasServer ? [{ id: 'lazarette' as const, label: 'Lazarette' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
+    ...(p.hasServer ? [{ id: 'connections' as const, label: 'Connections' }, { id: 'lazarette' as const, label: 'Lazarette' }, { id: 'ai' as const, label: 'AI drafting' }] : []),
     { id: 'sql', label: 'SQL' },
     ...(p.hasServer ? [{ id: 'maps' as const, label: 'Maps' }] : []),
     { id: 'features', label: 'Features' },
@@ -280,6 +283,12 @@ export function SettingsDialog(p: SettingsDialogProps) {
               </Card>
               <p className="text-[12px] text-ink-3">How a page's charts and cards look is set per page: the paintbrush in the header opens Page design.</p>
             </div>
+          )}
+
+          {tab === 'connections' && (
+            <Suspense fallback={<p className="text-sm text-ink-2">Checking…</p>}>
+              <ConnectionsCard />
+            </Suspense>
           )}
 
           {tab === 'lazarette' && <LazaretteTab />}

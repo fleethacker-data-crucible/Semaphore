@@ -33,7 +33,7 @@ The same list is served by the running server at `GET /api/commands` and by `com
 | (same nouns) `delete --id <id> --yes` | Move a document to the `.trash` folder (not erased). |
 | `refresh run` | Refresh every playbook snapshot headless and stop (the same run as `Start-Semaphore.ps1 --refresh`). Refuses while Semaphore is open. When another Semaphore (one from another folder, which the refusal cannot see) already holds the port, the run exits 3 and the command reports "nothing was refreshed" instead of success. Needs a machine that can reach the sources. |
 | `refresh report` | The report of the last refresh. |
-| `vault status` | Whether Semaphore is paired with Lazarette, whether Lazarette is running and unlocked, which source reads which share, and which names Lazarette has for Semaphore. Names only, never a value. |
+| `vault status` | Whether Semaphore is paired with Lazarette (asked of the running Lazarette itself, not just the pairing file on this computer), whether Lazarette is running and unlocked, which source reads which share, and which names Lazarette has for Semaphore. Names only, never a value. |
 | `vault pair` | Pair Semaphore with Lazarette ([VAULT.md](VAULT.md)), the same as Settings > Lazarette in the page: paste the code from Lazarette (Settings > Tools > Pair tool). This is the one command that asks for input: the code is read without echo, never printed, logged or written to a transcript, and stored DPAPI-protected for your Windows account. |
 | `vault unpair` | Forget the pairing on this computer. Remove Semaphore in Lazarette (Settings > Tools) as well. |
 | `ai status` | Whether drafting goes through Fairlead, the address and where the key comes from. Never the key. |

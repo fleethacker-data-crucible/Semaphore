@@ -54,6 +54,8 @@ export interface MockState {
   voice: { talkforge: string; input: boolean };
   /** Texts sent to /api/voice/speak that the stand-in TalkForge spoke. */
   spoken: string[];
+  /** The last chat request the stand-in Fairlead answered. */
+  aiLast: { model: string; messages: Array<{ role: string; content: string }> } | null;
 }
 
 /** POST /__mock/voice: TalkForge as the next answers see it (mock-server.mjs). */
@@ -140,6 +142,12 @@ export class SemaphoreApp {
   async voice(v: VoiceMock): Promise<void> {
     const r = await this.request.post('/__mock/voice', { data: v });
     expect(r.ok(), 'the mock took the voice state').toBeTruthy();
+  }
+
+  /** POST /__mock/ai: Fairlead as the next answers see it (mock-server.mjs). */
+  async ai(v: { configured?: boolean; running?: boolean; reply?: string }): Promise<void> {
+    const r = await this.request.post('/__mock/ai', { data: v });
+    expect(r.ok(), 'the mock took the Fairlead state').toBeTruthy();
   }
 
   async state(): Promise<MockState> {

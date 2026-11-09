@@ -67,6 +67,7 @@ Describe 'Spoken answers' {
         New-Item -ItemType Directory -Path (Join-Path $script:Root 'config') -Force | Out-Null
         $script:LogLines = New-Object Collections.ArrayList
         Mock Write-SemLog { param($Level, $Message) [void]$script:LogLines.Add("$Level $Message") }
+        Mock Get-SemTalkForgeLocalTokenPath { return (Join-Path $TestDrive 'no-talkforge\local-token') }
     }
     AfterEach {
         foreach ($n in $script:SavedEnv.Keys) { [Environment]::SetEnvironmentVariable($n, $script:SavedEnv[$n]) }
@@ -154,6 +155,7 @@ Describe 'Spoken answers' {
     }
 
     It 'asks for the Lazarette share when no token is set and Lazarette has none to give' {
+        Mock Test-LazaretteToolPairing { return $true }
         Mock Get-LazaretteToolSecrets { return @{ TALKFORGE_TOKEN = $null; '__state' = @{ TALKFORGE_TOKEN = 'not-shared' } } }
         $r = Invoke-Speak -Json @{ text = 'Hi.' } -Root $script:Root
         $r.Status | Should -Be 424

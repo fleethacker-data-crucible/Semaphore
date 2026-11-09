@@ -23,7 +23,8 @@ $script:SemUiOnlyRoutes = [ordered]@{
     '/api/query'                     = 'Runs SQL the page plans and holds the session token; the headless route is "refresh run".'
     '/api/profile'                   = 'Profiles a source for the page''s catalog editor.'
     '/api/ai/check'                  = 'Checks the Fairlead key from the page; "ai status" reports the same without sending the key.'
-    '/api/ai/v1/chat/completions'    = 'Relay for the page''s drafting requests: needs the browser session token.'
+    '/api/ai/start'                  = 'The Connections card''s Fix button starts Fairlead for the page; Launch-Fairlead.bat is the headless way.'
+    '/api/ai/v1/chat/completions'    ='Relay for the page''s drafting requests: needs the browser session token.'
     '/api/client-log'                = 'The page reports its own script errors to the server log; a CLI reports its errors itself.'
     '/api/vault/pair'                = 'The Settings screen''s pairing box; the CLI equivalent is "vault pair", which reads the code without showing it.'
     '/api/vault/unpair'              = 'The Settings screen''s Unpair button; the CLI equivalent is "vault unpair".'
@@ -78,7 +79,7 @@ function Get-SemCommandRegistry {
     }
     & $add 'refresh run' '(starts Start-Semaphore.ps1 --refresh)' 'POST' 'Refresh every playbook snapshot headless and stop (the same run as --refresh). Needs a machine that can reach the sources; it refuses when Semaphore is already open.' @() $false 'RefreshRun'
     & $add 'refresh report' '/api/refresh-report' 'GET' 'The report of the last snapshot refresh.' @() $false 'RefreshReport'
-    & $add 'vault status' '/api/vault' 'GET' 'Whether Semaphore is paired with Lazarette, whether Lazarette is running and unlocked, which source reads which share, and which shares Lazarette has for Semaphore. Names only, never a secret.' @() $false 'VaultStatus'
+    & $add 'vault status' '/api/vault' 'GET' 'Whether Semaphore is paired with Lazarette (asked of the running Lazarette, not just the pairing file), whether Lazarette is running and unlocked, which source reads which share, and which shares Lazarette has for Semaphore. Names only, never a secret.' @() $false 'VaultStatus'
     & $add 'vault pair' '(asks for the pairing code)' 'POST' 'Pair Semaphore with Lazarette: paste the code from Lazarette (Settings > Tools > Pair tool). It is read without echo and kept DPAPI-protected for this Windows account.' @() $false 'VaultPair'
     & $add 'vault unpair' '(removes the pairing file)' 'POST' 'Forget the Lazarette pairing on this computer (pair again with "vault pair"). Remove Semaphore in Lazarette (Settings > Tools) too.' @() $false 'VaultUnpair'
     & $add 'ai status' '/api/ai' 'GET' 'Whether drafting goes through Fairlead, the address and which key source is used. Never prints the key.' @() $false 'AiStatus'

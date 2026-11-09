@@ -73,6 +73,8 @@ BeforeAll {
 Describe 'Semaphore intelligence' {
 BeforeEach {
     Mock Read-SemAiCredential { return $null }
+    # Never the real %LOCALAPPDATA%\Fairlead\local-token: each test names its own when it wants one.
+    Mock Get-SemFairleadLocalTokenPath { return (Join-Path $script:Root 'Fairlead\local-token') }
     # The port owner check is a stub here: the fake Fairlead "is" PID 4168 unless a test says otherwise.
     Mock Initialize-SemAiPortCheck { return $null }
     Mock Get-SemAiListenerPids { return 4168 }
@@ -220,6 +222,55 @@ Context 'Windows Credential Manager selection' {
         $s.Key | Should -BeNullOrEmpty
         $s.KeySource | Should -Be 'none'
         $s.Problem | Should -Match 'Credential Manager'
+    }
+    It 'uses Fairlead''s local token when no key is installed, and reports keySource local-token' {
+        $saved = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = Join-Path $script:Root 'appdata'
+        try {
+            $file = Join-Path $env:LOCALAPPDATA 'Fairlead\local-token'
+            [void][IO.Directory]::CreateDirectory((Split-Path $file -Parent))
+            [IO.File]::WriteAllText($file, "fl-localtoken0123456789`r`nsecond line ignored`r`n")
+            $s = Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile -LocalTokenPath ([IO.Path]::Combine($env:LOCALAPPDATA, 'Fairlead', 'local-token'))
+            $s.Key | Should -Be 'fl-localtoken0123456789'
+            $s.KeySource | Should -Be 'local-token'
+            $status = Get-SemAiStatus -Settings $s
+            $status.keySource | Should -Be 'local-token'
+            $status.configured | Should -BeTrue
+            ($status | ConvertTo-Json -Compress) | Should -Not -Match 'fl-localtoken'
+        } finally { $env:LOCALAPPDATA = $saved }
+    }
+    It 'reads the local token from the default path under LOCALAPPDATA' {
+        Mock Get-SemAiKeyPath { return $script:KeyFile }
+        Mock Get-SemFairleadLocalTokenPath { return [IO.Path]::Combine($env:LOCALAPPDATA, 'Fairlead', 'local-token') }
+        $saved = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = Join-Path $script:Root 'appdata2'
+        try {
+            [void][IO.Directory]::CreateDirectory((Join-Path $env:LOCALAPPDATA 'Fairlead'))
+            [IO.File]::WriteAllText((Join-Path $env:LOCALAPPDATA 'Fairlead\local-token'), 'fl-defaultpath0123456789')
+            $s = Get-SemAiSettings -Root $script:Root
+            $s.KeySource | Should -Be 'local-token'
+        } finally { $env:LOCALAPPDATA = $saved }
+    }
+    It 'keeps an installed key ahead of the local token' {
+        Mock Get-SemAiKeyPath { return $script:KeyFile }
+        Mock Read-SemAiCredential { return $script:Key }
+        [void][IO.Directory]::CreateDirectory((Join-Path $script:Root 'Fairlead'))
+        [IO.File]::WriteAllText((Join-Path $script:Root 'Fairlead\local-token'), 'fl-localtoken0123456789')
+        $s = Get-SemAiSettings -Root $script:Root
+        $s.KeySource | Should -Be 'credential-manager'
+        $s.Key | Should -Be $script:Key
+    }
+    It 'ignores a local token that is not a Fairlead client key, and a missing one' {
+        Mock Get-SemAiKeyPath { return $script:KeyFile }
+        (Get-SemAiSettings -Root $script:Root).KeySource | Should -Be 'none'
+        [void][IO.Directory]::CreateDirectory((Join-Path $script:Root 'Fairlead'))
+        [IO.File]::WriteAllText((Join-Path $script:Root 'Fairlead\local-token'), 'sk-not-fairlead')
+        (Get-SemAiSettings -Root $script:Root).KeySource | Should -Be 'none'
+    }
+    It 'does not read the local token for an explicit isolated key-file path alone' {
+        [void][IO.Directory]::CreateDirectory((Join-Path $script:Root 'Fairlead'))
+        [IO.File]::WriteAllText((Join-Path $script:Root 'Fairlead\local-token'), 'fl-localtoken0123456789')
+        (Get-SemAiSettings -Root $script:Root -KeyPath $script:KeyFile).KeySource | Should -Be 'none'
     }
     It 'rejects malformed input before touching the Windows store' {
         { Save-SemAiCredential -Key (ConvertTo-SecureString 'invalid' -AsPlainText -Force) } | Should -Throw '*Fairlead client key*'
@@ -468,6 +519,28 @@ Context '/api/ai routes' {
     }
     BeforeEach {
         Mock Get-SemAiProcessPaths { return @{ ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; ScriptPath = 'C:\Fleet\Fairlead\server\Start-Fairlead.ps1' } }
+    }
+
+    It 'starts Fairlead from the Connections card with no key, whatever autoStart says, and sends nothing to it' {
+        $saved = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $script:Root
+        try {
+            Mock Start-SemFairlead { return @{ State = 'starting'; Message = 'Fairlead is starting.' } }
+            Mock Invoke-SemAiForward { throw 'nothing is sent' }
+            $r = Invoke-Route -Path '/api/ai/start' -Json @{} -Root $script:Root
+            $r.Status | Should -Be 200
+            ($r.Body | ConvertFrom-Json).state | Should -Be 'starting'
+            Should -Invoke Start-SemFairlead -Times 1 -Exactly -ParameterFilter { $Explicit }
+            Should -Invoke Invoke-SemAiForward -Times 0 -Exactly
+        } finally { $env:LOCALAPPDATA = $saved }
+    }
+
+    It 'sends X-Fairlead-Label: Semaphore with every request' {
+        $fake = Start-FakeFairlead -Replies @(@{ Status = 200; Body = '{"data":[]}' })
+        try {
+            $null = Invoke-SemAiForward -Settings (New-Settings -Url $fake.Url) -Method GET -RelPath '/models' -TimeoutSec 10
+            [string]$fake.Seen.Requests[0] | Should -Match 'X-Fairlead-Label: Semaphore'
+        } finally { Stop-FakeFairlead $fake }
     }
 
     It 'answers 409 with setup steps when no key is stored' {

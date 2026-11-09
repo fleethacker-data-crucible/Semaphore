@@ -65,3 +65,17 @@ export function takePendingOpen(): boolean {
   pendingOpen = false;
   return was;
 }
+
+// "Suggest questions" in the Leadership view: open the assistant and have it suggest, loading it first if needed.
+let pendingSuggest = false;
+export function suggestAsksWithAssistant(): void {
+  wanted = true;
+  pendingSuggest = true;
+  for (const l of listeners) l();
+  window.dispatchEvent(new CustomEvent('semaphore:assistant-suggest'));
+}
+export function takePendingSuggest(): boolean {
+  const was = pendingSuggest;
+  pendingSuggest = false;
+  return was;
+}
