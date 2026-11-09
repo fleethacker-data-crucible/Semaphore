@@ -15,7 +15,7 @@
 .PARAMETER ZipPath
   The zip to test (dist\Semaphore-<version>.zip).
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File build\Test-SemaphoreZip.ps1 -ZipPath dist\Semaphore-0.4.0.zip
+  powershell -NoProfile -ExecutionPolicy Bypass -File build\Test-SemaphoreZip.ps1 -ZipPath dist\Semaphore-0.4.1.zip
 #>
 [CmdletBinding()]
 param(

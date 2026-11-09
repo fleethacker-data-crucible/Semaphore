@@ -1,6 +1,6 @@
 # Semaphore: Tech Test Procedure
 
-This procedure tests Semaphore 0.4.0 (an engineering preview) on one Windows workstation. It takes a tester from a clean clone to a recorded result. Sections 1 to 4 need no database and no AWS account. Sections 5 and 6 add the optional sources only where you have them.
+This procedure tests Semaphore 0.4.1 (an engineering preview) on one Windows workstation. It takes a tester from a clean clone to a recorded result. Sections 1 to 4 need no database and no AWS account. Sections 5 and 6 add the optional sources only where you have them.
 
 ![How the pieces connect](walkthrough/01-architecture.svg)
 
@@ -146,7 +146,7 @@ Run these before any functional test. Each one checks one dependency. Use the co
 
 | ID | Dependency | Command or action | Expected |
 |---|---|---|---|
-| S1 | Semaphore folder and version | `Semaphore-CLI.bat info show --json` | `ok: true`, version `0.4.0` (`VERSION`), the Semaphore folder path. |
+| S1 | Semaphore folder and version | `Semaphore-CLI.bat info show --json` | `ok: true`, version `0.4.1` (`VERSION`), the Semaphore folder path. |
 | S2 | `sources.json` | `Semaphore-CLI.bat source list --json` | The list of sources (id, label, kind, provider). Empty is fine if none are configured. No connection string appears. |
 | S3 | Lazarette (optional) | `Semaphore-CLI.bat vault status --json` | `paired` (this account holds a pairing code), `running` and `locked` (asked of the Lazarette on loopback, `server/Vault.ps1` `Get-SemVaultStatus`), `sources` with the share each one reads, and `shared` / `notShared` names; never a value. If not paired and no source has a `vault` block, mark **NOT SET UP**. If a source has a `vault` block and `paired` is `false` or a name is in `notShared`, mark **FAIL**. Pair under **Settings > Lazarette** or with `vault pair` (`docs/VAULT.md`). |
 | S4 | Fairlead (optional AI) | `Semaphore-CLI.bat ai status --json` | Shows the Fairlead address `127.0.0.1:8776` and where the key comes from. The key is never printed. If Fairlead is not running, the page drafts with local rules (`server/Intelligence.ps1`). |
