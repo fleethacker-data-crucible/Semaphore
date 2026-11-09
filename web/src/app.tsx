@@ -21,7 +21,7 @@ import { awayId, isReturned } from '../../src/core/away.ts';
 import { learnStyle } from '../../src/core/style.ts';
 import type { QlikImported } from '../../src/core/qlik.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
-import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
+import type { TableProfile } from '../../src/core/profile.ts';
 import { checkHealth, entryId, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, type Snapshot, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
@@ -106,10 +106,14 @@ function blankHoist(): Hoist {
   return { version: 1, id: newId('h'), title: 'Untitled hoist', brief: '', grid: { cols: GRID_COLS }, filters: [], flags: [], updated: new Date().toISOString() };
 }
 
+// The catalog proposal (src/core/profile.ts) loads with the first table or file added, not at start.
+const loadProfile = () => import('../../src/core/profile.ts');
+
 /** One profiled server table into the catalog: Semaphore's proposal of its fields and measures. */
-function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
+async function profiledInto(catalog: Catalog, s: ServerSource | undefined, source: string, p: ProfileTable) {
   const kind = (s?.kind ?? 'other') as Catalog['sources'][number]['kind'];
   const dialect = dialectForSource({ kind, engine: s?.engine, provider: s?.provider });
+  const { proposeCatalog } = await loadProfile();
   return proposeCatalog({ source: { id: source, label: s?.label ?? source, kind, dialect, ...(s?.engine ? { engine: s.engine as RdsEngine } : {}) }, tables: [{ name: p.table, rows: p.rows, columns: p.columns }] }, catalog);
 }
 
@@ -608,6 +612,7 @@ export function App() {
             fields: cat.fields.filter((f) => !(f.source === FILES_SOURCE && f.table === t.name)),
             metrics: cat.metrics.filter((m) => !(m.source === FILES_SOURCE && (m.table === t.name || cat.fields.find((f) => f.key === m.field)?.table === t.name))),
           };
+          const { proposeCatalog } = await loadProfile();
           const proposal = proposeCatalog({ source: { id: FILES_SOURCE, label: 'Files in this browser', kind: 'csv', dialect: 'ansi' }, tables: [t.profile] }, without);
           cat = pruneCatalog(proposal.catalog);
           notes.push(`${name}: ${t.rows.toLocaleString('en-US')} rows, ${t.columns.length} columns.`, ...t.notes, ...proposal.notes);
@@ -630,7 +635,7 @@ export function App() {
     (source: string, table: string) =>
       runBusy(`Profiling ${table}…`, async () => {
       try {
-        const proposal = profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
+        const proposal = await profiledInto(catalog, server?.sources.find((x) => x.id === source), source, await profileTable(source, table));
         setCatalog(proposal.catalog);
         setProfileNotes(proposal.notes);
         notify(`${table} added to the catalog.`, { tone: 'success' });
@@ -655,7 +660,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            cat = (await profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p)).catalog;
             const labelled = applyQlikLabels(cat, t.source, p.table, t.labels);
             cat = labelled.catalog;
             imported.push({ source: t.source, table: p.table, qlik: t.qlik });
@@ -721,7 +726,7 @@ export function App() {
           sayBusy(`Profiling ${t.table}…`);
           try {
             const p = await profileTable(t.source, t.table);
-            cat = profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p).catalog;
+            cat = (await profiledInto(cat, server?.sources.find((x) => x.id === t.source), t.source, p)).catalog;
             placed.push({ model: t.model, source: t.source, table: p.table });
             out.push(`${t.model}: ${p.table} profiled, ${p.columns.length} columns.`);
           } catch (e) {
