@@ -370,6 +370,18 @@ function Test-SemAiProcessPath {
     return $false
 }
 
+function Get-SemFairleadProcessPath {
+    # For a Fairlead whose id answer has no "path": the process's -File script when it is ...\scripts\Start-Fairlead.ps1,
+    # else its executable when that is named Fairlead*.exe, else ''. Read from Win32_Process, never from the program's word.
+    param([int]$ProcessId)
+    $paths = Get-SemAiProcessPaths -ProcessId $ProcessId
+    $script = ConvertTo-SemAiNormalPath $paths.ScriptPath
+    if ($script -and $script -match '(?i)\\scripts\\Start-Fairlead\.ps1\z') { return $script }
+    $exe = ConvertTo-SemAiNormalPath $paths.ExecutablePath
+    if ($exe -and [IO.Path]::GetFileName($exe) -match '(?i)\Afairlead[\w.-]*\.exe\z') { return $exe }
+    return ''
+}
+
 function Test-SemAiIdentity {
     <#
       Port authority (edge-ops PORTS.md; the rule FleetPort.psm1 applies before it stops a process): before the key is sent,
@@ -423,8 +435,14 @@ function Test-SemAiIdentity {
         }
         $reported = Get-SemJsonProp $id 'path'
         if ($reported -isnot [string] -or -not $reported) {
-            Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead but reports no path' -f $u.Port)
-            return @{ Code = 'ai-not-fairlead'; Error = ('The program on port ' + $u.Port + ' says it is Fairlead but does not say which script it runs, so the Fairlead key was not sent. Update Fairlead.') }
+            # Fairlead 0.1 answers the id without "path" (edge-ops PORTS.md makes it optional). Then the path is read
+            # from the listening process itself and must be Fairlead's own start script (scripts\Start-Fairlead.ps1)
+            # or a Fairlead executable; a pinned fairleadPath still has to match it below.
+            $reported = Get-SemFairleadProcessPath -ProcessId $owner
+            if (-not $reported) {
+                Write-SemLog 'WARN' ('AI: the program on port {0} says it is Fairlead but reports no path, and it does not run Fairlead''s start script' -f $u.Port)
+                return @{ Code = 'ai-not-fairlead'; Error = ('The program on port ' + $u.Port + ' says it is Fairlead but does not run Fairlead''s start script, so the Fairlead key was not sent. Start Fairlead with Launch-Fairlead.bat.') }
+            }
         }
         if (-not (Test-SemAiProcessPath -ProcessId $owner -Path $reported)) {
             Write-SemLog 'WARN' ('AI: the program on port {0} (PID {1}) reports a path that is not what that process runs' -f $u.Port, $owner)
