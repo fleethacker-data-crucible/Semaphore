@@ -22,7 +22,7 @@ import { learnStyle } from '../../src/core/style.ts';
 import type { QlikImported } from '../../src/core/qlik.ts';
 import { compact, DEFAULT_SIZE, findSlot, FREE_STEP, place, relayout, snapAll } from '../../src/core/layout.ts';
 import { proposeCatalog, type TableProfile } from '../../src/core/profile.ts';
-import { checkHealth, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
+import { checkHealth, entryId, learnFromHoist, type QuestionItem, resolveQuestions } from '../../src/core/playbook.ts';
 import { isStale, type Snapshot, takeSnapshot } from '../../src/core/snapshot.ts';
 import { calendarToday } from '../../src/core/sql.ts';
 import { fleetSampleRows } from '../../src/sample/fleet.ts';
@@ -882,7 +882,12 @@ export function App() {
   useEffect(() => {
     if (!playbook.loaded || currentView !== 'builder') return;
     const timer = window.setTimeout(() => {
-      const learnt = learnFromHoist(playbook.entries, hoist, index, user);
+      // An accepted flag that is open in the inspector is being edited: leadership keeps the version it
+      // already has until the analyst is done with it (selects something else), so a half-made edit is
+      // never shown in the leadership view as reviewed. A flag accepted just now has no entry yet and
+      // is learnt at once, as before.
+      const editing = selectedId && playbook.entries.some((e) => e.id === entryId(hoist.id, selectedId)) ? selectedId : null;
+      const learnt = learnFromHoist(playbook.entries, editing ? { ...hoist, flags: hoist.flags.filter((f) => f.id !== editing) } : hoist, index, user);
       if (!learnt.length) return;
       playbook.saveEntries(learnt).then(
         () => {
@@ -896,7 +901,7 @@ export function App() {
     }, 2000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hoist, playbook.loaded, currentView]);
+  }, [hoist, playbook.loaded, currentView, selectedId]);
 
   const checkedHealth = useRef(false);
   useEffect(() => {
