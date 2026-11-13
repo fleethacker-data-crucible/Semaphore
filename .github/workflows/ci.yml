@@ -1,13 +1,13 @@
 name: CI
-# Why GitHub-hosted Windows runners: Semaphore is a PUBLIC repository (VISIBILITY.md), and as of
-# 2026-11-07 every runner group in the fleethacker-data-crucible org has "Allow public repositories"
-# off, so a job that asks for the org's self-hosted runners is never assigned one: it sits queued until
-# GitHub's 24-hour limit cancels it (runs 42394044941, 42393710243). windows-latest gives the same
-# things the lab runners did: Windows PowerShell 5.1 as `shell: powershell`, Pester 5, Edge, and no
-# cost for a public repo. To switch back to the lab machines, set
-#   runs-on: [self-hosted, windows, powershell51, headless]
-# on the three jobs below AND have an org owner tick "Allow public repositories" on the runner group
-# that holds them (or make the repository private again). Nothing else in this file depends on which.
+# Self-hosted Windows runners: Semaphore is a PUBLIC repository, and the org runner group
+# seakintruth_home_lab has had Allow public repositories on since 2026-11-07, so the lab
+# runners take public-repo jobs again. The jobs below run on win11vm-headless:
+#   runs-on: [self-hosted, Windows, powershell51, headless, gerdes]
+# powershell51 is the load-bearing label (the server asserts Windows PowerShell 5.1),
+# headless keeps the jobs off the interactive win11vm-powershell runner, and gerdes keeps
+# them off the friend staggs-lab runners. Fork PRs still never run here: the windows job
+# skips them with its if guard and e2e inherits that through needs, so no outside code
+# executes on the lab machines.
 on:
   push:
     branches: [main]
@@ -26,7 +26,7 @@ jobs:
     # Fork PRs are skipped: they have no need of a Windows run before review, and the e2e job below
     # inherits the same condition through `needs`.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, powershell51, headless, gerdes]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -66,12 +66,13 @@ jobs:
         env:
           GITHUB_TOKEN: ''
           GH_TOKEN: ''
-          # The Credential Manager round-trip (Intelligence.Tests.ps1) writes to the runner's own
-          # store; it is opt-in and a throwaway hosted runner is the right place for it.
+          # The Credential Manager round-trip (Intelligence.Tests.ps1) uses a synthetic key under a
+          # unique throwaway target, removes it in a finally block, and sweeps leftovers in AfterAll,
+          # so it is safe on the persistent lab runner. It stays opt-in: SEMAPHORE_TEST_CREDMAN=1.
           SEMAPHORE_TEST_CREDMAN: '1'
         run: |
           $ErrorActionPreference = 'Stop'
-          # The hosted image ships Pester 5.x (and the Windows-inbox 3.4); take the newest 5.
+          # Take the newest Pester 5 available, installing 5.5.0 if the runner has none.
           $pester = Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -eq 5 } | Sort-Object Version -Descending | Select-Object -First 1
           if (-not $pester) { Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck; $pester = Get-Module -ListAvailable Pester | Where-Object { $_.Version.Major -eq 5 } | Sort-Object Version -Descending | Select-Object -First 1 }
           Import-Module Pester -RequiredVersion $pester.Version -Force
@@ -87,9 +88,9 @@ jobs:
 
   e2e:
     # The browser suite in Edge against tests/e2e/mock-server.mjs (#86). Nothing is downloaded:
-    # Playwright drives the Edge on the image (SEMAPHORE_E2E_BROWSER_CHANNEL=msedge).
+    # Playwright drives the Edge installed on the runner (SEMAPHORE_E2E_BROWSER_CHANNEL=msedge).
     needs: windows
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, powershell51, headless, gerdes]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
