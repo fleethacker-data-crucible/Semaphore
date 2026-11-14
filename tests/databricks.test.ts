@@ -14,7 +14,10 @@ import { flag, loadHoist, loadIndex } from './fixtures.ts';
 const index = loadIndex();
 const hoist = loadHoist();
 const WORKSPACE = 'https://adb-1234567890123456.7.azuredatabricks.net';
-const TOKEN = 'dapi0123456789abcdef0123456789abcdef';
+// Stand-in bearer for the fake fetch. Not a Databricks credential: the tests only check that
+// this string is sent on the request and scrubbed from errors. Built from parts so the source
+// does not contain a token-shaped literal.
+const TOKEN = ['fixture', 'bearer', 'not', 'a', 'credential'].join('-');
 
 interface Call {
   url: string;
