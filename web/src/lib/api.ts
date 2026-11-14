@@ -290,11 +290,14 @@ export function cameWithLaunchCode(): boolean {
 }
 
 // ---- Presence (#80, contract 3) -------------------------------------------------------------
-// The tab owns the server (TechStack lifecycle rules): a heartbeat every 5 s; one at once when the
-// page is shown again (pageshow, after a back/forward-cache restore) and when the tab comes back to
-// the front (visibilitychange to visible), so a throttled background tab is never late; and a
-// "leaving" beacon on pagehide, after which nothing but the beacon goes out until the page is shown
-// again (on close the browser fires visibilitychange after pagehide, and a beat then would cancel it).
+// The tab owns the server (TechStack lifecycle rules): a heartbeat every 5 s from a dedicated
+// worker, because Edge and Chrome throttle a hidden page's timers to about once a minute after five
+// minutes and a worker's timer is not throttled that way; one at once when the page is shown again
+// (pageshow, after a back/forward-cache restore) and when the tab comes back to the front
+// (visibilitychange to visible); and a "leaving" beacon on pagehide, after which nothing but the
+// beacon goes out until the page is shown again (on close the browser fires visibilitychange after
+// pagehide, and a beat then would cancel it). A worker cannot help a tab Edge has put to sleep:
+// IT excludes http://127.0.0.1:8800 from sleeping tabs (tools/env-check).
 
 export const HEARTBEAT_MS = 5000;
 export type BeatResult = 'ok' | 'network' | 'session' | 'other';
@@ -329,13 +332,65 @@ function leaveBeacon(): void {
   }
 }
 
+/** The small surface createHeartbeatTimer needs. Tests pass fakes; the page passes the browser. */
+export interface HeartbeatTimerHost {
+  setInterval: (fn: () => void, ms: number) => unknown;
+  clearInterval: (id: unknown) => void;
+  Worker?: new (url: string) => { onmessage: (() => void) | null; terminate(): void };
+  Blob?: new (parts: BlobPart[], options?: { type?: string }) => Blob;
+  createObjectURL?: (blob: Blob) => string;
+  revokeObjectURL?: (url: string) => void;
+}
+
+/**
+ * The 5 s heartbeat clock (#80). A dedicated worker when the browser has one: its timer keeps
+ * firing after the page has been in the background long enough for intensive timer throttling.
+ * Falls back to the page's setInterval where Worker or Blob is missing (tests, very old browsers).
+ * The script is a fixed setInterval; the interval is a whole number of milliseconds, nothing else.
+ */
+export function createHeartbeatTimer(host: HeartbeatTimerHost): { set: (fn: () => void, ms: number) => unknown; clear: (id: unknown) => void } {
+  return {
+    set(fn, ms) {
+      const n = Math.max(1000, Math.floor(Number(ms)) || HEARTBEAT_MS);
+      const WorkerCtor = host.Worker;
+      const BlobCtor = host.Blob;
+      if (!WorkerCtor || !BlobCtor || !host.createObjectURL) return host.setInterval(fn, n);
+      let url = '';
+      try {
+        const blob = new BlobCtor([`setInterval(function(){postMessage(0)},${n})`], { type: 'text/javascript' });
+        url = host.createObjectURL(blob);
+        const worker = new WorkerCtor(url);
+        worker.onmessage = () => fn();
+        return worker;
+      } catch {
+        return host.setInterval(fn, n);
+      } finally {
+        if (url) host.revokeObjectURL?.(url);
+      }
+    },
+    clear(id) {
+      const worker = id as { terminate?: () => void } | null;
+      if (worker && typeof worker.terminate === 'function') worker.terminate();
+      else host.clearInterval(id);
+    },
+  };
+}
+
 function browserPresence(): PresenceEnv {
   const target = (t: 'window' | 'document') => (t === 'window' ? window : document);
+  const clock = createHeartbeatTimer({
+    setInterval: (fn, ms) => window.setInterval(fn, ms),
+    clearInterval: (id) => window.clearInterval(id as number),
+    Worker: typeof Worker === 'undefined' ? undefined : (Worker as unknown as HeartbeatTimerHost['Worker']),
+    Blob: typeof Blob === 'undefined' ? undefined : Blob,
+    createObjectURL: (blob) => URL.createObjectURL(blob),
+    revokeObjectURL: (url) => URL.revokeObjectURL(url),
+  });
   return {
     beat: beatOnce,
     leave: leaveBeacon,
-    setInterval: (fn, ms) => window.setInterval(fn, ms),
-    clearInterval: (id) => window.clearInterval(id as number),
+    setInterval: (fn, ms) => clock.set(fn, ms),
+    clearInterval: (id) => clock.clear(id),
     on: (t, type, fn) => target(t).addEventListener(type, fn),
     off: (t, type, fn) => target(t).removeEventListener(type, fn),
     isHidden: () => document.visibilityState === 'hidden',

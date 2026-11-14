@@ -13,6 +13,7 @@ Use it to compare two kinds of machine (for example NMCI against Nautilus): run 
 | `NOT-BUILT` | "The browser interface has not been built" | `web\dist` and its assets are present; a **real** Semaphore copy is started on a spare loopback port exactly as a double-click would start it, its page and JS bundle are fetched, then it is stopped |
 | `PORTS` | Semaphore does not start or its page is unreachable | `TcpListener` on `127.0.0.1` ports 8800 to 8802; HTTP to loopback by raw socket, with no proxy and with the system proxy |
 | `BLANK-PAGE` | The page opens but is blank or unstyled | Edge or Chrome opens a page served from `127.0.0.1` that tries what the UI needs: modern JS, dynamic `import()`, Web Worker (blob and file), WebAssembly, IndexedDB, Web Crypto (SHA-256, AES-GCM), canvas, SVG, and the modern CSS Tailwind 4 relies on |
+| `SLEEPING-TABS` | A Semaphore tab left in the background comes back to a stopped server | Edge policy `SleepingTabsBlockedForUrls` includes a `127.0.0.1` pattern (WARN when it does not). A sleeping tab is frozen, so its heartbeat worker cannot run. IT adds `http://127.0.0.1:8800` |
 
 ## Run it
 

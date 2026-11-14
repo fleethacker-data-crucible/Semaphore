@@ -213,6 +213,7 @@ const presence = {
   firstMs: msEnv('SEMAPHORE_MOCK_FIRST_HEARTBEAT_MS', 120_000),
   tabs: new Map(), // tab -> { seen, leaving }
   everSeen: false,
+  beats: 0,
   started: Date.now(),
 };
 const clientLog = [];
@@ -1281,6 +1282,7 @@ function apiRoute(req, res, p, query, json, body) {
     const tab = json && json.tab !== undefined && json.tab !== null ? String(json.tab) : 'default';
     if (!tabOk(tab)) return sendError(res, 400, 'bad-tab', 'Invalid tab id.');
     registerPresence(tab, false);
+    presence.beats += 1;
     return sendJson(res, 200, { ok: true });
   }
   if (p === '/api/end') {
@@ -1414,7 +1416,7 @@ function handle(req, res, body) {
     }
     if (p === '/__mock/state' && req.method === 'GET') {
       const now = Date.now();
-      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken, aiLast });
+      return sendJson(res, 200, { home: homeDir, port, autoStop: presence.autoStop, everSeen: presence.everSeen, liveTabs: liveTabs(now), beats: presence.beats, tabs: [...presence.tabs].map(([tab, t]) => ({ tab, seenAgoMs: now - t.seen, leaving: t.leaving !== null, leavingAgoMs: t.leaving === null ? null : now - t.leaving })), graceMs: presence.graceMs, timeoutMs: presence.timeoutMs, clientLog, saves, vault: { paired: vaultPaired, state: vaultState }, voice: { talkforge: talkforgeNow(), input: voiceMock.input }, spoken, aiLast });
     }
     if (p === '/__mock/reset' && req.method === 'POST') {
       for (const k of [...KINDS, 'widgets', 'maps', 'alerts', 'mail']) {
