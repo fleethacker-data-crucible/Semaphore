@@ -3,7 +3,7 @@
 // (aggregated rows, value counts, a profile). Same code as the page would run: src/core.
 
 import { type Catalog, indexCatalog } from '../../src/core/catalog.ts';
-import { checkCsvSize, readCsv } from '../../src/core/csv.ts';
+import { checkCsvSize, CSV_PROGRESS_BYTES, readCsv, readCsvYielding } from '../../src/core/csv.ts';
 import { runPlan, type TableRows } from '../../src/core/engine.ts';
 import type { QueryPlan } from '../../src/core/planner.ts';
 import { registerReshaping } from '../../src/core/reshape.ts';
@@ -29,8 +29,13 @@ async function answer(m: Request): Promise<unknown> {
   switch (m.type) {
     case 'load': {
       // The Blob is read here, so the page never holds the text; it is let go once the rows are built.
+      // A large file yields so the page can show "Reading parts.csv: 40%" (#82).
       checkCsvSize(m.blob.size);
-      const t = readCsv(m.name, await m.blob.text());
+      const text = await m.blob.text();
+      const t =
+        m.blob.size >= CSV_PROGRESS_BYTES
+          ? await readCsvYielding(m.name, text, (ratio) => scope.postMessage({ id: m.id, progress: ratio }))
+          : readCsv(m.name, text);
       tables[t.name] = t.rows;
       return { name: t.name, rows: t.rows.length, columns: t.columns, profile: t.profile, notes: t.notes };
     }

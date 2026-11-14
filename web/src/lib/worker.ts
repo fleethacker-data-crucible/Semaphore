@@ -24,13 +24,19 @@ export class CsvWorker {
   private readonly worker: Worker;
   private next = 1;
   private readonly waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private readonly progress = new Map<number, (ratio: number) => void>();
 
   constructor(url: string) {
     this.worker = new Worker(url);
-    this.worker.onmessage = (e: MessageEvent<{ id: number; ok: boolean; value?: unknown; error?: string; name?: string }>) => {
+    this.worker.onmessage = (e: MessageEvent<{ id: number; ok?: boolean; progress?: number; value?: unknown; error?: string; name?: string }>) => {
+      if (typeof e.data.progress === 'number') {
+        this.progress.get(e.data.id)?.(e.data.progress);
+        return;
+      }
       const w = this.waiting.get(e.data.id);
       if (!w) return;
       this.waiting.delete(e.data.id);
+      this.progress.delete(e.data.id);
       if (e.data.ok) w.resolve(e.data.value);
       else {
         const err = new WorkerError(e.data.error ?? 'The CSV worker failed.');
@@ -44,8 +50,9 @@ export class CsvWorker {
     };
   }
 
-  private ask<T>(msg: Record<string, unknown>): Promise<T> {
+  private ask<T>(msg: Record<string, unknown>, onProgress?: (ratio: number) => void): Promise<T> {
     const id = this.next++;
+    if (onProgress) this.progress.set(id, onProgress);
     return new Promise<T>((resolve, reject) => {
       this.waiting.set(id, { resolve: resolve as (v: unknown) => void, reject });
       this.worker.postMessage({ ...msg, id });
@@ -54,10 +61,10 @@ export class CsvWorker {
 
   /**
    * The worker reads the file itself: a Blob (a File, or one from IndexedDB) is passed by
-   * reference, so the page never holds the file's text.
+   * reference, so the page never holds the file's text. `onProgress` hears 0..1 for a large file.
    */
-  load(name: string, blob: Blob): Promise<LoadedCsv> {
-    return this.ask({ type: 'load', name, blob });
+  load(name: string, blob: Blob, onProgress?: (ratio: number) => void): Promise<LoadedCsv> {
+    return this.ask({ type: 'load', name, blob }, onProgress);
   }
   drop(name: string): Promise<boolean> {
     return this.ask({ type: 'drop', name });

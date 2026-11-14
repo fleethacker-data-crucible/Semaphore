@@ -32,6 +32,15 @@ export function readingLabel(name: string, at: number, total: number, bytes: num
   return `Reading ${name}${detail ? ` (${detail})` : ''}…`;
 }
 
+/** Files at least this big show "Reading parts.csv: 40%" while they are parsed (#82). */
+export const CSV_PROGRESS_BYTES = 20 * 1024 * 1024;
+
+/** The busy line for a large file: the name and how much of the text has been turned into rows. */
+export function readingProgressLabel(name: string, ratio: number): string {
+  const pct = Math.min(100, Math.max(0, Math.round(ratio * 100)));
+  return `Reading ${name}: ${pct}%`;
+}
+
 /** Data rows read to decide each column's type. The same rows are checked for leading zeros. */
 const SAMPLE_ROWS = 5000;
 const QUOTE = 34;
@@ -55,7 +64,12 @@ export function parseCsvRecords(text: string, maxRows: number = CSV_LIMITS.rows)
  * the text, so nothing but the current record is built. RFC 4180 quoting; spaces before an opening
  * quote are allowed (`a, "x,y"`), and text after a closing quote is kept as it was.
  */
-function eachRecord(text: string, start: number, delim: string, onRecord: (r: string[]) => boolean | void): void {
+/**
+ * Reads records from `start`. Returns the index to resume from, `text.length` when the text is
+ * finished, or -1 when `onRecord` returned false. `pauseAt` stops after a whole record once the
+ * index has reached it, so a large file can report progress and let the page paint (#82).
+ */
+function eachRecord(text: string, start: number, delim: string, onRecord: (r: string[]) => boolean | void, pauseAt?: number): number {
   const D = delim.charCodeAt(0);
   const n = text.length;
   let i = start;
@@ -106,8 +120,10 @@ function eachRecord(text: string, start: number, delim: string, onRecord: (r: st
       i = e;
     }
     if (i >= n) {
-      if (row.length > 1 || row[0] !== '') onRecord(row);
-      return;
+      if (row.length > 1 || row[0] !== '') {
+        if (onRecord(row) === false) return -1;
+      }
+      return n;
     }
     const c = text.charCodeAt(i);
     if (c === D) {
@@ -115,11 +131,12 @@ function eachRecord(text: string, start: number, delim: string, onRecord: (r: st
       continue;
     }
     if (row.length > 1 || row[0] !== '') {
-      if (onRecord(row) === false) return;
+      if (onRecord(row) === false) return -1;
     }
     row = [];
     i += c === CR && text.charCodeAt(i + 1) === LF ? 2 : 1;
-    if (i >= n) return;
+    if (i >= n) return n;
+    if (pauseAt !== undefined && i >= pauseAt) return i;
   }
 }
 
@@ -189,12 +206,24 @@ function longInteger(v: string): boolean {
   return digits >= 16;
 }
 
-export function readCsv(fileName: string, text: string): CsvTable {
+interface CsvBuild {
+  text: string;
+  start: number;
+  delim: string;
+  header: string[];
+  types: FieldType[];
+  notes: string[];
+  rows: Array<Record<string, Cell>>;
+  failed: number[];
+  shared: Array<Map<string, string> | null>;
+  atHeader: boolean;
+  over: boolean;
+}
+
+function beginCsv(text: string): CsvBuild {
   checkCsvSize(text.length);
   const start = text.charCodeAt(0) === 0xfeff ? 1 : 0;
   const delim = sniffDelimiter(text, start);
-
-  // First pass: the header and the sample rows the types are decided from.
   let first: string[] | null = null;
   let sample: string[][] = [];
   eachRecord(text, start, delim, (r) => {
@@ -210,7 +239,6 @@ export function readCsv(fileName: string, text: string): CsvTable {
     notes.push(`Only the first ${CSV_LIMITS.columns} of ${header.length} columns were read.`);
     header = header.slice(0, CSV_LIMITS.columns);
   }
-  // Duplicate names get a number, so every column has its own key.
   const seen = new Map<string, number>();
   header = header.map((h) => {
     const k = h.toLowerCase();
@@ -219,42 +247,61 @@ export function readCsv(fileName: string, text: string): CsvTable {
     return c > 1 ? `${h} ${c}` : h;
   });
   const types: FieldType[] = header.map((_, c) => inferType(sample, c));
-  sample = [];
+  return {
+    text,
+    start,
+    delim,
+    header,
+    types,
+    notes,
+    rows: [],
+    failed: header.map(() => 0),
+    shared: types.map((t) => (t === 'string' || t === 'date' ? new Map<string, string>() : null)),
+    atHeader: true,
+    over: false,
+  };
+}
 
-  // Second pass: each record becomes a row as it is read; no array of records is kept.
-  const rows: Array<Record<string, Cell>> = [];
-  const failed = header.map(() => 0);
+/** Turns records into rows from `from`, stopping at `pauseAt` so the caller can report progress. */
+function takeRows(build: CsvBuild, from: number, pauseAt?: number): number {
+  const { text, delim, header, types } = build;
   const width = header.length;
-  const shared = types.map((t) => (t === 'string' || t === 'date' ? new Map<string, string>() : null));
-  let atHeader = true;
-  let over = false;
-  eachRecord(text, start, delim, (r) => {
-    if (atHeader) {
-      atHeader = false;
+  return eachRecord(
+    text,
+    from,
+    delim,
+    (r) => {
+      if (build.atHeader) {
+        build.atHeader = false;
+        return true;
+      }
+      if (build.rows.length >= CSV_LIMITS.rows) {
+        build.over = true;
+        return false;
+      }
+      const o: Record<string, Cell> = {};
+      for (let c = 0; c < width; c++) {
+        let v = convert(r[c] ?? '', types[c]!);
+        if (typeof v === 'string') v = own(v, build.shared[c]!);
+        if (v === undefined) {
+          build.failed[c]!++;
+          o[header[c]!] = null;
+        } else o[header[c]!] = v;
+      }
+      build.rows.push(o);
       return true;
-    }
-    if (rows.length >= CSV_LIMITS.rows) {
-      over = true;
-      return false;
-    }
-    const o: Record<string, Cell> = {};
-    for (let c = 0; c < width; c++) {
-      let v = convert(r[c] ?? '', types[c]!);
-      if (typeof v === 'string') v = own(v, shared[c]!);
-      if (v === undefined) {
-        failed[c]!++;
-        o[header[c]!] = null;
-      } else o[header[c]!] = v;
-    }
-    rows.push(o);
-    return true;
-  });
-  if (over) notes.push(`Only the first ${CSV_LIMITS.rows.toLocaleString('en-US')} rows were read.`);
+    },
+    pauseAt,
+  );
+}
+
+function finishCsv(fileName: string, build: CsvBuild): CsvTable {
+  const { header, types, notes, rows, failed } = build;
+  if (build.over) notes.push(`Only the first ${CSV_LIMITS.rows.toLocaleString('en-US')} rows were read.`);
   header.forEach((h, c) => {
     const n = failed[c]!;
     if (n) notes.push(`${h}: ${failedNote(n, types[c]!)} See Data > Clean.`);
   });
-
   const profile: TableProfile = {
     name: tableName(fileName),
     rows: rows.length,
@@ -273,6 +320,31 @@ export function readCsv(fileName: string, text: string): CsvTable {
     }),
   };
   return { name: profile.name, columns: header.map((h, c) => ({ name: h, type: types[c]! })), rows, profile, notes };
+}
+
+export function readCsv(fileName: string, text: string): CsvTable {
+  const build = beginCsv(text);
+  takeRows(build, build.start);
+  return finishCsv(fileName, build);
+}
+
+/**
+ * The same read as readCsv, yielding every few percent so a file over CSV_PROGRESS_BYTES can show
+ * "Reading parts.csv: 40%" while the rows are built. `onProgress` is 0 to 1, and 1 when the read ends.
+ */
+export async function readCsvYielding(fileName: string, text: string, onProgress: (ratio: number) => void): Promise<CsvTable> {
+  const build = beginCsv(text);
+  let cursor = build.start;
+  const chunk = Math.max(65536, Math.floor(text.length / 25));
+  while (cursor < text.length && !build.over) {
+    const next = takeRows(build, cursor, cursor + chunk);
+    if (next < 0 || next <= cursor) break;
+    cursor = next;
+    onProgress(Math.min(1, cursor / text.length));
+    if (cursor < text.length) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  onProgress(1);
+  return finishCsv(fileName, build);
 }
 
 /**

@@ -9,7 +9,7 @@ import exampleHoist from '../../examples/fleet-maintenance/hoist.json';
 import { type Catalog, checkCatalog, dialectForSource, indexCatalog, type Metric, pruneCatalog, type RdsEngine } from '../../src/core/catalog.ts';
 import type { Cell, Selections } from '../../src/core/crossfilter.ts';
 import { impactFor, impactLine } from '../../src/core/impact.ts';
-import { checkCsvSize, CsvError, readCsv, readingLabel } from '../../src/core/csv.ts';
+import { checkCsvSize, CSV_PROGRESS_BYTES, CsvError, readCsv, readCsvYielding, readingLabel, readingProgressLabel } from '../../src/core/csv.ts';
 import type { TableRows } from '../../src/core/engine.ts';
 import { filterText } from '../../src/core/describe.ts';
 import { fileStem } from '../../src/core/export/model.ts';
@@ -238,27 +238,33 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server?.pid]);
 
-  // CSV files kept in this browser come back on reload.
+  // CSV files kept in this browser come back on reload. A large one shows "Reading name: 40%".
   useEffect(() => {
     allFiles().then(async (stored) => {
-      const tables: TableRows = {};
-      const held: string[] = [];
-      for (const f of stored) {
-        try {
-          if (worker) held.push((await worker.load(f.name, f.blob)).name);
-          else {
-            const t = readCsv(f.name, await f.blob.text());
-            tables[t.name] = t.rows;
+      const load = async () => {
+        const tables: TableRows = {};
+        const held: string[] = [];
+        for (const f of stored) {
+          try {
+            const onProgress = f.blob.size >= CSV_PROGRESS_BYTES ? (ratio: number) => sayBusy(readingProgressLabel(f.name, ratio)) : undefined;
+            if (worker) held.push((await worker.load(f.name, f.blob, onProgress)).name);
+            else {
+              const text = await f.blob.text();
+              const t = onProgress ? await readCsvYielding(f.name, text, onProgress) : readCsv(f.name, text);
+              tables[t.name] = t.rows;
+            }
+          } catch {
+            /* a file that no longer parses is skipped; it can be removed from the data panel */
           }
-        } catch {
-          /* a file that no longer parses is skipped; it can be removed from the data panel */
         }
-      }
-      if (Object.keys(tables).length || held.length) {
-        setFiles(tables);
-        setWorkerTables(held);
-        setDataVersion((v) => v + 1);
-      }
+        if (Object.keys(tables).length || held.length) {
+          setFiles(tables);
+          setWorkerTables(held);
+          setDataVersion((v) => v + 1);
+        }
+      };
+      if (stored.some((f) => f.blob.size >= CSV_PROGRESS_BYTES)) await runBusy('Reading files…', load);
+      else await load();
     });
   }, []);
 
@@ -596,11 +602,13 @@ export function App() {
           if (fx) notes.push(fx.note);
           // Parsed in the CSV worker when there is one: a large file never freezes the page.
           let t: { name: string; rows: number; columns: unknown[]; profile: TableProfile; notes: string[] };
+          const onProgress = blob.size >= CSV_PROGRESS_BYTES ? (ratio: number) => sayBusy(readingProgressLabel(name, ratio)) : undefined;
           if (worker) {
-            t = await worker.load(name, blob);
+            t = await worker.load(name, blob, onProgress);
             held.add(t.name);
           } else {
-            const parsed = readCsv(name, await blob.text());
+            const text = await blob.text();
+            const parsed = onProgress ? await readCsvYielding(name, text, onProgress) : readCsv(name, text);
             tables[parsed.name] = parsed.rows;
             t = { ...parsed, rows: parsed.rows.length };
           }
