@@ -43,3 +43,22 @@ test('an edit followed at once by Open another hoist is saved, not dropped', asy
   await expect.poll(async () => (await semaphore.state()).saves).toBeGreaterThan(savesBefore);
   expect((await semaphore.stored<{ title: string }>('hoists', 'e2e-other'))?.title).toBe('Spare parts watch');
 });
+
+// #86: an oversized hoist is refused with a clear message before it is read. The folder takes 2 MB.
+test('a hoist file over 2 MB is refused before it is read', async ({ semaphore, page }) => {
+  await semaphore.open();
+  await semaphore.continueToBuilder();
+  const savesBefore = (await semaphore.state()).saves;
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    (async () => {
+      await page.getByRole('button', { name: 'Hoist', exact: true }).click();
+      await page.getByRole('menuitem', { name: /Import a hoist file/ }).click();
+    })(),
+  ]);
+  await chooser.setFiles({ name: 'huge.hoist.json', mimeType: 'application/json', buffer: Buffer.alloc(2_200_000, 0x61) });
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText('huge.hoist.json is 2.1 MB, over the 2 MB a hoist may be.');
+  await expect(alert).toContainText('Remove some flags from it, or split it into two hoists.');
+  expect((await semaphore.state()).saves).toBe(savesBefore);
+});
