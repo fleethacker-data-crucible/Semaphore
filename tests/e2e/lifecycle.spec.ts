@@ -97,3 +97,33 @@ test('a reload keeps the server; closing the last of two tabs stops it', async (
     mock.stop();
   }
 });
+
+// Hidden tab (#80). Playwright does not throttle a hidden page the way Edge does, and its fake clock
+// does not drive the blob worker that sends the beats (a six-minute fast-forward was tried; only the
+// real five-second worker ticks arrived). This checks the contract that can run here: while the page
+// says it is hidden, beats keep arriving and the server stays up. The ten-minute Outlook check is a
+// hand check on the workstation.
+test('a hidden tab keeps beating, and the server stays up', async ({ browser }) => {
+  const mock = await startOwnMock({ SEMAPHORE_MOCK_HEARTBEAT_TIMEOUT_MS: '90000' });
+  const ctx = await browser.newContext();
+  try {
+    const page = await ctx.newPage();
+    await page.goto(mock.link);
+    await page.getByRole('button', { name: /^Continue/ }).click();
+    await expect.poll(async () => (await mock.state()).beats ?? 0).toBeGreaterThan(0);
+    const before = (await mock.state()).beats ?? 0;
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    // Two more beats, one worker interval apart. A page that stopped beating when it was hidden fails this.
+    await expect.poll(async () => (await mock.state()).beats ?? 0, { timeout: 18_000 }).toBeGreaterThan(before + 1);
+    expect(mock.exited()).toBe(false);
+    const live = (await mock.state()).tabs.filter((t) => !t.leaving);
+    expect(live.length).toBeGreaterThan(0);
+  } finally {
+    await ctx.close();
+    mock.stop();
+  }
+});

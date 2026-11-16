@@ -246,9 +246,24 @@ Step 'policy' {
     foreach ($b in @('Edge', 'Chrome')) {
         $p = if ($b -eq 'Edge') { 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' } else { 'HKLM:\SOFTWARE\Policies\Google\Chrome' }
         if (Test-Path -LiteralPath $p) {
-            $names = @((Get-Item -LiteralPath $p).Property | Where-Object { $_ -match 'URLBlocklist|URLAllowlist|Download|Javascript|IndexedDB|Local|Storage|ClearBrowsingData|Incognito|Cookies|WebAssembly|Worker|Sandbox' })
+            $names = @((Get-Item -LiteralPath $p).Property | Where-Object { $_ -match 'URLBlocklist|URLAllowlist|Download|Javascript|IndexedDB|Local|Storage|ClearBrowsingData|Incognito|Cookies|WebAssembly|Worker|Sandbox|SleepingTabs' })
             Add-R ('policy.' + $b.ToLower()) 'INFO' ('policy key present; relevant values: ' + ($names -join ', '))
         } else { Add-R ('policy.' + $b.ToLower()) 'INFO' 'no policy key' }
+    }
+    # Edge sleeping tabs freeze a background tab, worker included, so the 90 s heartbeat cannot keep
+    # Semaphore up. IT excludes the loopback origin (Edge policy SleepingTabsBlockedForUrls, #80).
+    $sleepKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\SleepingTabsBlockedForUrls'
+    $sleepUrls = @()
+    if (Test-Path -LiteralPath $sleepKey) {
+        foreach ($name in @((Get-Item -LiteralPath $sleepKey).Property)) {
+            $sleepUrls += [string](Get-RegValue $sleepKey $name)
+        }
+    }
+    $keepsLoopback = @($sleepUrls | Where-Object { $_ -match '127\.0\.0\.1' })
+    if ($keepsLoopback.Count -gt 0) {
+        Add-R 'policy.edge.sleeping-tabs' 'PASS' ('127.0.0.1 is excluded from sleeping tabs: ' + ($keepsLoopback -join ', '))
+    } else {
+        Add-R 'policy.edge.sleeping-tabs' 'WARN' 'Edge can freeze a background tab (Sleeping tabs), and a frozen tab cannot beat, so Semaphore stops. IT adds http://127.0.0.1:8800 under HKLM\SOFTWARE\Policies\Microsoft\Edge\SleepingTabsBlockedForUrls.'
     }
 }
 

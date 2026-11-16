@@ -45,6 +45,8 @@ export interface MockState {
   autoStop: boolean;
   everSeen: boolean;
   liveTabs: number;
+  /** Heartbeats the mock has accepted. Absent on a mock from before this field. */
+  beats?: number;
   tabs: { tab: string; seenAgoMs: number; leaving: boolean; leavingAgoMs: number | null }[];
   graceMs: number;
   timeoutMs: number;
