@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CSV_LIMITS, checkCsvSize, CsvError, parseCsvRecords, readCsv } from '../src/core/csv.ts';
+import { CSV_LIMITS, checkCsvSize, CsvError, parseCsvRecords, readCsv, readCsvYielding, readingProgressLabel } from '../src/core/csv.ts';
 
 test('CSV: delimiters inside quotes do not count when sniffing', () => {
   assert.deepEqual(parseCsvRecords('"Cost, USD";Region\n5;East\n'), [['Cost, USD', 'Region'], ['5', 'East']]);
@@ -102,6 +102,26 @@ test('CSV: impossible US and ISO dates are not dates', () => {
   const ok = readCsv('x.csv', column('When', ['2/29/2020', '12/31/2020']));
   assert.equal(ok.columns[0]!.type, 'date');
   assert.deepEqual(ok.rows.map((r) => r.When), ['2020-02-29', '2020-12-31']);
+});
+
+test('CSV: a yielded read matches a straight read and reports progress up to 1', async () => {
+  const lines = ['Cost,Region'];
+  for (let i = 0; i < 400; i++) lines.push(`${i},East`);
+  const text = lines.join('\n');
+  const seen: number[] = [];
+  const yielded = await readCsvYielding('parts.csv', text, (ratio) => seen.push(ratio));
+  const straight = readCsv('parts.csv', text);
+  assert.deepEqual(yielded.rows, straight.rows);
+  assert.deepEqual(yielded.columns, straight.columns);
+  assert.deepEqual(yielded.notes, straight.notes);
+  assert.ok(seen.length >= 2);
+  assert.equal(seen[seen.length - 1], 1);
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i]! >= seen[i - 1]!);
+});
+
+test('CSV: the large-file busy line names the percent', () => {
+  assert.equal(readingProgressLabel('parts.csv', 0.4), 'Reading parts.csv: 40%');
+  assert.equal(readingProgressLabel('parts.csv', 1), 'Reading parts.csv: 100%');
 });
 
 test('CSV: the size cap is checked from the byte count, before reading', () => {
