@@ -45,9 +45,23 @@ test('an edit followed at once by Open another hoist is saved, not dropped', asy
 });
 
 // #86: an oversized hoist is refused with a clear message before it is read. The folder takes 2 MB.
+// importHoist checks file.size and returns before file.text(). The save count is the mock's PUT
+// counter: opening the builder also saves the hoist 1.2 s later, so the count is sampled only after
+// that save has stopped arriving. Otherwise one queued save looks like the import wrote the file.
 test('a hoist file over 2 MB is refused before it is read', async ({ semaphore, page }) => {
   await semaphore.open();
   await semaphore.continueToBuilder();
+  await expect.poll(async () => (await semaphore.stored('hoists', EXAMPLE_ID)) !== null, { timeout: 10_000 }).toBe(true);
+  let previous = -1;
+  await expect.poll(
+    async () => {
+      const n = (await semaphore.state()).saves;
+      const settled = n > 0 && n === previous;
+      previous = n;
+      return settled;
+    },
+    { timeout: 10_000, intervals: [1500] },
+  ).toBe(true);
   const savesBefore = (await semaphore.state()).saves;
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
